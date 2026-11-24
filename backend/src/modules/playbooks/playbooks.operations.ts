@@ -77,6 +77,12 @@ import {
 } from "../../lib/llm/models";
 import type { Provider } from "../../lib/llm/types";
 import { hasApiKeyForModel } from "../../lib/modelSelection";
+import { contextWindowFor } from "../../lib/llm/contextWindow";
+import {
+  completionMaxTokens,
+  estimateTokens,
+  promptBudgetTokens,
+} from "../../lib/llm/contextBudget";
 import { getUserApiKeys, getEffectiveApiKeys } from "../../lib/providerCredentials/index";
 import { uploadFile } from "../../lib/storage";
 import { getFileStreamSource } from "../documents/documents.service";
@@ -950,9 +956,51 @@ export async function editablePlaybook(
   return playbook;
 }
 
+/**
+ * The most playbook text one compilation takes, in characters, when the
+ * model's context window is unknown. With a known window the budget decides
+ * instead (compilationFits).
+ */
+const MAX_COMPILATION_SOURCE_CHARS = 150_000;
+const COMPILATION_MAX_TOKENS = 16_000;
+const COMPILATION_SYSTEM_PROMPT =
+  "You compile legal playbooks into auditable structured data. Return only valid JSON and never add legal positions absent from the source.";
+const COMPILATION_RETRY_SYSTEM_PROMPT =
+  "You compile legal playbooks into auditable structured data. Your previous response failed validation. Return exactly one complete valid JSON object and no other text.";
+
+/**
+ * Whether the playbook can be compiled in one pass by `model`: under the
+ * character cap when its window is unknown, and with the retry prompt (the
+ * longer one, with a validation error of up to 2,000 characters) and the
+ * answer inside the window when it is known.
+ */
+function compilationFits(
+  model: string,
+  structure: PlaybookWordStructure,
+  requestedName: string,
+): boolean {
+  const windowTokens = contextWindowFor(model);
+  if (windowTokens === undefined) {
+    return structure.text.length <= MAX_COMPILATION_SOURCE_CHARS;
+  }
+  const budget = promptBudgetTokens({
+    windowTokens,
+    answerTokens: completionMaxTokens(windowTokens, COMPILATION_MAX_TOKENS),
+    systemPrompt: COMPILATION_RETRY_SYSTEM_PROMPT,
+    fixedText: compilationRetryPrompt(
+      { ...structure, text: "" },
+      requestedName,
+      "x".repeat(2_000),
+    ),
+  });
+  return estimateTokens(structure.text) <= budget;
+}
+
 function compilationPrompt(
   structure: PlaybookWordStructure,
   requestedName: string,
+  /** Set by a model whose window is known: compilationFits checked the text. */
+  sourceChars = MAX_COMPILATION_SOURCE_CHARS,
 ): string {
   return `Convert the supplied human-authored legal playbook into structured rules. Preserve concepts and sample clauses; do not invent policy. A source marker such as [P4] or [T2R3C1] identifies the exact paragraph or table cell. Every rule and sample clause must cite the relevant sourceRefs.
 
@@ -964,15 +1012,16 @@ Return JSON only with this shape:
 {"name":"${requestedName.replace(/["\\]/g, "")}","description":"","representedParty":"","documentTypes":[],"jurisdictions":[],"topics":[{"id":"topic-1","name":"","rules":[{"id":"topic-1-rule-1","name":"","concept":"","scope":"clause|agreement","required":false,"guidance":"","standard":{"name":"Standard","criteria":"","sampleClauses":[{"text":"","usage":"illustrative|preferred|verbatim|accepted|unacceptable","sourceRefs":["P1"]}]}|null,"fallbacks":[],"unacceptable":[],"conditions":[],"actions":[{"scenario":"","instruction":""}],"sourceRefs":["P1"]}]}]}
 
 SOURCE PLAYBOOK:
-${structure.text.slice(0, 150_000)}`;
+${structure.text.slice(0, sourceChars)}`;
 }
 
 function compilationRetryPrompt(
   structure: PlaybookWordStructure,
   requestedName: string,
   validationError: string,
+  sourceChars = MAX_COMPILATION_SOURCE_CHARS,
 ): string {
-  return `${compilationPrompt(structure, requestedName)}
+  return `${compilationPrompt(structure, requestedName, sourceChars)}
 
 RETRY REQUIREMENT:
 The previous response could not be imported for this reason:
@@ -1471,14 +1520,19 @@ export async function compilePlaybookImport(
         "This PDF has no text layer, so its content cannot be read. It is most likely scanned and needs OCR before it can be imported.",
       );
     }
-    if (structure.text.length > 150_000) {
+    const fallbackName =
+      work.filename.replace(/\.(docx|pdf)$/i, "").trim() || "Imported playbook";
+    const name = work.name?.trim() || replacing?.name || fallbackName;
+    if (!compilationFits(model, structure, name)) {
       throw new PlaybookRequestError(
         "The playbook is too large to compile in one pass. Split it into smaller playbooks before importing.",
       );
     }
-    const fallbackName =
-      work.filename.replace(/\.(docx|pdf)$/i, "").trim() || "Imported playbook";
-    const name = work.name?.trim() || replacing?.name || fallbackName;
+    const compileWindow = contextWindowFor(model);
+    // compilationFits measured the whole text against a known window.
+    const sourceChars =
+      compileWindow === undefined ? MAX_COMPILATION_SOURCE_CHARS : structure.text.length;
+    const compileMaxTokens = completionMaxTokens(compileWindow, COMPILATION_MAX_TOKENS);
 
     stage = enterImportStage("compiling");
     await updateImportAttempt(db, attemptId, { stage });
@@ -1486,10 +1540,9 @@ export async function compilePlaybookImport(
     const raw = await withCompilationTimeout(
       runCompletion({
         model,
-        systemPrompt:
-          "You compile legal playbooks into auditable structured data. Return only valid JSON and never add legal positions absent from the source.",
-        user: compilationPrompt(structure, name),
-        maxTokens: 16_000,
+        systemPrompt: COMPILATION_SYSTEM_PROMPT,
+        user: compilationPrompt(structure, name, sourceChars),
+        maxTokens: compileMaxTokens,
         apiKeys,
       }),
       compilationTimeoutMs,
@@ -1506,10 +1559,9 @@ export async function compilePlaybookImport(
         const retried = await withCompilationTimeout(
           runCompletion({
             model,
-            systemPrompt:
-              "You compile legal playbooks into auditable structured data. Your previous response failed validation. Return exactly one complete valid JSON object and no other text.",
-            user: compilationRetryPrompt(structure, name, validationError),
-            maxTokens: 16_000,
+            systemPrompt: COMPILATION_RETRY_SYSTEM_PROMPT,
+            user: compilationRetryPrompt(structure, name, validationError, sourceChars),
+            maxTokens: compileMaxTokens,
             apiKeys,
           }),
           compilationTimeoutMs,
@@ -1862,6 +1914,33 @@ const ISSUE_STATUSES = new Set<PlaybookFinding["status"]>([
   "needs_review",
 ]);
 
+/** A review's caps when the model's context window is unknown. */
+const MAX_REVIEW_PLAYBOOK_CHARS = 100_000;
+const MAX_REVIEW_DOCUMENT_CHARS = 180_000;
+const REVIEW_MAX_TOKENS = 20_000;
+
+/**
+ * Whether a review's whole prompt and answer fit a known window. A review is
+ * refused up front rather than run on part of the contract.
+ */
+function reviewFitsWindow(
+  windowTokens: number,
+  content: PlaybookContent,
+  documentText: string,
+  mode: "strict" | "permissive",
+  instructions: string | undefined,
+  scope: "full" | "issues",
+): boolean {
+  return (
+    promptBudgetTokens({
+      windowTokens,
+      answerTokens: completionMaxTokens(windowTokens, REVIEW_MAX_TOKENS),
+      systemPrompt: REVIEW_SYSTEM_PROMPT,
+      fixedText: reviewPrompt(content, documentText, mode, instructions, [], scope, false),
+    }) >= 0
+  );
+}
+
 function reviewPrompt(
   content: PlaybookContent,
   documentText: string,
@@ -1869,7 +1948,10 @@ function reviewPrompt(
   instructions?: string,
   sources: PlaybookSourceRow[] = [],
   scope: "full" | "issues" = "full",
+  /** False for a model whose window is known: reviewFitsWindow checked it. */
+  capped = true,
 ): string {
+  const playbookJson = JSON.stringify(content);
   return `Review the full contract against the playbook. Apply unacceptable positions first. In strict mode, fallback matches still need review. In permissive mode, a fallback may be acceptable but explain which fallback applies. Flag a missing required rule as missing_required. Use not_applicable only when an optional concept is absent. Quote exact contract text so Word can locate it. suggestedText must be a complete replacement for quote, or the complete clause to insert for missing_required. For missing_required, set insertAfter to the exact final words (up to 200 characters) of the existing clause the new clause should follow, or leave it empty if no clause fits. Do not suggest an edit for acceptable or not_applicable findings. Do not invent contract language or findings.
 
 ${instructions?.trim() ? `ADDITIONAL REVIEW INSTRUCTIONS:\n${instructions.trim().slice(0, 8_000)}\n` : ""}
@@ -1879,10 +1961,10 @@ Return JSON only:
 
 REVIEW MODE: ${mode}
 ${scope === "issues" ? "REVIEW SCOPE: issues only. Report only rules whose status is unacceptable, missing_required, or needs_review; leave acceptable, not_applicable, and outside_scope rules out of findings, and summarise the issues.\n" : ""}${supplementaryDocumentList(sources)}PLAYBOOK:
-${JSON.stringify(content).slice(0, 100_000)}
+${capped ? playbookJson.slice(0, MAX_REVIEW_PLAYBOOK_CHARS) : playbookJson}
 
 CONTRACT:
-${documentText.slice(0, 180_000)}`;
+${capped ? documentText.slice(0, MAX_REVIEW_DOCUMENT_CHARS) : documentText}`;
 }
 
 type PlaybookPosition =
@@ -2138,8 +2220,9 @@ export async function beginPlaybookReview(args: PlaybookReviewRequest) {
   const documentName = args.documentName?.trim() || stored?.filename;
   if (!documentText.trim())
     throw new PlaybookRequestError("Document text is required.");
-  if (documentText.length > 180_000)
-
+  // With a known window the budget decides, once the playbook is loaded.
+  const reviewWindow = contextWindowFor(args.model);
+  if (reviewWindow === undefined && documentText.length > MAX_REVIEW_DOCUMENT_CHARS)
     throw new PlaybookRequestError(
       "The document is too large for a complete playbook review. Review a shorter document or selected sections.",
     );
@@ -2161,9 +2244,23 @@ export async function beginPlaybookReview(args: PlaybookReviewRequest) {
     db,
     playbook.orgId,
   );
-  if (JSON.stringify(content).length > 100_000)
+  if (reviewWindow === undefined && JSON.stringify(content).length > MAX_REVIEW_PLAYBOOK_CHARS)
     throw new PlaybookRequestError(
       "The playbook is too large for a complete review. Split it into smaller playbooks.",
+    );
+  if (
+    reviewWindow !== undefined &&
+    !reviewFitsWindow(
+      reviewWindow,
+      content,
+      documentText,
+      args.reviewMode,
+      args.instructions ?? undefined,
+      args.reviewScope ?? "full",
+    )
+  )
+    throw new PlaybookRequestError(
+      "The document and playbook are too large for a complete review with the selected model's context window. Review a shorter document or selected sections, or split the playbook.",
     );
   const runId = crypto.randomUUID();
   const startedAt = new Date().toISOString();
@@ -2266,6 +2363,7 @@ export async function runPlaybookReview(
       ));
     const sources = await listPlaybookSourceRows(db, work.playbookId);
     const scope = work.reviewScope;
+    const reviewWindow = contextWindowFor(work.model);
     const prompt = reviewPrompt(
       work.content,
       work.documentText,
@@ -2273,6 +2371,7 @@ export async function runPlaybookReview(
       work.instructions ?? undefined,
       sources,
       scope,
+      reviewWindow === undefined,
     );
     const raw = sources.length
       ? await completeReviewWithSources({
@@ -2288,7 +2387,7 @@ export async function runPlaybookReview(
           model: work.model,
           systemPrompt: REVIEW_SYSTEM_PROMPT,
           user: prompt,
-          maxTokens: 20_000,
+          maxTokens: completionMaxTokens(reviewWindow, REVIEW_MAX_TOKENS),
           apiKeys: keys,
           abortSignal: signal,
         });

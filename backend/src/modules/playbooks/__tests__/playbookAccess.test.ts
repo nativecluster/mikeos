@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "../../../lib/supabase";
 const { completeText, getUserApiKeys } = vi.hoisted(() => ({
   completeText: vi.fn(),
@@ -788,6 +788,60 @@ describe("playbook access and autosave", () => {
     ).rejects.toMatchObject({ status: 400 });
     expect(completeText).not.toHaveBeenCalled();
     expect(writes).toHaveLength(0);
+  });
+});
+
+describe("a playbook review and the model's context window", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("refuses a contract too long for a known window before running anything", async () => {
+    vi.stubEnv("MIKE_CONTEXT_WINDOW_TOKENS", "32768");
+    const { db, writes } = database([book()]);
+    await expect(
+      reviewWithPlaybook({
+        userId: "owner",
+        playbookId: "book",
+        documentText: "The Supplier shall deliver. ".repeat(3_000),
+        model: "claude-opus-5",
+        reviewMode: "strict",
+        db,
+      }),
+    ).rejects.toThrow(/too large for a complete review with the selected model's context window/);
+    expect(completeText).not.toHaveBeenCalled();
+    expect(writes).toHaveLength(0);
+  });
+
+  it("reviews a contract past the character cap whole when a known window holds it", async () => {
+    vi.stubEnv("MIKE_CONTEXT_WINDOW_TOKENS", "1000000");
+    const { db } = database([book()]);
+    const contract = `${"The Supplier shall deliver. ".repeat(7_000)}END OF CONTRACT`;
+    expect(contract.length).toBeGreaterThan(180_000);
+    const result = await reviewWithPlaybook({
+      userId: "owner",
+      playbookId: "book",
+      documentText: contract,
+      model: "claude-opus-5",
+      reviewMode: "strict",
+      db,
+    });
+    expect(result.status).toBe("completed");
+    expect(completeText.mock.lastCall?.[0].user).toContain("END OF CONTRACT");
+    expect(completeText.mock.lastCall?.[0].maxTokens).toBe(20_000);
+  });
+
+  it("keeps the character cap when the window is unknown", async () => {
+    vi.stubEnv("MIKE_CONTEXT_WINDOW_TOKENS", "");
+    const { db } = database([book()]);
+    await expect(
+      reviewWithPlaybook({
+        userId: "owner",
+        playbookId: "book",
+        documentText: "x".repeat(180_001),
+        model: "claude-opus-5",
+        reviewMode: "strict",
+        db,
+      }),
+    ).rejects.toThrow(/too large for a complete playbook review/);
   });
 });
 

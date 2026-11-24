@@ -482,11 +482,13 @@ describe("the playbook.review job", () => {
   });
 });
 
-async function sourceDocx(): Promise<ArrayBuffer> {
+async function sourceDocx(
+  text = "Liability is capped at fees paid in the prior 12 months.",
+): Promise<ArrayBuffer> {
   const zip = new JSZip();
   zip.file(
     "word/document.xml",
-    `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Liability is capped at fees paid in the prior 12 months.</w:t></w:r></w:p></w:body></w:document>`,
+    `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:body></w:document>`,
   );
   return zip.generateAsync({ type: "arraybuffer" });
 }
@@ -665,6 +667,34 @@ describe("the playbook.import job", () => {
     await compilePlaybookImport(db, importPayload, Buffer.from(await sourceDocx()));
 
     expect(audited("playbook.imported")).toEqual([]);
+  });
+
+  it("refuses a playbook too long for a known window to compile in one pass", async () => {
+    vi.stubEnv("MIKE_CONTEXT_WINDOW_TOKENS", "4096");
+    const { db, tables } = database([]);
+    tables.playbook_imports = [importRow()];
+    storage.downloadFile.mockResolvedValue(
+      await sourceDocx("Liability is capped at fees paid in the prior 12 months. ".repeat(40)),
+    );
+
+    await handlePlaybookImport(db, job("playbook.import", importPayload));
+
+    expect(completeText).not.toHaveBeenCalled();
+    expect(tables.playbook_imports[0]).toMatchObject({ status: "failed" });
+    expect(String(tables.playbook_imports[0].error)).toMatch(/too large to compile in one pass/);
+  });
+
+  it("compiles with the output cap a known window leaves", async () => {
+    vi.stubEnv("MIKE_CONTEXT_WINDOW_TOKENS", "16384");
+    const { db, tables } = database([]);
+    tables.playbook_imports = [importRow()];
+    storage.downloadFile.mockResolvedValue(await sourceDocx());
+    completeText.mockResolvedValue(compiled("Standards"));
+
+    await handlePlaybookImport(db, job("playbook.import", importPayload));
+
+    expect(tables.playbook_imports[0]).toMatchObject({ status: "completed" });
+    expect(completeText.mock.calls[0][0].maxTokens).toBe(8_192);
   });
 
   it("records a failed import with the stage it stopped at", async () => {
