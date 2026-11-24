@@ -20,6 +20,11 @@ import {
   updateGoogleWorkspaceSettings,
 } from "@/app/lib/mikeApi";
 import { reportFault, type Operation } from "@/app/lib/userFacingError";
+import { isNcAppMode } from "@/app/components/settings/ConnectorAppApi";
+import {
+  AppLinkCancelledError,
+  linkInApp,
+} from "@/app/components/settings/ConnectorAppLink";
 
 export type GoogleConnectorProvider = "google-drive" | GoogleWorkspaceProvider;
 
@@ -150,10 +155,61 @@ export function useGoogleConnector(
   }, []);
 
   /**
+   * Mike's NativeCluster app: no popup. The linking dialog gives the person
+   * Google's page as a link (it opens in their browser) and takes back the
+   * address the browser lands on (ConnectorAppLink.tsx).
+   */
+  const connectInApp = async () => {
+    const controller = new AbortController();
+    abortRef.current?.abort();
+    abortRef.current = controller;
+    let pending: string | null = null;
+    setPhase("adding");
+    try {
+      const { authorizationUrl } = await api.start();
+      pending = new URL(authorizationUrl).searchParams.get("state");
+      if (controller.signal.aborted)
+        throw new GoogleAuthorizationCancelledError();
+      setPhase("authorizing");
+      try {
+        await linkInApp(
+          { kind: "google", provider, name, authorizationUrl },
+          {
+            signal: controller.signal,
+            isLinked: async () => (await api.status()).connected,
+          },
+        );
+      } catch (error) {
+        if (error instanceof AppLinkCancelledError)
+          throw new GoogleAuthorizationCancelledError();
+        if (error instanceof Error && error.message)
+          throw new GoogleConnectorFlowError(error.message);
+        throw error;
+      }
+      pending = null;
+      return await refresh();
+    } finally {
+      if (pending) {
+        const state = pending;
+        await api.cancel(state).catch((error: unknown) => {
+          reportFault(error, {
+            action: "cancel the Google authorization",
+            operation: GOOGLE_OPERATIONS[provider],
+          });
+        });
+        await refresh().catch(() => undefined);
+      }
+      if (abortRef.current === controller) abortRef.current = null;
+      setPhase("idle");
+    }
+  };
+
+  /**
    * Opens Google's consent window and waits for the backend to record a new
    * grant.
    */
   const connect = async () => {
+    if (isNcAppMode()) return connectInApp();
     const controller = new AbortController();
     abortRef.current?.abort();
     abortRef.current = controller;
