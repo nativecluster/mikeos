@@ -1,0 +1,14 @@
+{
+  "name": "mike-nativecluster-launcher",
+  "private": true,
+  "description": "Mike's launcher inside NativeCluster: the ticket check, the front, and the stack (PGlite, PostgREST, the backend). Its own files are .mjs; local/ holds desktop/src/local's CommonJS schema step, staged by build/build.sh.",
+  "license": "AGPL-3.0-only",
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "0.6.0",
+    "@electric-sql/pglite-socket": "0.3.0",
+    "pg": "8.23.0"
+  }
+}
