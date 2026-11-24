@@ -262,6 +262,12 @@ export type AiSdkAdapterConfig = {
   keySource?: ProviderKeySource;
   /** Some protocol-compatible gateways reject reasoning request fields. */
   supportsReasoning?: boolean;
+  /**
+   * The provider's calls wait in a shared line before they start
+   * (NativeCluster): no provider deadline applies, only the caller's abort.
+   * See providerDeadlines.
+   */
+  untimed?: boolean;
   /** OpenAI's CourtListener tools require an extra instruction after use. */
   courtlistenerCitationReminder?: boolean;
   /** The provider's own web search tool. */
@@ -653,7 +659,12 @@ export async function streamAiSdk(
     const result = sdk.streamText({
       model: sdk.wrapLanguageModel({
         model: config.model,
-        middleware: [providerDeadlines(params.callbacks?.onActivity), quotaRefusalRetries()],
+        middleware: [
+          providerDeadlines(params.callbacks?.onActivity, {
+            untimed: config.untimed,
+          }),
+          quotaRefusalRetries(),
+        ],
       }),
       system: params.systemPrompt,
       messages: cacheHints.messages,

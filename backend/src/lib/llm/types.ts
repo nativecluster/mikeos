@@ -19,7 +19,8 @@ export type Provider =
     | "vertex"
     | "xai"
     | "custom"
-    | "ollama";
+    | "ollama"
+    | "nativecluster";
 
 export const REASONING_LEVELS = [
     "none",

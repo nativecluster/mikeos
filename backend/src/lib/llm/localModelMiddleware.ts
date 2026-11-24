@@ -285,14 +285,21 @@ function tolerantTransform(): TransformStream<StreamPart, StreamPart> {
 
 /**
  * Wrap a model whose tool calls cannot be trusted to arrive structured.
+ *
+ * `streamToolTurns` keeps tool-using turns streaming, for an endpoint that
+ * parses tool calls itself and streams each one whole (NativeCluster): its
+ * text is still filtered as it streams, and a call it left in prose is still
+ * recovered when the step ends.
  */
-export function localModelToleranceMiddleware(): LanguageModelMiddleware {
+export function localModelToleranceMiddleware(
+  options: { streamToolTurns?: boolean } = {},
+): LanguageModelMiddleware {
   return {
     async wrapStream({ doStream, doGenerate, params }) {
       // Tool-using turns go through the non-streaming endpoint: these models
       // interleave tool markup with prose, which cannot be reassembled
       // reliably from a partial stream.
-      if (params.tools?.length) {
+      if (params.tools?.length && !options.streamToolTurns) {
         const generated = await doGenerate();
         return { stream: replayAsStream(generated) };
       }

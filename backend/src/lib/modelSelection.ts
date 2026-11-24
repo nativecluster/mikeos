@@ -30,6 +30,10 @@ import {
     getConfiguredModel,
 } from "./llm/registry";
 import {
+    INFERENCE_ONLY_DETAIL,
+    inferenceOnlyProvider,
+} from "./llm/nativecluster";
+import {
     isRouterModelSelected,
     type RouterModelSelections,
 } from "./routerModels";
@@ -87,7 +91,23 @@ export function normalizeOptionalModelPreference(
 ): string | null {
     const resolved = resolveModel(value, "");
     if (!resolved || !isRouterModelSelected(resolved, routerModels)) return null;
+    // A model saved before MIKE_INFERENCE_PROVIDER was set reads as unset.
+    if (!isAllowedByInferenceProvider(resolved)) return null;
     return resolved;
+}
+
+/**
+ * Whether MIKE_INFERENCE_PROVIDER lets this model run: always, unless the
+ * deployment allows one provider only and the model is another's.
+ */
+export function isAllowedByInferenceProvider(model: string): boolean {
+    const onlyProvider = inferenceOnlyProvider();
+    if (!onlyProvider) return true;
+    try {
+        return providerForModel(model) === onlyProvider;
+    } catch {
+        return false;
+    }
 }
 
 /** Whether a resolved model can actually run with the user's current keys. */
@@ -96,8 +116,10 @@ export function hasApiKeyForModel(
     apiKeys: UserApiKeys,
 ): boolean {
     const provider = providerForModel(model);
+    if (!isAllowedByInferenceProvider(model)) return false;
     if (apiKeys.disabledProviders?.includes(provider)) return false;
-    if (provider === "ollama") return true;
+    // Local, on the deployment's own key: nothing for the user to add.
+    if (provider === "ollama" || provider === "nativecluster") return true;
     if (provider === "openai-compatible") {
         const configured = getConfiguredModel(model);
         return (
@@ -166,6 +188,14 @@ export async function resolveEffectiveChatModel(args: {
                 "throw",
                 args.orgId,
             );
+            if (!isAllowedByInferenceProvider(model)) {
+                return {
+                    ok: false,
+                    status: 422,
+                    code: "model_unavailable",
+                    detail: INFERENCE_ONLY_DETAIL,
+                };
+            }
             if (!hasApiKeyForModel(model, args.apiKeys)) {
                 if (args.apiKeys.disabledProviders?.includes(providerForModel(model))) {
                     return {
@@ -237,7 +267,7 @@ export function titleModelForChat(
     titleOverride?: string | null,
 ): string {
     const override = resolveModel(titleOverride, "");
-    if (override) return override;
+    if (override && isAllowedByInferenceProvider(override)) return override;
 
     const resolvedChatModel = resolveModel(chatModel, "");
     if (!resolvedChatModel) {
@@ -263,6 +293,7 @@ export function titleModelForChat(
         case "xai":
         case "custom":
         case "ollama":
+        case "nativecluster":
         case "openai-compatible":
             return resolvedChatModel;
     }

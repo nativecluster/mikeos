@@ -17,6 +17,15 @@ import {
 import { guardedFetch } from "../mcp/client";
 import { isBlockedDestinationError } from "../blockedDestination";
 import { localModelToleranceMiddleware } from "./localModelMiddleware";
+import {
+  INFERENCE_ONLY_DETAIL,
+  inferenceOnlyProvider,
+  nativeClusterApiKey,
+  nativeClusterBaseUrl,
+  nativeClusterModelInfo,
+  nativeClusterModelName,
+  nativeClusterRequestBody,
+} from "./nativecluster";
 import { ProviderConfigurationError, providerFailureResponse, type ProviderKeySource } from "./providerErrors";
 import {
   ACCOUNT_MODEL_LABELS,
@@ -648,6 +657,59 @@ function ollamaModelName(model: string): string {
   return tag || process.env.OLLAMA_MODEL?.trim() || "qwen3.6";
 }
 
+/**
+ * A model on the group's own Macs, through NativeCluster's Chat Completions
+ * endpoint. Its key is the deployment's (NATIVECLUSTER_API_KEY, or the file
+ * `nativecluster env` writes), read on every call. Calls wait in the
+ * cluster's line, so they are untimed; tool calls arrive structured and
+ * whole, so tool turns stream, with the local-model tolerance still applied
+ * to <think> prose and to a call written as text.
+ */
+async function createNativeClusterAdapter(
+  model: string,
+): Promise<AiSdkAdapterConfig> {
+  const apiKey = await nativeClusterApiKey();
+  if (!apiKey) {
+    log.warn(
+      tpl`[llm] NativeCluster's key is not configured. Set NATIVECLUSTER_API_KEY, or NATIVECLUSTER_ENV_FILE to the file \`nativecluster env\` prints.`,
+    );
+    throw new ProviderConfigurationError(
+      "NativeCluster is not set up for this Mike yet. Ask your administrator to connect it.",
+    );
+  }
+  const name = nativeClusterModelName(model);
+  // Unknown (the listing failed): send no thinking switch and no output
+  // ceiling, and let NativeCluster decide.
+  const info = await nativeClusterModelInfo(model);
+  const thinks = info?.capabilities.includes("thinking") === true;
+  const { createOpenAICompatible } = await import("@ai-sdk/openai-compatible");
+  const client = createOpenAICompatible({
+    name: "nativecluster",
+    apiKey,
+    baseURL: nativeClusterBaseUrl(),
+    includeUsage: true,
+    transformRequestBody: (body: Record<string, unknown>) =>
+      nativeClusterRequestBody(body, { thinks }),
+    fetch: aiSdkFetch,
+  });
+  const { wrapLanguageModel } = await import("ai");
+  const maxOutputTokens = info?.maxOutputTokens;
+  return {
+    provider: "nativecluster",
+    label: "NativeCluster",
+    model: wrapLanguageModel({
+      model: client(name),
+      middleware: localModelToleranceMiddleware({ streamToolTurns: true }),
+    }),
+    modelId: model,
+    keySource: "deployment",
+    // Mike's level becomes NativeCluster's `think` (nativeClusterRequestBody).
+    supportsReasoning: true,
+    untimed: true,
+    ...(maxOutputTokens ? { defaultMaxOutputTokens: () => maxOutputTokens } : {}),
+  };
+}
+
 export function ollamaAuthHeaders(): Record<string, string> {
   const key = process.env.OLLAMA_API_KEY?.trim();
   return key ? { Authorization: `Bearer ${key}` } : {};
@@ -667,6 +729,12 @@ async function buildProviderAdapter(
   apiKeys?: UserApiKeys,
 ): Promise<AiSdkAdapterConfig> {
   const provider = providerForModel(model);
+  // MIKE_INFERENCE_PROVIDER: the one provider any model call may reach,
+  // whatever path the model id came by.
+  const onlyProvider = inferenceOnlyProvider();
+  if (onlyProvider && provider !== onlyProvider) {
+    throw new ProviderConfigurationError(INFERENCE_ONLY_DETAIL);
+  }
   if (apiKeys?.disabledProviders?.includes(provider)) {
     throw new ProviderConfigurationError("This model provider is turned off. Turn it on in Settings → Bring Your Own Keys or select another model.");
   }
@@ -784,6 +852,8 @@ async function buildProviderAdapter(
   if (provider === "openai-compatible") {
     return createConfiguredAdapter(model, apiKeys);
   }
+
+  if (provider === "nativecluster") return createNativeClusterAdapter(model);
 
   const { createOpenAICompatible } = await import("@ai-sdk/openai-compatible");
   const ollama = createOpenAICompatible({

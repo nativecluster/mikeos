@@ -308,6 +308,7 @@ describe("a classified provider failure at the privacy boundary", () => {
       claude: true, gemini: true, openai: true, mistral: true, "openai-compatible": true,
       openrouter: true, vercel: true, "opencode-go": true, bedrock: true, azure: true,
       "azure-foundry": true, vertex: true, xai: true, custom: true, ollama: true,
+      nativecluster: true,
     };
     for (const provider of Object.keys(adapters)) {
       const wrapped = toProviderStreamError(apiCallError(403), { ...gemini, keySource: "user", provider });

@@ -1,6 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
     hasApiKeyForModel,
+    isAllowedByInferenceProvider,
     normalizeOptionalModelPreference,
     resolveEffectiveChatModel,
     resolveEffectiveReasoningLevel,
@@ -307,4 +308,99 @@ it("preserves a configured endpoint whose name is also a removed hosted model", 
         else process.env.MIKE_MODEL_CONFIG_JSON = previous;
         resetModelRegistryCache();
     }
+});
+
+describe("NativeCluster models", () => {
+    afterEach(() => {
+        vi.unstubAllEnvs();
+    });
+
+    it("need no key and title with the chat's own model", () => {
+        expect(hasApiKeyForModel("nativecluster/qwen3.8:27b", {})).toBe(true);
+        expect(titleModelForChat("nativecluster/qwen3.8:27b")).toBe(
+            "nativecluster/qwen3.8:27b",
+        );
+        expect(subagentModelFor("nativecluster/qwen3.8:27b", "light")).toBe(
+            "nativecluster/qwen3.8:27b",
+        );
+    });
+});
+
+describe("MIKE_INFERENCE_PROVIDER=nativecluster", () => {
+    const db = {} as Db;
+    const keys = { claude: "key", openai: "key", gemini: "key" };
+
+    beforeEach(() => {
+        vi.stubEnv("MIKE_INFERENCE_PROVIDER", "nativecluster");
+    });
+
+    afterEach(() => {
+        vi.unstubAllEnvs();
+    });
+
+    it("lets only NativeCluster's models run", () => {
+        expect(isAllowedByInferenceProvider("nativecluster/qwen3.8:27b")).toBe(true);
+        for (const model of [
+            "claude-sonnet-5-5",
+            "gpt-6-luna",
+            "ollama/llama3.2",
+            "openrouter/anthropic/claude-sonnet-4.5",
+            "not a model",
+        ]) {
+            expect(isAllowedByInferenceProvider(model)).toBe(false);
+        }
+        expect(hasApiKeyForModel("claude-sonnet-5-5", keys)).toBe(false);
+        expect(hasApiKeyForModel("ollama/llama3.2", keys)).toBe(false);
+        expect(hasApiKeyForModel("nativecluster/qwen3.8:27b", keys)).toBe(true);
+    });
+
+    it("refuses a requested hosted model, saying why", async () => {
+        await expect(
+            resolveEffectiveChatModel({
+                requested: "claude-sonnet-5-5",
+                apiKeys: keys,
+                userId: "user-1",
+                db,
+            }),
+        ).resolves.toMatchObject({
+            ok: false,
+            status: 422,
+            code: "model_unavailable",
+            detail: expect.stringContaining("NativeCluster"),
+        });
+    });
+
+    it("passes over saved hosted models for a saved NativeCluster one", async () => {
+        await expect(
+            resolveEffectiveChatModel({
+                chatModel: "claude-sonnet-5-5",
+                lastSelectedModel: "nativecluster/qwen3.8:27b",
+                apiKeys: keys,
+                userId: "user-1",
+                db,
+            }),
+        ).resolves.toMatchObject({
+            ok: true,
+            model: "nativecluster/qwen3.8:27b",
+            source: "last_selected",
+        });
+    });
+
+    it("reads a saved hosted preference as unset, and titles with the chat's model", () => {
+        expect(
+            normalizeOptionalModelPreference("claude-haiku-4-5", routerModels),
+        ).toBeNull();
+        expect(
+            normalizeOptionalModelPreference(
+                "nativecluster/gemma4:4b",
+                routerModels,
+            ),
+        ).toBe("nativecluster/gemma4:4b");
+        expect(
+            titleModelForChat("nativecluster/qwen3.8:27b", "claude-haiku-4-5"),
+        ).toBe("nativecluster/qwen3.8:27b");
+        expect(
+            titleModelForChat("nativecluster/qwen3.8:27b", "nativecluster/gemma4:4b"),
+        ).toBe("nativecluster/gemma4:4b");
+    });
 });

@@ -1,5 +1,6 @@
 import { abortable } from "../../lib/abortable";
 import { completeText, type UserApiKeys } from "../../lib/llm";
+import { isNativeClusterModel } from "../../lib/llm/nativecluster";
 import {
     providerFailureKind,
     providerFailureStatus,
@@ -131,14 +132,18 @@ export async function generateAssistantChatTitle(args: {
     if (args.abortSignal?.aborted) abort();
     else args.abortSignal?.addEventListener("abort", abort, { once: true });
     // A title is auxiliary: it must not hold turn persistence indefinitely.
-    const timer = setTimeout(
-        () =>
-            controller.abort(
-                new DOMException("Chat title timed out", "TimeoutError"),
-            ),
-        15_000,
-    );
-    timer.unref?.();
+    // A NativeCluster title waits in the cluster's line like any of its
+    // calls, so it is untimed there and ends only with the turn's abort.
+    const timer = isNativeClusterModel(args.model)
+        ? undefined
+        : setTimeout(
+              () =>
+                  controller.abort(
+                      new DOMException("Chat title timed out", "TimeoutError"),
+                  ),
+              15_000,
+          );
+    timer?.unref?.();
     try {
         controller.signal.throwIfAborted();
         const titleText = await abortable(

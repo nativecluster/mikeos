@@ -4,9 +4,23 @@ import type { LanguageModelMiddleware } from "ai" with {
 import { abortable } from "../abortable";
 import { streamChunkTimeouts } from "../runtimeConfig";
 
-/** Bound one provider call, including headers, without timing the SDK's tools. */
+/**
+ * How often an untimed call that is still open tells its run it is alive.
+ * Well inside the run's idle deadline (STREAM_IDLE_TIMEOUT_MS, 30 s at least).
+ */
+export const UNTIMED_CALL_HEARTBEAT_MS = 15_000;
+
+/**
+ * Bound one provider call, including headers, without timing the SDK's tools.
+ *
+ * `untimed` is for a provider whose calls wait in a shared line before they
+ * start (NativeCluster): no first-chunk or between-chunk deadline applies,
+ * and while the call is open its run is told it is alive, so only the
+ * person's own Stop (the abort signal) ends it.
+ */
 export function providerDeadlines(
   onActivity?: () => void,
+  options: { untimed?: boolean } = {},
 ): LanguageModelMiddleware {
   return {
     wrapStream: async ({ model, params }) => {
@@ -14,12 +28,27 @@ export function providerDeadlines(
       const controller = new AbortController();
       const forwardAbort = () => controller.abort(params.abortSignal?.reason);
       let timer: ReturnType<typeof setTimeout> | undefined;
+      let heartbeat: ReturnType<typeof setInterval> | undefined;
+      if (options.untimed && onActivity) {
+        // While NativeCluster holds a call in its line it sends only SSE
+        // comments, which never reach this stream as parts.
+        heartbeat = setInterval(onActivity, UNTIMED_CALL_HEARTBEAT_MS);
+        heartbeat.unref?.();
+        // A stopped call is not alive, whether or not its stream is read again.
+        controller.signal.addEventListener(
+          "abort",
+          () => clearInterval(heartbeat),
+          { once: true },
+        );
+      }
       const cleanup = () => {
         clearTimeout(timer);
+        clearInterval(heartbeat);
         params.abortSignal?.removeEventListener("abort", forwardAbort);
       };
       const arm = (label: string, ms: number) => {
         clearTimeout(timer);
+        if (options.untimed) return;
         timer = setTimeout(
           () =>
             controller.abort(

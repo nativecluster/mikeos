@@ -1,3 +1,4 @@
+import { isNativeClusterModel } from "./nativecluster";
 import { getConfiguredModel } from "./registry";
 import { REASONING_LEVELS, type Provider, type ReasoningLevel } from "./types";
 
@@ -85,6 +86,8 @@ export function reasoningLevelsForModel(
     if (/(?:^|\/)mistral-(?:large-4|medium-3-5|small-2603)$/.test(catalogId)) {
         return ["none", "high"];
     }
+    // NativeCluster takes thinking as on or off (its `think` field).
+    if (isNativeClusterModel(model)) return ["none", "high"];
     return STANDARD_REASONING_LEVELS;
 }
 
@@ -186,6 +189,7 @@ export function providerForModel(model: string): Provider {
     const configured = getConfiguredModel(model);
     if (configured) return configured.provider;
     if (model.startsWith("ollama")) return "ollama";
+    if (model.startsWith("nativecluster/")) return "nativecluster";
     if (model.startsWith("openrouter/")) return "openrouter";
     if (model.startsWith("vercel/")) return "vercel";
     if (model.startsWith("opencode-go/")) return "opencode-go";
@@ -328,6 +332,12 @@ export function isSafeAccountModel(model: string): boolean {
     );
 }
 
+// "nativecluster/" and the model's id at NativeCluster ("qwen3.8:27b"). The
+// id travels in the request body, never a URL, but is still held to a plain
+// shape because it is stored and shown.
+const NATIVECLUSTER_MODEL_ID_RE =
+    /^nativecluster\/[A-Za-z0-9][A-Za-z0-9._:@+-]*(?:\/[A-Za-z0-9][A-Za-z0-9._:@+-]*)*$/;
+
 export function resolveModel(
     id: string | null | undefined,
     fallback: string,
@@ -347,6 +357,8 @@ export function resolveModel(
             // OpenCode Go's catalog ids are single-segment ("glm-5"), not the
             // vendor/model pairs OpenRouter and Vercel publish.
             /^opencode-go\/[^\s]+$/.test(canonical) ||
+            // NativeCluster's ids are read live from its /v1/models.
+            NATIVECLUSTER_MODEL_ID_RE.test(canonical) ||
             // Bedrock and Vertex model ids, Azure deployment names and the
             // models behind a custom endpoint are account-specific, and xAI's
             // catalog is read live, so those are accepted by shape too — but

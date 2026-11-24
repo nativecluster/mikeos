@@ -106,6 +106,23 @@ describe("generateAssistantChatTitle", () => {
         expect(vi.getTimerCount()).toBe(0);
     });
 
+    it("waits for a NativeCluster title as long as the cluster's line takes", async () => {
+        vi.useFakeTimers();
+        let answer!: (title: string) => void;
+        completeText.mockImplementation(
+            () => new Promise<string>((resolve) => (answer = resolve)),
+        );
+        const pending = generateAssistantChatTitle({
+            model: "nativecluster/qwen3.8:27b",
+            message: "Hello",
+        });
+        await vi.advanceTimersByTimeAsync(10 * 60_000);
+        expect(completeText.mock.calls[0][0].abortSignal.aborted).toBe(false);
+        answer("Lease Review");
+        await expect(pending).resolves.toBe("Lease Review");
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
     it("releases a pending title immediately on user Stop", async () => {
         vi.useFakeTimers();
         completeText.mockImplementation(() => new Promise(() => {}));
