@@ -3,7 +3,9 @@
 // index.ts starts a server and registers signal handlers at import time and
 // so cannot be exercised by a unit test.
 
+import { chmodSync, lstatSync, unlinkSync } from "node:fs";
 import type { Server } from "node:http";
+import { connect } from "node:net";
 import { flushSentry, reportError } from "./observability/sentry";
 
 export interface LifecycleEffects {
@@ -53,6 +55,53 @@ interface Listenable {
 }
 
 /**
+ * The unix socket a PORT names, or null for a TCP port. A PORT that is not a
+ * number is a path (Node's own reading of listen()): inside NativeCluster's
+ * sandbox the backend may not open a TCP port, and listens on
+ * `<NC_APP_SOCKETS>/api.sock` instead.
+ */
+export function unixSocketPath(port: number | string): string | null {
+  if (typeof port !== "string") return null;
+  const value = port.trim();
+  return value && !/^\d+$/.test(value) ? value : null;
+}
+
+export type StaleSocketOutcome = "absent" | "removed" | "live" | "not-a-socket";
+
+/**
+ * Clear the way for a listen on `path`: a socket file no process answers on
+ * (left by a backend that was killed) is removed. A live one is left alone,
+ * so the listen fails with EADDRINUSE rather than taking another backend's
+ * socket; so is anything that is not a socket.
+ */
+export async function removeStaleSocket(path: string): Promise<StaleSocketOutcome> {
+  let isSocket: boolean;
+  try {
+    isSocket = lstatSync(path).isSocket();
+  } catch {
+    return "absent";
+  }
+  if (!isSocket) return "not-a-socket";
+  const live = await new Promise<boolean>((resolve) => {
+    const probe = connect({ path });
+    const done = (answer: boolean) => {
+      probe.destroy();
+      resolve(answer);
+    };
+    probe.setTimeout(1_000, () => done(true));
+    probe.once("connect", () => done(true));
+    probe.once("error", () => done(false));
+  });
+  if (live) return "live";
+  try {
+    unlinkSync(path);
+  } catch {
+    // Gone meanwhile: as good as removed.
+  }
+  return "removed";
+}
+
+/**
  * Bind the HTTP port, failing the boot when binding fails.
  *
  * Express 5 hands a listen error (EADDRINUSE, EACCES) to the listen callback
@@ -60,6 +109,11 @@ interface Listenable {
  * that bound nothing yet logged "running", started its workers and stayed up
  * until someone stopped it — at which point closing the never-opened server
  * failed with ERR_SERVER_NOT_RUNNING and was filed as a shutdown error.
+ *
+ * A PORT that names a unix socket (unixSocketPath) is bound with HOST
+ * ignored, and the socket is made readable and writable by this user alone
+ * (0600) before anything is told it listens: created under a 0177 umask, then
+ * set again explicitly.
  */
 export function listenOrFail(
   app: Listenable,
@@ -68,13 +122,31 @@ export function listenOrFail(
   effects: LifecycleEffects = processEffects,
   host?: string,
 ): Server {
+  const socketPath = unixSocketPath(port);
   const onListen = (error?: Error) => {
     if (error) {
       void failBoot(error, "listen", effects);
       return;
     }
+    if (socketPath) {
+      try {
+        chmodSync(socketPath, 0o600);
+      } catch (chmodError) {
+        void failBoot(chmodError, "listen", effects);
+        return;
+      }
+    }
     onListening();
   };
+  if (socketPath) {
+    // The bind happens inside listen(), synchronously: the umask covers it.
+    const previous = process.umask(0o177);
+    try {
+      return app.listen(socketPath, onListen);
+    } finally {
+      process.umask(previous);
+    }
+  }
   return host ? app.listen(port, host, onListen) : app.listen(port, onListen);
 }
 

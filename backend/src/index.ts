@@ -25,6 +25,8 @@ import {
   createShutdown,
   failBoot,
   listenOrFail,
+  removeStaleSocket,
+  unixSocketPath,
 } from "./lib/processLifecycle";
 import { log, tpl } from "./lib/log";
 import { listNativeClusterModels } from "./lib/llm/nativecluster";
@@ -165,6 +167,13 @@ async function main(): Promise<void> {
   // turn knows its model's window (contextWindowFor). A no-op unless
   // NativeCluster is configured; it never delays or fails the boot.
   void listNativeClusterModels();
+
+  // PORT=<path>: a unix socket (NativeCluster's sandbox allows no TCP port).
+  // A socket a killed backend left behind is cleared first.
+  const socketPath = unixSocketPath(PORT);
+  if (socketPath && (await removeStaleSocket(socketPath)) === "removed") {
+    log.info("startup", "removed a stale socket before listening");
+  }
 
   server = listenOrFail(
     app,
