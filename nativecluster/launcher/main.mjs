@@ -175,6 +175,14 @@ function waitReady(ms) {
   });
 }
 
+function waitAppReady(ms) {
+  return new Promise((resolve) => {
+    const deadline = Date.now() + ms;
+    const check = () => (appReady() || failure() || Date.now() > deadline ? resolve(appReady()) : setTimeout(check, 100));
+    check();
+  });
+}
+
 async function route(req, res, ticket, r) {
   switch (r.kind) {
     case "healthz":
@@ -215,6 +223,9 @@ async function route(req, res, ticket, r) {
       return proxyRequest(req, res, { socketPath: stack.paths.apiSocket, path: r.backendPath, headers, onError: (e) => log.warn(`api request failed: ${e.code ?? e.message}`) });
     }
     case "next": {
+      // A page waits a few seconds for the stack (a start takes 2 to 5 s), so
+      // the Starting page shows only for a slow one.
+      if (!appReady() && stack?.state.phase === "starting") await waitAppReady(8000);
       if (!appReady()) {
         const why = failure();
         if (req.method !== "GET" && req.method !== "HEAD") return send(res, 503, why ? "Mike could not start.\n" : "Mike is starting.\n", "text/plain; charset=utf-8", why ? {} : { "retry-after": "2" });

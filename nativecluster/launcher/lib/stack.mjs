@@ -139,7 +139,7 @@ export function createStack({ pkgDir, dataDir, socketsDir, hostSocket, credentia
     }
   }
 
-  function startChild(name, file, args, { env, cwd, stdin = "ignore", onExit } = {}) {
+  function startChild(name, file, args, { env, cwd, stdin = "ignore", onExit, oneShot = false } = {}) {
     const fd = openLogFd(logDir, name);
     let proc;
     try {
@@ -155,7 +155,7 @@ export function createStack({ pkgDir, dataDir, socketsDir, hostSocket, credentia
     });
     proc.on("exit", (code, signal) => {
       c.exit = { code, signal };
-      if (!stopping) log.warn(`${name} exited (code ${code}${signal ? `, signal ${signal}` : ""})`);
+      if (!stopping && !(oneShot && code === 0)) log.warn(`${name} exited (code ${code}${signal ? `, signal ${signal}` : ""})`);
       onExit?.(code, signal);
     });
     if (proc.stdin) proc.stdin.on("error", () => {}); // a child gone mid-write
@@ -167,6 +167,7 @@ export function createStack({ pkgDir, dataDir, socketsDir, hostSocket, credentia
       const c = startChild(name, file, args, {
         env,
         cwd,
+        oneShot: true,
         onExit: (code, signal) => {
           clearTimeout(timer);
           if (code === 0) resolve();
