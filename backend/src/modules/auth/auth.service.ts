@@ -20,10 +20,6 @@ import {
 } from "./auth.messages";
 import type { Session, SupabaseClient, User } from "@supabase/supabase-js";
 import { consumeAuthHandoff, issueAuthHandoff } from "../../lib/authHandoff";
-import {
-  claimAccountForPerson,
-  type AccountPersonCheck,
-} from "../../lib/authPersonBinding";
 import type { Db } from "../../lib/supabase";
 import { supabaseSessionConfiguration } from "../../lib/runtimeConfig";
 import { ssoConfiguration } from "../../lib/ssoConfig";
@@ -114,10 +110,6 @@ export const verificationSchema = factorSchema.extend({
   challengeId: z.string().uuid().optional(),
 });
 export const friendlyNameSchema = z.string().trim().min(1).max(100);
-
-export const refreshSchema = z.object({
-  refresh_token: z.string().trim().min(1).max(4096),
-});
 
 export type Credentials = z.infer<typeof credentialsSchema>;
 
@@ -249,33 +241,6 @@ export async function currentUser(
 
 export function signOut(client: SupabaseClient, scope: "global" | "local") {
   return client.auth.signOut({ scope });
-}
-
-/** The NativeCluster app's refresh: the browser keeps the refresh token. */
-export function refreshAppSession(client: SupabaseClient, refreshToken: string) {
-  return client.auth.refreshSession({ refresh_token: refreshToken });
-}
-
-/**
- * The NativeCluster app's second key: bind the account to the NativeCluster
- * person signing in with it, or refuse them if it is someone else's.
- */
-export function bindAccountToPerson(
-  db: Db,
-  userId: string,
-  person: string,
-): Promise<AccountPersonCheck> {
-  return claimAccountForPerson(db, userId, person);
-}
-
-/**
- * End a session the app just made for an account it then refused, so no
- * refresh token for it is left anywhere. Best effort: the browser never
- * received it.
- */
-export async function revokeAppSession(db: Db, accessToken: string) {
-  const { error } = await db.auth.admin.signOut(accessToken, "local");
-  return { error };
 }
 
 export function updateEmail(
@@ -416,17 +381,16 @@ export async function signInOptions(
   db: Db,
   fetchImpl: typeof fetch = fetch,
 ): Promise<SignInOptions> {
-  // The NativeCluster app offers email and password alone: Google refuses
-  // embedded web views, and its redirects (like SSO's) need an origin fixed
-  // in advance, where the app's differs per computer.
-  const appMode = ncAppMode();
+  // NativeCluster is the only sign-in in the NativeCluster app: nothing to
+  // offer, and nothing to ask GoTrue, which does not run there.
+  if (ncAppMode()) return { google: false, sso: false, setupRequired: false, signup: false };
   const [google, setupRequired] = await Promise.all([
-    appMode ? false : googleSignInEnabled(fetchImpl),
+    googleSignInEnabled(fetchImpl),
     instanceSetupAvailable(db),
   ]);
   return {
     google,
-    sso: !appMode && ssoConfiguration().enabled,
+    sso: ssoConfiguration().enabled,
     setupRequired,
     signup: emailSignupOpen(),
   };

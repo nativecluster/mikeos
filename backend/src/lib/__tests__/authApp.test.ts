@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  appAccessToken,
   ncAppMode,
+  ncPersonEmailOf,
+  ncPersonNameOf,
   ncPersonOf,
   requestOriginIsAllowed,
   requestOriginIsAppOwn,
@@ -33,15 +34,15 @@ describe("NativeCluster app mode", () => {
     expect(ncPersonOf(headers({ "X-NC-Person": "p_a,p_b" }))).toBe("");
   });
 
-  it("takes the access token from X-Mike-Session first, then a Bearer Authorization", () => {
-    expect(appAccessToken(headers({ "X-Mike-Session": "jwt-a" }))).toBe("jwt-a");
-    expect(appAccessToken(headers({ "X-Mike-Session": "Bearer jwt-a" }))).toBe("jwt-a");
-    expect(
-      appAccessToken(headers({ "X-Mike-Session": "jwt-a", Authorization: "Bearer jwt-b" })),
-    ).toBe("jwt-a");
-    expect(appAccessToken(headers({ Authorization: "Bearer jwt-b" }))).toBe("jwt-b");
-    expect(appAccessToken(headers({ Authorization: "Basic abc" }))).toBe("");
-    expect(appAccessToken(headers({}))).toBe("");
+  it("reads the person's email and name when NativeCluster gives them", () => {
+    expect(ncPersonEmailOf(headers({ "X-NC-Person-Email": " Alice@Firm.Example " }))).toBe(
+      "alice@firm.example",
+    );
+    expect(ncPersonEmailOf(headers({ "X-NC-Person-Email": "not an email" }))).toBe("");
+    expect(ncPersonEmailOf(headers({}))).toBe("");
+    expect(ncPersonNameOf(headers({ "X-NC-Person-Name": " Alice Example " }))).toBe("Alice Example");
+    expect(ncPersonNameOf(headers({ "X-NC-Person-Name": "x".repeat(300) }))).toHaveLength(200);
+    expect(ncPersonNameOf(headers({}))).toBe("");
   });
 });
 

@@ -7,16 +7,12 @@ import { requestOriginIsTrusted } from "./origins";
  * own computer and shows its pages in its own app window, at an origin of the
  * app's own (`https://127.0.0.1:<port>`, a port that differs per computer).
  *
- * Three facts of that host shape every rule here:
- * - it drops every Set-Cookie the app sends, so a Mike session cannot live
- *   in a cookie: the pages keep it in localStorage and present it on every
- *   request;
- * - it reads `Authorization: Bearer` as a NativeCluster session of its own
- *   and removes it before the request reaches the app, so the pages present
- *   Mike's access token in `X-Mike-Session` instead;
- * - the launcher names the NativeCluster person signed in to the window in
- *   `X-NC-Person` (after its ticket check, any incoming copy stripped), and
- *   each Mike account is bound to the person who first signed in with it.
+ * NativeCluster is Mike's only sign-in there. The launcher checks the host's
+ * ticket on every request and names the person in `X-NC-Person` (and, with
+ * the manifest's people.read, their email and name), any incoming copy
+ * stripped first; the backend answers only requests carrying the launcher's
+ * internal secret. Mike keeps one account per person (lib/authNcPeople.ts):
+ * no Mike password, session, cookie or token, and GoTrue does not run.
  *
  * Unset, none of this applies and every deployment behaves as before.
  */
@@ -26,11 +22,12 @@ export function ncAppMode(env: NodeJS.ProcessEnv = process.env): boolean {
 
 /** The NativeCluster person the launcher names, `p_…`, or empty for nobody. */
 export const NC_PERSON_HEADER = "x-nc-person";
-
-/** Where the app's pages present Mike's access token (see above). */
-export const APP_SESSION_HEADER = "x-mike-session";
+/** Their email and name, sent only when the manifest asks people.read. */
+export const NC_PERSON_EMAIL_HEADER = "x-nc-person-email";
+export const NC_PERSON_NAME_HEADER = "x-nc-person-name";
 
 const NC_PERSON_PATTERN = /^p_[A-Za-z0-9._-]{1,128}$/;
+const EMAIL_PATTERN = /^[^@\s]+@[^@\s]+$/;
 
 type HeaderSource = Pick<Request, "get">;
 
@@ -43,16 +40,15 @@ export function ncPersonOf(req: HeaderSource): string {
   return NC_PERSON_PATTERN.test(value) ? value : "";
 }
 
-/**
- * The Mike access token an app-mode request presents: `X-Mike-Session`
- * first (the app's pages), else a Bearer Authorization (an API client the
- * launcher lets through, or a test). Empty when there is none.
- */
-export function appAccessToken(req: HeaderSource): string {
-  const presented = req.get(APP_SESSION_HEADER)?.trim();
-  if (presented) return presented.replace(/^Bearer\s+/i, "").trim();
-  const authorization = req.get("authorization") ?? "";
-  return authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
+/** The person's email from NativeCluster, lowercased, or "" without one. */
+export function ncPersonEmailOf(req: HeaderSource): string {
+  const value = req.get(NC_PERSON_EMAIL_HEADER)?.trim().toLowerCase() ?? "";
+  return value.length <= 320 && EMAIL_PATTERN.test(value) ? value : "";
+}
+
+/** The person's name from NativeCluster, or "" without one. */
+export function ncPersonNameOf(req: HeaderSource): string {
+  return (req.get(NC_PERSON_NAME_HEADER) ?? "").trim().slice(0, 200);
 }
 
 /**

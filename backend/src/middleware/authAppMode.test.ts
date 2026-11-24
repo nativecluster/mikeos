@@ -1,145 +1,136 @@
-// requireAuth in the NativeCluster app (MIKE_NC_APP=1): no cookies, the
-// access token in X-Mike-Session, and two keys, Mike's account AND the
-// NativeCluster person the launcher names in X-NC-Person.
+// requireAuth in the NativeCluster app (MIKE_NC_APP=1): NativeCluster is the
+// only sign-in. The person the launcher names in X-NC-Person is the caller,
+// as the Mike account nc_ensure_user keeps for them; nothing reaches GoTrue.
 
 import express from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  rpc: vi.fn(),
   getUser: vi.fn(),
+  assurance: vi.fn(),
   createRequestSupabase: vi.fn(),
-  clearRequestAuthCookies: vi.fn(),
-  bindings: new Map<string, string>(),
 }));
 vi.mock("../lib/log", () => ({ devLog: vi.fn(), isDev: false, log: { warn: vi.fn() } }));
 vi.mock("../lib/userLookup", () => ({ syncProfileEmail: async () => null }));
 vi.mock("../lib/authSession", () => ({
   createRequestSupabase: mocks.createRequestSupabase,
-  clearRequestAuthCookies: mocks.clearRequestAuthCookies,
+  clearRequestAuthCookies: vi.fn(),
 }));
 vi.mock("../lib/supabase", () => ({
   createServerSupabase: () => ({
-    auth: { getUser: mocks.getUser, mfa: { getAuthenticatorAssuranceLevel: vi.fn() } },
-    from: (table: string) => {
-      let userId = "";
-      const query = {
-        select: () => query,
-        eq: (_column: string, value: string) => {
-          userId = value;
-          return query;
-        },
-        maybeSingle: async () => {
-          if (table !== "nativecluster_account_people") return { data: null, error: null };
-          const person = mocks.bindings.get(userId);
-          return { data: person ? { nc_person: person } : null, error: null };
-        },
-        upsert: async (row: { user_id: string; nc_person: string }) => {
-          if (!mocks.bindings.has(row.user_id)) mocks.bindings.set(row.user_id, row.nc_person);
-          return { error: null };
-        },
-      };
-      return query;
+    rpc: mocks.rpc,
+    auth: { getUser: mocks.getUser, mfa: { getAuthenticatorAssuranceLevel: mocks.assurance } },
+    from: () => {
+      throw new Error("requireAuth reads no table in the app");
     },
   }),
 }));
 
-import { requireAuth } from "./auth";
-import { resetAccountPersonCache } from "../lib/authPersonBinding";
+import { requireAuth, requireMfaIfEnrolled } from "./auth";
+import { resetNcPersonAccounts } from "../lib/authNcPeople";
 
 const app = express();
 app.get("/projects", requireAuth, (_req, res) =>
-  res.json({ userId: res.locals.userId, source: res.locals.authSource }),
+  res.json({
+    userId: res.locals.userId,
+    userEmail: res.locals.userEmail,
+    source: res.locals.authSource,
+  }),
 );
-app.post("/projects", requireAuth, (_req, res) => res.json({ ok: true }));
-
-const user = {
-  id: "user-1",
-  email: "lawyer@example.test",
-  email_confirmed_at: "2026-11-24T00:00:00Z",
-};
+app.post("/user/api-keys", requireAuth, requireMfaIfEnrolled, (_req, res) => res.json({ ok: true }));
 
 describe("requireAuth in the NativeCluster app", () => {
   beforeEach(() => {
     process.env.MIKE_NC_APP = "1";
-    mocks.bindings.clear();
-    resetAccountPersonCache();
-    mocks.getUser.mockReset().mockImplementation(async (token: string) =>
-      token === "good-token"
-        ? { data: { user }, error: null }
-        : { data: { user: null }, error: null },
-    );
+    resetNcPersonAccounts();
+    mocks.rpc
+      .mockReset()
+      .mockImplementation(async (_name: string, args: { p_person: string; p_email: string | null }) => ({
+        data: [
+          {
+            user_id: `user-of-${args.p_person}`,
+            email: args.p_email ?? `${args.p_person}@people.invalid`,
+          },
+        ],
+        error: null,
+      }));
+    mocks.getUser.mockReset();
+    mocks.assurance.mockReset();
+    mocks.createRequestSupabase.mockReset();
   });
   afterEach(() => {
     delete process.env.MIKE_NC_APP;
   });
 
-  it("takes the session from X-Mike-Session and binds the account on its first use", async () => {
+  it("is the person the launcher names, as their Mike account", async () => {
     const response = await request(app)
       .get("/projects")
-      .set("X-Mike-Session", "good-token")
-      .set("X-NC-Person", "p_alice");
+      .set("X-NC-Person", "p_alice")
+      .set("X-NC-Person-Email", "Alice@Firm.Example")
+      .set("X-NC-Person-Name", "Alice Example");
     expect(response.status).toBe(200);
-    expect(response.body).toEqual({ userId: "user-1", source: "app" });
-    expect(mocks.getUser).toHaveBeenCalledWith("good-token");
-    expect(mocks.bindings.get("user-1")).toBe("p_alice");
+    expect(response.body).toEqual({
+      userId: "user-of-p_alice",
+      userEmail: "alice@firm.example",
+      source: "nativecluster",
+    });
+    expect(mocks.rpc).toHaveBeenCalledWith("nc_ensure_user", {
+      p_person: "p_alice",
+      p_email: "alice@firm.example",
+      p_name: "Alice Example",
+    });
   });
 
-  it("refuses a Mike session presented under another NativeCluster person", async () => {
-    mocks.bindings.set("user-1", "p_alice");
-    const response = await request(app)
-      .get("/projects")
-      .set("X-Mike-Session", "good-token")
-      .set("X-NC-Person", "p_bob");
-    expect(response.status).toBe(403);
-    expect(response.body.code).toBe("nc_person_mismatch");
-    expect(response.body.detail).toMatch(/another NativeCluster person on this computer/);
+  it("uses <person>@people.invalid without people.read", async () => {
+    const response = await request(app).get("/projects").set("X-NC-Person", "p_bob");
+    expect(response.body.userEmail).toBe("p_bob@people.invalid");
   });
 
-  it("refuses a Mike session when nobody is signed in to NativeCluster", async () => {
-    mocks.bindings.set("user-1", "p_alice");
-    const response = await request(app)
-      .get("/projects")
-      .set("X-Mike-Session", "good-token")
-      .set("X-NC-Person", "");
-    expect(response.status).toBe(403);
-    expect(response.body.code).toBe("nc_person_required");
+  it("refuses everyone while nobody is signed in to NativeCluster", async () => {
+    for (const person of ["", "lawyer@example.test"]) {
+      const response = await request(app).get("/projects").set("X-NC-Person", person);
+      expect(response.status).toBe(403);
+      expect(response.body).toEqual({
+        code: "nc_person_required",
+        detail: "Sign in to NativeCluster to use Mike.",
+      });
+    }
+    expect(mocks.rpc).not.toHaveBeenCalled();
   });
 
-  it("never reads a cookie: without a token it is a 401", async () => {
+  it("never asks GoTrue, and takes no token or cookie as anyone", async () => {
     const response = await request(app)
       .get("/projects")
+      .set("Authorization", "Bearer someone-elses-token")
       .set("Cookie", "mike-session=stale")
       .set("X-NC-Person", "p_alice");
-    expect(response.status).toBe(401);
+    expect(response.body.userId).toBe("user-of-p_alice");
+    expect(mocks.getUser).not.toHaveBeenCalled();
     expect(mocks.createRequestSupabase).not.toHaveBeenCalled();
-    expect(mocks.clearRequestAuthCookies).not.toHaveBeenCalled();
   });
 
-  it("needs no Origin for a write: the token is the proof, not a cookie", async () => {
-    const response = await request(app)
-      .post("/projects")
-      .set("X-Mike-Session", "good-token")
-      .set("X-NC-Person", "p_alice");
+  it("puts no Mike MFA in front of sensitive routes", async () => {
+    const response = await request(app).post("/user/api-keys").set("X-NC-Person", "p_alice");
     expect(response.status).toBe(200);
+    expect(mocks.assurance).not.toHaveBeenCalled();
   });
 
-  it("answers a token GoTrue does not know with a 401 the client refreshes on", async () => {
+  it("fails closed when the account cannot be made", async () => {
+    mocks.rpc.mockResolvedValue({ data: null, error: { code: "42883", message: "no function" } });
+    const response = await request(app).get("/projects").set("X-NC-Person", "p_alice");
+    expect(response.status).toBe(500);
+  });
+
+  it("leaves other deployments' sessions alone", async () => {
+    delete process.env.MIKE_NC_APP;
+    mocks.getUser.mockResolvedValue({ data: { user: null }, error: null });
     const response = await request(app)
       .get("/projects")
-      .set("X-Mike-Session", "expired-token")
+      .set("Authorization", "Bearer token")
       .set("X-NC-Person", "p_alice");
     expect(response.status).toBe(401);
-    expect(mocks.bindings.size).toBe(0);
-  });
-
-  it("leaves other deployments' Bearer path and person-less requests alone", async () => {
-    delete process.env.MIKE_NC_APP;
-    const response = await request(app)
-      .get("/projects")
-      .set("Authorization", "Bearer good-token");
-    expect(response.status).toBe(200);
-    expect(response.body.source).toBeUndefined();
-    expect(mocks.bindings.size).toBe(0);
+    expect(mocks.rpc).not.toHaveBeenCalled();
   });
 });
