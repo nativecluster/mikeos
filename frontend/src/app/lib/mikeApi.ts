@@ -21,9 +21,7 @@ export type {
 
 /**
  * Mike API client — all browser requests use the same-origin `/api` gateway.
- * Authentication is carried by the backend-managed HttpOnly cookie, or in the
- * NativeCluster app (no cookies there) by the session lib/appSession.ts keeps,
- * which authenticatedFetch presents on every call.
+ * Authentication is carried only by the backend-managed HttpOnly cookie.
  */
 
 import { isPanelDocument } from "@/app/components/shared/types";

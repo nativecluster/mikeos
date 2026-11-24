@@ -59,21 +59,4 @@ describe("useSignInOptions", () => {
         await waitFor(() => expect(result.current.loaded).toBe(true));
         expect(result.current.options).toEqual(DEFAULT_SIGN_IN_OPTIONS);
     });
-
-    it("offers no Google or SSO in the NativeCluster app, whatever is answered", async () => {
-        vi.stubEnv("NEXT_PUBLIC_MIKE_NC_APP", "1");
-        getSignInOptions.mockResolvedValue({ google: true, sso: true, setupRequired: false, signup: true });
-        const { result } = renderHook(() => useSignInOptions());
-        // Known from the first render, so no button is drawn and removed.
-        expect(result.current.providersKnown).toBe(true);
-        expect(result.current.options).toMatchObject({ google: false, sso: false });
-        await waitFor(() => expect(result.current.loaded).toBe(true));
-        expect(result.current.options).toEqual({ google: false, sso: false, setupRequired: false, signup: true });
-
-        getSignInOptions.mockRejectedValue(new Error("offline"));
-        const failed = renderHook(() => useSignInOptions());
-        await waitFor(() => expect(failed.result.current.loaded).toBe(true));
-        expect(failed.result.current.options).toMatchObject({ google: false, sso: false });
-        vi.unstubAllEnvs();
-    });
 });

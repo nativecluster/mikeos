@@ -1,5 +1,4 @@
 import { backendOrigin } from "@/app/lib/backendOrigin";
-import { isNcApp } from "@/app/lib/ncApp";
 
 /** Which provider buttons the sign-in screens should draw in their first paint. */
 export interface SignInProviderHint {
@@ -22,9 +21,6 @@ export const SIGN_IN_PROVIDER_HINT_TTL_SECONDS = 60;
  * stale answer for those would redirect, not merely draw a button.
  */
 export async function readSignInProviderHint(): Promise<SignInProviderHint | null> {
-    // The NativeCluster app offers email and password alone (its backend
-    // answers on a socket this server cannot fetch, and says the same).
-    if (isNcApp()) return { google: false, sso: false };
     try {
         const response = await fetch(`${backendOrigin()}/auth/options`, {
             next: { revalidate: SIGN_IN_PROVIDER_HINT_TTL_SECONDS },

@@ -49,11 +49,4 @@ describe("readSignInProviderHint", () => {
         await expect(readSignInProviderHint()).resolves.toBeNull();
         expect(fetchMock).not.toHaveBeenCalled();
     });
-
-    it("draws no provider in the NativeCluster app, and asks nothing", async () => {
-        // Its backend answers on a socket this server cannot fetch.
-        vi.stubEnv("NEXT_PUBLIC_MIKE_NC_APP", "1");
-        await expect(readSignInProviderHint()).resolves.toEqual({ google: false, sso: false });
-        expect(fetchMock).not.toHaveBeenCalled();
-    });
 });

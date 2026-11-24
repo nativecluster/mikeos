@@ -18,10 +18,7 @@ import {
     updateAuthPassword,
     type AuthUser,
 } from "@/app/lib/authApi";
-import {
-    AUTH_SESSION_INVALIDATED_EVENT,
-    type AuthSessionInvalidatedDetail,
-} from "@/app/lib/authEvents";
+import { AUTH_SESSION_INVALIDATED_EVENT } from "@/app/lib/authEvents";
 import { setReportingUser } from "@/app/lib/errorReporting";
 import {
     describeError,
@@ -279,13 +276,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 // Ignore unrelated or malformed storage values.
             }
         };
-        const onInvalidated = (event: Event) => {
-            // The NativeCluster app says why when it is not an expiry
-            // (another person's Mike account): lib/authEvents.ts.
-            const detail = (event as CustomEvent<AuthSessionInvalidatedDetail>)
-                .detail;
+        const onInvalidated = () => {
             applySessionUser(null);
-            setAuthError(detail?.message || EXPIRED_SESSION_MESSAGE);
+            setAuthError(EXPIRED_SESSION_MESSAGE);
             setAuthLoading(false);
             broadcastAuthState("signed-out");
         };
