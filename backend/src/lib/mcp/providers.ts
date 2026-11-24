@@ -138,6 +138,11 @@ function normalizedHostname(serverUrl: string | URL): string | null {
     }
 }
 
+/** Every provider with quirks, in table order. */
+export function mcpOAuthProviders(): readonly McpOAuthProviderQuirks[] {
+    return PROVIDERS;
+}
+
 export function mcpOAuthProviderFor(
     serverUrl: string | URL,
 ): McpOAuthProviderQuirks | null {

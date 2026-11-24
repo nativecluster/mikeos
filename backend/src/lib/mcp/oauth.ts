@@ -30,7 +30,11 @@ import {
     sealHostColumns,
 } from "./hostSecretColumns";
 import { currentNcPerson, isNcAppMode } from "./ncApp";
-import { mcpOAuthProviderFor } from "./providers";
+import {
+    mcpOAuthProviderFor,
+    mcpOAuthProviders,
+    type McpOAuthProviderQuirks,
+} from "./providers";
 import {
     CLIENT_INFO,
     OAUTH_STATE_TTL_MS,
@@ -302,16 +306,42 @@ export function mcpConnectorSetupInstructions(
     serverUrl: string,
 ): string | null {
     const provider = mcpOAuthProviderFor(serverUrl);
-    if (!provider?.setupInstructions) return null;
-    const env = oauthClientEnvFor(serverUrl);
-    if (
-        hasConfiguredCredential(env.clientId) &&
+    if (!provider || !providerNeedsSetup(provider)) return null;
+    // Mike's NativeCluster app: nobody using it can set a deployment's
+    // client, so the words are what it means for them.
+    if (isNcAppMode())
+        return (
+            `${provider.displayName} can't be linked from Mike's NativeCluster app: ` +
+            `${provider.displayName} lets only apps registered with it in advance sign in, ` +
+            "and none is set up for this Mike."
+        );
+    return provider.setupInstructions!();
+}
+
+/**
+ * A provider that offers no dynamic client registration and whose client
+ * this deployment has not configured: its connectors can only fail to link.
+ */
+function providerNeedsSetup(provider: McpOAuthProviderQuirks): boolean {
+    if (!provider.setupInstructions) return false;
+    const prefix = provider.envPrefix;
+    return !(
+        hasConfiguredCredential(process.env[`${prefix}_CLIENT_ID`]) &&
         (!provider.requiresClientSecret ||
-            hasConfiguredCredential(env.clientSecret))
-    ) {
-        return null;
-    }
-    return provider.setupInstructions();
+            hasConfiguredCredential(process.env[`${prefix}_CLIENT_SECRET`]))
+    );
+}
+
+/**
+ * The providers (providers.ts ids) whose connectors cannot link here: no
+ * dynamic client registration, and no client configured. Mike's NativeCluster
+ * app does not offer their presets (the profile's `mcpSetupRequired`), as it
+ * does not offer Google Drive without a Google client.
+ */
+export function mcpProvidersNeedingSetup(): string[] {
+    return mcpOAuthProviders()
+        .filter(providerNeedsSetup)
+        .map((provider) => provider.id);
 }
 
 export async function loadOAuthToken(connectorId: string, db: Db) {

@@ -135,4 +135,17 @@ describe("the routes of a plane that is off for everyone", () => {
         vi.unstubAllEnvs();
         expect(serializeProfile({} as never, {} as never).connectorsOff).toEqual([]);
     });
+
+    it("the profile names the MCP providers that cannot link here, in the app alone", () => {
+        for (const key of ["SLACK_MCP_OAUTH_CLIENT_ID", "SLACK_MCP_OAUTH_CLIENT_SECRET", "GOOGLE_MCP_OAUTH_CLIENT_ID", "GOOGLE_MCP_OAUTH_CLIENT_SECRET"])
+            vi.stubEnv(key, "");
+        vi.stubEnv("MIKE_NC_APP", "1");
+        expect(serializeProfile({} as never, {} as never).mcpSetupRequired).toEqual(["google", "slack"]);
+        vi.stubEnv("SLACK_MCP_OAUTH_CLIENT_ID", "slack-id");
+        vi.stubEnv("SLACK_MCP_OAUTH_CLIENT_SECRET", "slack-secret");
+        expect(serializeProfile({} as never, {} as never).mcpSetupRequired).toEqual(["google"]);
+        // Elsewhere an operator reads the setup steps instead: nothing hidden.
+        vi.stubEnv("MIKE_NC_APP", "");
+        expect(serializeProfile({} as never, {} as never).mcpSetupRequired).toEqual([]);
+    });
 });

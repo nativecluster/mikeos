@@ -5,6 +5,8 @@ import { ROUTER_SLUGS, type RouterModelSelections } from "../../lib/routerModels
 import { UserProfileRow, MONTHLY_CREDIT_LIMIT } from "./user.profile.storage";
 import { courtlistenerBulkDataEnabled } from "../../lib/courtlistener";
 import { netPlanesOff } from "../../lib/nc/netPlanes";
+import { mcpProvidersNeedingSetup } from "../../lib/mcpConnectors";
+import { isNcAppMode } from "../../lib/mcp/ncApp";
 
 import { ROUTER_PROFILE_FIELDS } from "./user.profile.routerPreferences";
 
@@ -67,6 +69,11 @@ export function serializeProfile(
         // The planes NativeCluster turned off for everyone (Mike's app only;
         // empty elsewhere): the pages hide their connectors.
         connectorsOff: netPlanesOff(),
+        // The MCP providers whose connectors cannot link here (no dynamic
+        // client registration, no client configured): Mike's app only, so
+        // its pages offer no preset that can only fail. Empty elsewhere,
+        // where an operator reads the setup steps instead.
+        mcpSetupRequired: isNcAppMode() ? mcpProvidersNeedingSetup() : [],
         quickActionsVisible: row.quick_actions_visible !== false,
         responseDetailsVisible: row.response_details_visible === true,
         darkMode: row.dark_mode === true,
