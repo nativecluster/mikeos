@@ -64,6 +64,14 @@ export function ncIngress(
       return;
     }
 
+    // A unix socket has no peer address, so req.ip (the rate limiters' key)
+    // would be undefined. The launcher should send the client's address in
+    // X-Forwarded-For (app.ts trusts one proxy hop); when it sends none, the
+    // client is this computer, the only place the socket is reached from.
+    if (!req.socket.remoteAddress && !req.headers["x-forwarded-for"]) {
+      req.headers["x-forwarded-for"] = "127.0.0.1";
+    }
+
     const person = headerId(req.headers[NC_PERSON_HEADER]);
     const request = headerId(req.headers[NC_REQUEST_HEADER]);
     runInNcRequest({ person, request, at: Date.now(), task: ncTaskForPath(req.path) }, () => next());
