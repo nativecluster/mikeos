@@ -20,12 +20,34 @@
 // statements. Every connection is the same superuser session whatever user
 // it names: no per-connection settings, prepared statements shared by name,
 // no statement_timeout or cancel (a long statement stalls every client).
+//
+// Memory. PGlite allocates Postgres's shared memory inside its WebAssembly
+// memory and touches all of it as the database opens, and WebAssembly
+// memory never shrinks: whatever Postgres takes once, this process keeps
+// until it leaves. So Postgres gets small buffers (SETTINGS). The Node flags
+// and the allocator's environment this process needs are the launcher's
+// (lib/stack.mjs, PGLITE_NODE_FLAGS and pgliteEnv). Each start logs this
+// process's memory, and a minute's check logs it again when the WebAssembly
+// memory grew.
 
 import fs from "node:fs";
 import { PGlite } from "@electric-sql/pglite";
 import { pgcrypto } from "@electric-sql/pglite/contrib/pgcrypto";
 import { pg_trgm } from "@electric-sql/pglite/contrib/pg_trgm";
 import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
+
+// Measured on the package's Node 24, 2026-11-24, under Mike's own load
+// (reads, 200 writes, uploads):
+// - shared_buffers: 16MB, from PGlite's 128MB. The 128 MB of buffers cost
+//   about 110 MB of this process from the first second. A fresh database is
+//   34 MB; past the buffers, Postgres reads through NODEFS from the OS's file
+//   cache: point reads, writes and a sequential scan on a 166 MB table ran
+//   at the same speed at 16MB and 128MB (a trigram search 0.86 ms against
+//   0.72 ms), and Mike's reads and writes did too. wal_buffers follows it
+//   (512kB).
+// - maintenance_work_mem: 16MB, from 64MB. An index build, or a migration's
+//   VACUUM, takes up to this much, and the WebAssembly memory it grows stays.
+const SETTINGS = { shared_buffers: "16MB", maintenance_work_mem: "16MB" };
 
 //
 // It also deallocates, in a turn of their own, the named statements a
@@ -210,8 +232,19 @@ process.stdin.resume();
 fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
 const t0 = performance.now();
 const fresh = !fs.existsSync(`${dataDir}/PG_VERSION`);
-db = await PGlite.create(dataDir, { extensions: { pgcrypto, pg_trgm } });
+db = await PGlite.create(dataDir, {
+  extensions: { pgcrypto, pg_trgm },
+  startParams: [...PGlite.defaultStartParams, ...Object.entries(SETTINGS).flatMap(([name, value]) => ["-c", `${name}=${value}`])],
+});
 log(`opened the database (${fresh ? "created" : "existing"}) in ${Math.round(performance.now() - t0)} ms`);
+
+const MB = 1024 * 1024;
+const wasmBytes = () => db.Module?.HEAPU8?.length ?? 0;
+function memory() {
+  const m = process.memoryUsage();
+  return `rss ${Math.round(m.rss / MB)} MB, WebAssembly ${Math.round(wasmBytes() / MB)} MB, JS heap ${Math.round(m.heapUsed / MB)} of ${Math.round(m.heapTotal / MB)} MB`;
+}
+let wasmLogged = 0;
 
 fs.rmSync(socketPath, { force: true });
 server = new PGLiteSocketServer({ db, path: socketPath, maxConnections: 64 });
@@ -220,6 +253,10 @@ const queue = new SessionQueue(db);
 server.queryQueue = queue;
 server.addEventListener("error", (e) => log(`socket error: ${e.detail?.message ?? e.detail}`));
 setInterval(() => {
+  if (wasmBytes() > wasmLogged) {
+    wasmLogged = wasmBytes();
+    log(`memory grew: ${memory()}`);
+  }
   if (queue.longest.ms < 250) return;
   log(`longest hold ${Math.round(queue.longest.ms)} ms (connection #${queue.longest.handler}); ${server.getStats().activeConnections} connections`);
   queue.longest = { ms: 0, handler: null };
@@ -231,5 +268,7 @@ try {
   process.umask(old);
 }
 fs.chmodSync(socketPath, 0o600);
+wasmLogged = wasmBytes();
+log(`memory: ${memory()}; ${Object.entries(SETTINGS).map(([name, value]) => `${name} ${value}`).join(", ")}`);
 // The launcher waits for this line.
 log(`ready ${fresh ? "fresh" : "existing"}`);
