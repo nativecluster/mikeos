@@ -1,5 +1,6 @@
 // A fake NativeCluster host on a unix socket: the models route, the line's
-// NDJSON wait, model calls on a grant, releases and units. Each test scripts
+// NDJSON wait, model calls on a grant, releases, units and the app's secrets
+// store. Each test scripts
 // what the line and the engine answer. Not a test file itself.
 
 import { rmSync } from "node:fs";
@@ -30,6 +31,8 @@ export type FakeHost = {
   units: Record<string, unknown>[];
   modelReads: string[];
   unauthorized: number;
+  /** The app's secrets store (`/host/v1/secrets/<name>`), by name. */
+  secrets: Map<string, string>;
   other: Array<{ method: string; url: string }>;
   close(): Promise<void>;
 };
@@ -122,6 +125,7 @@ export async function startFakeHost(): Promise<FakeHost> {
     units: [],
     modelReads: [],
     unauthorized: 0,
+    secrets: new Map(),
     other: [],
     async close() {
       for (const socket of sockets) socket.destroy();
@@ -193,6 +197,31 @@ export async function startFakeHost(): Promise<FakeHost> {
       const script = host.callScripts.shift() ?? streamAnswer(["Hello", " there"]);
       await script(res, body, req);
       return;
+    }
+    // The name is percent-encoded in the path (":" as %3A), as the host's
+    // router decodes it.
+    const secret = /^\/host\/v1\/secrets\/([A-Za-z0-9._:-]{1,128})$/.exec(decodeURIComponent(url.pathname));
+    if (secret) {
+      const name = secret[1];
+      if (req.method === "GET") {
+        const value = host.secrets.get(name);
+        if (value === undefined) {
+          res.writeHead(404, { "content-type": "application/json" }).end('{"error":"not_found"}');
+        } else {
+          res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ name, value }));
+        }
+        return;
+      }
+      if (req.method === "PUT") {
+        host.secrets.set(name, (JSON.parse(await readBody(req)) as { value: string }).value);
+        res.writeHead(204).end();
+        return;
+      }
+      if (req.method === "DELETE") {
+        host.secrets.delete(name);
+        res.writeHead(204).end();
+        return;
+      }
     }
     host.other.push({ method: req.method ?? "", url: req.url ?? "" });
     res.writeHead(200, { "content-type": "application/json" }).end('{"other":true}');

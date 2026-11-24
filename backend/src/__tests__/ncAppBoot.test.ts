@@ -153,6 +153,14 @@ describe("the backend booted as a NativeCluster app", () => {
     expect(host.modelReads).toContain("assistant");
   });
 
+  it("keeps the connectors' keys in the host's secrets store", () => {
+    // Made on the first start; the API keys' key is the one the launcher
+    // passes, so pasted CourtListener, Brave and Tavily keys stay readable.
+    expect(host.secrets.get("mike:app:connectors-key")).toMatch(/^[0-9a-f]{64}$/);
+    expect(host.secrets.get("mike:app:api-keys-key")).toMatch(/^[0-9a-f]{64}$/);
+    expect(output).toContain("USER_API_KEYS_ENCRYPTION_SECRET differs from the host's key");
+  });
+
   it("ran its sweeps at startup, so the host's next beat finds none due", async () => {
     const beat = await overSocket(apiSocket, "POST", "/nc/v1/tick", { "X-NC-Internal": SECRET });
     expect(beat.status).toBe(200);

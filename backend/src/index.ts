@@ -37,6 +37,8 @@ import {
   ncAppCredential,
   readLaunchSecrets,
 } from "./lib/nc/launchSecrets";
+import { currentNcPerson } from "./lib/nc/context";
+import { startNcAppConnectors } from "./lib/mcp/ncAppStartup";
 
 const PORT = process.env.PORT ?? 3001;
 const HOST = process.env.HOST?.trim() || undefined;
@@ -158,6 +160,33 @@ function startNativeClusterBeat(): void {
   void runNativeClusterTick();
 }
 
+/**
+ * A NativeCluster app (MIKE_NC_APP=1): connect the connectors to the host's
+ * secrets store, which keeps their tokens and the two keys Mike encrypts its
+ * connector columns and pasted API keys with. The API keys' key is the one
+ * lib/providerCredentials reads from USER_API_KEYS_ENCRYPTION_SECRET: the
+ * host's copy is the one source (the launcher passes the same value), set
+ * here before the configuration check and before any worker thread starts,
+ * so every thread reads it from its environment.
+ */
+async function startNativeClusterConnectors(): Promise<void> {
+  const socketPath = process.env.LB_HOST_SOCKET?.trim();
+  const credential = ncAppCredential();
+  if (!socketPath || !credential) {
+    throw new Error("a NativeCluster app needs LB_HOST_SOCKET and the launcher's app credential");
+  }
+  const { apiKeysEncryptionSecret } = await startNcAppConnectors({
+    socketPath,
+    credential,
+    currentPerson: currentNcPerson,
+  });
+  const configured = process.env.USER_API_KEYS_ENCRYPTION_SECRET?.trim();
+  if (configured && configured !== apiKeysEncryptionSecret) {
+    log.warn("startup", "USER_API_KEYS_ENCRYPTION_SECRET differs from the host's key; the host's is used");
+  }
+  process.env.USER_API_KEYS_ENCRYPTION_SECRET = apiKeysEncryptionSecret;
+}
+
 async function main(): Promise<void> {
   // A NativeCluster app's launcher hands its secrets over on stdin before
   // anything else, and keeps stdin open: its end means the launcher is gone.
@@ -166,6 +195,14 @@ async function main(): Promise<void> {
       await readLaunchSecrets(process.stdin, () => void shutdown("stdin closed"));
     } catch (err) {
       await failBoot(err, "launch-secrets");
+      return;
+    }
+  }
+  if (ncAppMode()) {
+    try {
+      await startNativeClusterConnectors();
+    } catch (err) {
+      await failBoot(err, "nc-connectors");
       return;
     }
   }
