@@ -9,6 +9,7 @@ import {
 } from "../supabaseSockets";
 import { closeUnixSocketAgents } from "../unixFetch";
 import { createServerSupabase } from "../../supabase";
+import { singleFlightRefreshFetch } from "../../authRefresh";
 import { socketDir, startUnixServer, type UnixServer } from "./unixServer";
 
 let dir: string;
@@ -200,6 +201,23 @@ describe("supabase-js through the sockets", () => {
     expect(data).toEqual([{ id: 1, url: "/profiles?select=*" }]);
     expect(await (await fetch("https://example.com/")).text()).toBe("not supabase");
     expect(original).toHaveBeenCalledTimes(1);
+  });
+
+  it("routes a fetch resolved at call time (the session clients' refresh fetch) and a direct fetch to SUPABASE_URL", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("not supabase")));
+    installSupabaseSocketFetch(env);
+    // lib/authSession.ts hands GoTrue this fetch; it reads globalThis.fetch per call.
+    const refresh = singleFlightRefreshFetch();
+    const token = await refresh("http://mike.internal/auth/v1/token?grant_type=refresh_token", {
+      method: "POST",
+      body: JSON.stringify({ refresh_token: "r" }),
+    });
+    expect(token.status).toBe(200);
+    expect(auth.seen[0]).toMatchObject({ method: "POST", url: "/token?grant_type=refresh_token" });
+    // GoTrue's public settings, read with a plain fetch of SUPABASE_URL.
+    await (await fetch("http://mike.internal/auth/v1/settings", { headers: { apikey: "k" } })).text();
+    expect(auth.seen[1]).toMatchObject({ method: "GET", url: "/settings" });
+    expect(rest.seen).toHaveLength(0);
   });
 
   it("installs nothing when the sockets are off", () => {
