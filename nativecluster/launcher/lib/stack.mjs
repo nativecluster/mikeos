@@ -65,10 +65,19 @@ function baseEnv() {
   };
 }
 
+/**
+ * The net planes' off switches (nc-app.json), which the host sets to "0" in
+ * the app's environment when a plane is off for everyone: passed on to the
+ * backend as they came.
+ */
+export const OFF_SWITCHES = ["LB_MIKE_COURTLISTENER", "LB_MIKE_WEBSEARCH", "LB_MIKE_MCP"];
+
 /** The backend's environment (STAGE2-BRIEF.md, "What the finished branches require from the launcher"). */
 export function backendEnv({ paths, dataDir, socketsDir, hostSocket, secrets, logDir, version }) {
+  const switches = Object.fromEntries(OFF_SWITCHES.filter((n) => process.env[n] !== undefined).map((n) => [n, process.env[n]]));
   return {
     ...baseEnv(),
+    ...switches,
     NODE_ENV: "production",
     PORT: paths.apiSocket,
     MIKE_INTERNAL_SECRET_STDIN: "1",
