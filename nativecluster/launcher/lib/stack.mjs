@@ -97,7 +97,7 @@ export function backendEnv({ paths, dataDir, socketsDir, hostSocket, secrets, lo
     // The filesystem driver's upload and download links (/download/signed/
     // <token>) start with this, and only a browser follows them: the API's
     // own path on the app's origin, whatever its port on this computer.
-    // Unset, they would name http://localhost:<the socket's path>.
+    // Unset, they would name a loopback address and the socket's path.
     BACKEND_PUBLIC_URL: API_PREFIX,
     MIKE_INFERENCE_PROVIDER: "nativecluster",
     NATIVECLUSTER_TRANSPORT: "host",
