@@ -46,9 +46,20 @@ export function ncPersonEmailOf(req: HeaderSource): string {
   return value.length <= 320 && EMAIL_PATTERN.test(value) ? value : "";
 }
 
-/** The person's name from NativeCluster, or "" without one. */
+/**
+ * The person's name from NativeCluster, or "" without one. The launcher
+ * sends it percent-encoded (UTF-8), since a header carries no character
+ * past Latin-1 and names do; a value that does not decode is read as it came.
+ */
 export function ncPersonNameOf(req: HeaderSource): string {
-  return (req.get(NC_PERSON_NAME_HEADER) ?? "").trim().slice(0, 200);
+  const raw = req.get(NC_PERSON_NAME_HEADER) ?? "";
+  let name = raw;
+  try {
+    name = decodeURIComponent(raw);
+  } catch {
+    // Not percent-encoded by the launcher: keep the header as it is.
+  }
+  return name.trim().slice(0, 200);
 }
 
 /**

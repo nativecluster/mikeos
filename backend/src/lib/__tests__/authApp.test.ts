@@ -44,6 +44,13 @@ describe("NativeCluster app mode", () => {
     expect(ncPersonNameOf(headers({ "X-NC-Person-Name": "x".repeat(300) }))).toHaveLength(200);
     expect(ncPersonNameOf(headers({}))).toBe("");
   });
+
+  it("reads the name the launcher percent-encodes, any script", () => {
+    expect(ncPersonNameOf(headers({ "X-NC-Person-Name": encodeURIComponent("Zoë 李") }))).toBe("Zoë 李");
+    expect(ncPersonNameOf(headers({ "X-NC-Person-Name": "Ann%20Smith" }))).toBe("Ann Smith");
+    // Not encoded by the launcher: kept as it came.
+    expect(ncPersonNameOf(headers({ "X-NC-Person-Name": "100% Ann" }))).toBe("100% Ann");
+  });
 });
 
 describe("the app's own origin", () => {
