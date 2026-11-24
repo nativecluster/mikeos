@@ -97,6 +97,8 @@ export function useCourtListenerConnector(workspace?: string) {
     loading: !status && !loadFailed,
     loadFailed,
     installed: status?.installed === true,
+    /** False when NativeCluster turned CourtListener off for everyone. */
+    available: status?.available !== false,
     enabled: optimisticEnabled ?? status?.enabled ?? true,
     busy,
     setEnabled,

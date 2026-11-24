@@ -40,6 +40,7 @@ import {
 import { apiKeyStateFromStatus, hasApiKeyStatus } from "@/app/lib/apiKeyState";
 import type { Message } from "@/app/components/shared/types";
 import { applyDarkMode } from "@/app/lib/theme";
+import { ncConnectorPlanes, type NcConnectorPlane } from "@/app/lib/ncApp";
 import { notifyError } from "@/app/lib/userFacingError";
 import { reportError } from "@/app/lib/errorReporting";
 import { useAssignLatest } from "@/app/hooks/useLatestRef";
@@ -83,6 +84,8 @@ interface UserProfile extends RouterProfileLists {
      * the connector is installed for everyone without a token.
      */
     courtlistenerBulkData: boolean;
+    /** The connectors NativeCluster turned off for everyone (lib/ncApp.ts). */
+    connectorsOff: NcConnectorPlane[];
     quickActionsVisible: boolean;
     /** Whether responses and subagents show the model, effort and tokens they used. */
     responseDetailsVisible: boolean;
@@ -210,6 +213,7 @@ function toProfile(data: ApiUserProfile): UserProfile {
             profile.lastSelectedReasoningLevel ?? "high",
         mfaOnLogin: profile.mfaOnLogin === true,
         courtlistenerBulkData: profile.courtlistenerBulkData === true,
+        connectorsOff: ncConnectorPlanes(profile.connectorsOff),
         responseDetailsVisible: profile.responseDetailsVisible === true,
         projectMemoryDefault: profile.projectMemoryDefault !== false,
         ...routerProfileLists(profile),
@@ -330,6 +334,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                 lastSelectedReasoningLevel: "high",
                 mfaOnLogin: false,
                 courtlistenerBulkData: false,
+                connectorsOff: [],
                 quickActionsVisible: true,
                 responseDetailsVisible: false,
                 ...routerProfileLists({}),

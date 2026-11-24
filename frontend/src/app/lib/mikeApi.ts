@@ -837,6 +837,11 @@ export interface UserProfile extends RouterProfileLists {
      * the connector is installed for everyone without a token.
      */
     courtlistenerBulkData?: boolean;
+    /**
+     * Mike's NativeCluster app: the connectors NativeCluster turned off for
+     * everyone (each net plane's off switch at 0). Absent elsewhere.
+     */
+    connectorsOff?: string[];
     quickActionsVisible: boolean;
     /** Whether responses and subagents show the model, effort and tokens they used. */
     responseDetailsVisible?: boolean;

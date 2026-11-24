@@ -19,3 +19,17 @@ export function isNcApp(): boolean {
 /** The one line Settings shows where sharing would be. */
 export const NC_APP_SHARING_UNAVAILABLE =
     "Sharing with your group isn't available in the NativeCluster app yet.";
+
+/**
+ * The connectors' net planes (nativecluster/nc-app.json). NativeCluster can
+ * turn each off for everyone, with the plane's off switch; the profile names
+ * those (`connectorsOff`), and the pages hide their connectors.
+ */
+export const NC_CONNECTOR_PLANES = ["courtlistener", "websearch", "mcp"] as const;
+export type NcConnectorPlane = (typeof NC_CONNECTOR_PLANES)[number];
+
+/** The known planes in what the server sent; anything else is dropped. */
+export function ncConnectorPlanes(value: unknown): NcConnectorPlane[] {
+    if (!Array.isArray(value)) return [];
+    return NC_CONNECTOR_PLANES.filter((plane) => value.includes(plane));
+}

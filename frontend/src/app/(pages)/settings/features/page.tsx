@@ -15,6 +15,7 @@ import {
 } from "@/app/components/settings/WebSearchSection";
 import { useUserProfile } from "@/app/contexts/UserProfileContext";
 import { useOrgPreferencesSettings } from "@/app/hooks/useOrgPreferencesSettings";
+import { useConnectorsOff } from "@/app/hooks/useConnectorsOff";
 import { useWorkspaceSettingsScope } from "@/app/hooks/useWorkspaceSettingsScope";
 import { WorkspaceScopePending } from "@/app/components/settings/WorkspaceScopePending";
 import { notifyError } from "@/app/lib/userFacingError";
@@ -145,6 +146,10 @@ function FeaturesView({
     setSavingResponseDetails(false);
   };
 
+  // Web search NativeCluster turned off for everyone (Mike's app) has no
+  // settings to show; the server refuses them too.
+  const connectorsOff = useConnectorsOff();
+
   return (
     <div className="space-y-8">
       <section className="space-y-3">
@@ -184,7 +189,7 @@ function FeaturesView({
         </GlassCardUI>
       </section>
 
-      {webSearch}
+      {connectorsOff.off("websearch") ? null : webSearch}
     </div>
   );
 }

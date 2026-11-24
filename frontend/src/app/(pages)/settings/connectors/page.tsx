@@ -11,6 +11,7 @@ import Image from "next/image";
 import { FolderPlus, Plus, Scale } from "lucide-react";
 import { ConnectorSetupGuideLink } from "@/app/components/settings/ConnectorSetupGuideLink";
 import { NewCustomMcpModal } from "@/app/components/settings/NewCustomMcpModal";
+import { useConnectorsOff } from "@/app/hooks/useConnectorsOff";
 import {
   ConnectorCard,
   ConnectorCardSkeleton,
@@ -497,6 +498,12 @@ function WorkspaceConnectors({
   const googleConnectors = [googleDrive, gmail, googleCalendar];
   const courtListener = useCourtListenerConnector(workspace);
   const [courtListenerOpen, setCourtListenerOpen] = useState(false);
+  // A connector NativeCluster turned off for everyone (Mike's app) is not
+  // offered at all: no card, no Custom button. The server refuses it too.
+  const connectorsOff = useConnectorsOff();
+  const courtListenerOffered =
+    courtListener.available !== false && !connectorsOff.off("courtlistener");
+  const mcpOffered = !connectorsOff.off("mcp");
   const drivePicker = useGoogleDrivePicker(workspace);
   const [selectedGoogleProvider, setSelectedGoogleProvider] =
     useState<GoogleConnectorProvider | null>(null);
@@ -1402,7 +1409,7 @@ function WorkspaceConnectors({
     (connector) =>
       !connector.status?.connected && connector.status?.available !== false,
   );
-  const discoverPresets = CONNECTOR_PRESETS.filter(
+  const discoverPresets = (mcpOffered ? CONNECTOR_PRESETS : []).filter(
     (preset) =>
       !connectors.some(
         (connector) =>
@@ -1416,8 +1423,19 @@ function WorkspaceConnectors({
   // Discover only to move to Installed or vanish (a service the operator
   // switched off) a moment later.
   const initialLoading =
-    !connectorsLoaded || googleLoading || courtListener.loading;
-  const discoverCourtListener = !courtListener.installed;
+    !connectorsLoaded ||
+    googleLoading ||
+    courtListener.loading ||
+    connectorsOff.loading;
+  const courtListenerInstalled =
+    courtListenerOffered && courtListener.installed;
+  const discoverCourtListener = courtListenerOffered && !courtListener.installed;
+  const installedConnectors = mcpOffered ? connectors : [];
+  // Nothing at all can be added here: Discover has nothing to say.
+  const nothingOffered =
+    !mcpOffered &&
+    !courtListenerOffered &&
+    googleConnectors.every((connector) => connector.status?.available === false);
   const googleAdding = googleConnectors.some(
     (connector) => connector.phase !== "idle",
   );
@@ -1437,16 +1455,18 @@ function WorkspaceConnectors({
           <SettingsHeading id="installed-connectors-heading">
             Installed
           </SettingsHeading>
-          <PillButtonUI
-            tone="white"
-            size="xs"
-            onClick={() => setAddOpen(true)}
-            aria-label="Add custom connector"
-            className={`h-7 ${LIQUID_GLASS_SUBTLE_CLASS}`}
-          >
-            <Plus className="h-3.5 w-3.5" aria-hidden="true" />
-            Custom
-          </PillButtonUI>
+          {mcpOffered && (
+            <PillButtonUI
+              tone="white"
+              size="xs"
+              onClick={() => setAddOpen(true)}
+              aria-label="Add custom connector"
+              className={`h-7 ${LIQUID_GLASS_SUBTLE_CLASS}`}
+            >
+              <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+              Custom
+            </PillButtonUI>
+          )}
         </div>
         {error && (
           <div className="mb-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
@@ -1476,7 +1496,7 @@ function WorkspaceConnectors({
               }
             />
           ))}
-          {!initialLoading && courtListener.installed && (
+          {!initialLoading && courtListenerInstalled && (
             <ConnectorRow
               name={COURTLISTENER_NAME}
               icon={<CourtListenerIcon />}
@@ -1495,7 +1515,7 @@ function WorkspaceConnectors({
           )}
           {!initialLoading &&
             !loading &&
-            connectors.map((connector) => {
+            installedConnectors.map((connector) => {
               const preset = findConnectorPreset(connector.serverUrl);
               return (
                 <ConnectorRow
@@ -1518,9 +1538,9 @@ function WorkspaceConnectors({
             })}
           {!initialLoading &&
             !loading &&
-            connectors.length === 0 &&
+            installedConnectors.length === 0 &&
             installedGoogle.length === 0 &&
-            !courtListener.installed && (
+            !courtListenerInstalled && (
               <div className="@min-[32rem]:col-span-2">
                 <SettingsDescription>No connectors yet.</SettingsDescription>
               </div>
@@ -1534,6 +1554,7 @@ function WorkspaceConnectors({
           </SettingsHeading>
         </div>
         {!initialLoading &&
+          !nothingOffered &&
           discoverGoogle.length === 0 &&
           !discoverCourtListener &&
           discoverPresets.length === 0 && (

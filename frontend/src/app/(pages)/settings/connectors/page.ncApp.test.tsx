@@ -5,6 +5,8 @@ import {
     type McpConnectorSummary,
     createMcpConnector,
     deleteMcpConnector,
+    getGoogleDriveStatus,
+    getGoogleWorkspaceStatus,
     getMcpConnector,
     listMcpConnectors,
     refreshMcpConnectorTools,
@@ -77,6 +79,7 @@ vi.mock("@/app/contexts/WorkspaceContext", async (importOriginal) => ({
 }));
 
 beforeEach(() => {
+    offPlanes.planes = [];
     workspaceState.workspaceId = "personal";
     workspaceState.activeOrganization = null;
     workspaceState.organizations = [];
@@ -108,6 +111,15 @@ vi.mock("@/app/components/settings/CourtListenerConnector", () => ({
             deleteToken: vi.fn(),
         };
     },
+}));
+
+// The connectors NativeCluster turned off for everyone, as the profile says.
+const offPlanes = vi.hoisted(() => ({ planes: [] as string[] }));
+vi.mock("@/app/hooks/useConnectorsOff", () => ({
+    useConnectorsOff: () => ({
+        off: (plane: string) => offPlanes.planes.includes(plane),
+        loading: false,
+    }),
 }));
 
 // MFA gate off, and render nothing for the popup itself.
@@ -250,5 +262,70 @@ describe("ConnectorsPage in the NativeCluster app", () => {
             await flushMicrotasks();
         });
         expect(deleteMcpConnector).toHaveBeenCalledWith("connector-1");
+    });
+});
+
+describe("ConnectorsPage with a connector NativeCluster turned off for everyone", () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+        vi.stubEnv("NEXT_PUBLIC_MIKE_NC_APP", "1");
+        vi.mocked(listMcpConnectors).mockResolvedValue([makeSummary({ name: "Files", serverUrl: "https://mcp.example.com/mcp" })]);
+    });
+    afterEach(() => {
+        cleanup();
+        vi.unstubAllEnvs();
+    });
+
+    async function renderPage() {
+        render(<ConnectorsPage />);
+        await act(async () => {
+            await flushMicrotasks();
+        });
+    }
+
+    it("offers every connector while each plane is on", async () => {
+        await renderPage();
+        expect(screen.getByRole("button", { name: "Add custom connector" })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Add Slack connector" })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Add CourtListener connector" })).toBeInTheDocument();
+        expect(screen.getByText("Files")).toBeInTheDocument();
+    });
+
+    it("MCP off: no MCP connector, preset or Custom button", async () => {
+        offPlanes.planes = ["mcp"];
+        await renderPage();
+        expect(screen.queryByRole("button", { name: "Add custom connector" })).toBeNull();
+        for (const name of ["Slack", "Notion", "Airtable", "Linear", "Lawve", "Legal Data Hunter"])
+            expect(screen.queryByRole("button", { name: `Add ${name} connector` })).toBeNull();
+        expect(screen.queryByText("Files")).toBeNull();
+        expect(screen.getByRole("button", { name: "Add CourtListener connector" })).toBeInTheDocument();
+    });
+
+    it("CourtListener off: no CourtListener card, installed or not", async () => {
+        offPlanes.planes = ["courtlistener"];
+        await renderPage();
+        expect(screen.queryByRole("button", { name: "Add CourtListener connector" })).toBeNull();
+        courtListener.installed = true;
+        cleanup();
+        await renderPage();
+        expect(screen.queryByText("CourtListener")).toBeNull();
+        courtListener.installed = false;
+        expect(screen.getByRole("button", { name: "Add Slack connector" })).toBeInTheDocument();
+    });
+
+    it("both off, and Google unavailable as in the app: nothing is offered and Discover says nothing", async () => {
+        offPlanes.planes = ["courtlistener", "mcp"];
+        vi.mocked(getGoogleDriveStatus).mockResolvedValueOnce({
+            ...(await getGoogleDriveStatus()),
+            available: false,
+        });
+        vi.mocked(getGoogleWorkspaceStatus).mockImplementation(async () => ({
+            configured: true, available: false, schemaReady: true, connected: false,
+            writeEnabled: false, enabled: true, requireWriteApproval: false,
+            readOnly: false, tools: [], redirectUri: null,
+        }));
+        await renderPage();
+        expect(screen.queryByRole("button", { name: /^Add .* connector$/ })).toBeNull();
+        expect(screen.queryByText("Every available connector is installed.")).toBeNull();
     });
 });

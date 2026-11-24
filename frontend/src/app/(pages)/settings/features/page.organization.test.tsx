@@ -46,13 +46,14 @@ vi.mock("@/app/hooks/useOrgPreferencesSettings", async () => {
     };
 });
 
-vi.mock("@/app/contexts/UserProfileContext", () => ({
-    useUserProfile: () => ({
+vi.mock("@/app/contexts/UserProfileContext", () => {
+    const useUserProfile = () => ({
         profile: { quickActionsVisible: true, responseDetailsVisible: false },
         updateQuickActionsVisible: state.updateQuickActionsVisible,
         updateResponseDetailsVisible: vi.fn(),
-    }),
-}));
+    });
+    return { useUserProfile, useOptionalUserProfile: useUserProfile };
+});
 
 vi.mock("@/app/components/settings/WebSearchSection", () => ({
     WebSearchSection: () => <p>Your web search</p>,
