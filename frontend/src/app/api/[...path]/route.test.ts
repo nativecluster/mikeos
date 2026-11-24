@@ -82,6 +82,36 @@ describe("same-origin API gateway", () => {
         );
     });
 
+    it("names the browser's own origin to the backend in the NativeCluster app, not Next's localhost:3000", async () => {
+        vi.stubEnv("NEXT_PUBLIC_MIKE_NC_APP", "1");
+        fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
+        // Inside the app Next's request.url reads its own address; the Host
+        // header is the app's origin on this computer.
+        const request = new NextRequest("http://localhost:3000/api/projects", {
+            headers: { host: "127.0.0.1:52311", origin: "https://127.0.0.1:52311" },
+        });
+
+        await GET(request, context(["projects"]));
+
+        const forwarded = new Headers((fetchMock.mock.calls[0][1] as RequestInit).headers);
+        expect(forwarded.get("x-forwarded-host")).toBe("127.0.0.1:52311");
+        expect(forwarded.get("x-forwarded-proto")).toBe("https");
+        expect(forwarded.get("origin")).toBe("https://127.0.0.1:52311");
+    });
+
+    it("keeps naming the request URL's host everywhere else", async () => {
+        fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
+        const request = new NextRequest("https://app.example.test/api/projects", {
+            headers: { host: "internal.example.test:3000" },
+        });
+
+        await GET(request, context(["projects"]));
+
+        const forwarded = new Headers((fetchMock.mock.calls[0][1] as RequestInit).headers);
+        expect(forwarded.get("x-forwarded-host")).toBe("app.example.test");
+        expect(forwarded.get("x-forwarded-proto")).toBe("https");
+    });
+
     it("removes response hop-by-hop headers, including connection-nominated fields", async () => {
         fetchMock.mockResolvedValue(new Response("body", { headers: {
             connection: "keep-alive, x-internal-socket", "keep-alive": "timeout=5",
