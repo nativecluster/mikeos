@@ -27,6 +27,7 @@ import { ConnectorSetupError } from "../../lib/mcp/errors";
 import crypto from "crypto";
 import { Router, type Request, type Response } from "express";
 import { requireAuth, requireMfaIfEnrolled } from "../../middleware/auth";
+import { unavailableInNcApp } from "../../middleware/ncApp";
 import { asyncRoute, routerErrorHandler } from "../../middleware/asyncRoute";
 import { createServerSupabase, type Db } from "../../lib/supabase";
 import { sendInternalError } from "../../lib/httpError";
@@ -470,7 +471,7 @@ userRouter.post("/onboarding", requireAuth, asyncRoute(async (req, res) => {
 
 // POST /user/security/password-set
 // Record password capability only after verifying Supabase's auth.users row.
-userRouter.post("/security/password-set", requireAuth, asyncRoute(async (_req, res) => {
+userRouter.post("/security/password-set", unavailableInNcApp, requireAuth, asyncRoute(async (_req, res) => {
     const userId = res.locals.userId as string;
     const db = createServerSupabase();
     const result = await recordPasswordSet(db, userId);
@@ -485,6 +486,7 @@ userRouter.post("/security/password-set", requireAuth, asyncRoute(async (_req, r
 // PATCH /user/security/mfa-login
 userRouter.patch(
     "/security/mfa-login",
+    unavailableInNcApp,
     requireAuth,
     requireMfaIfEnrolled,
     asyncRoute(async (req, res) => {
@@ -1540,6 +1542,8 @@ userRouter.patch(
 // DELETE /user/account
 userRouter.delete(
     "/account",
+    // NativeCluster owns people in its app: removing one is the host's.
+    unavailableInNcApp,
     requireAuth,
     requireMfaIfEnrolled,
     asyncRoute(async (_req, res) => {
