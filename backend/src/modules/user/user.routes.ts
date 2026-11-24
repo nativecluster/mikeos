@@ -107,6 +107,7 @@ import { getApiKeyStatus, saveApiKey, setApiKeyEnabled } from "./user.service";
 import { log } from "../../lib/log";
 import { ncAppCallbackPage, ncAppPastePage } from "./user.mcpApp";
 import { mcpAppRouter } from "./user.mcpApp.routes";
+import { refuseOffNetPlaneRoutes } from "./user.netPlanes.routes";
 import {
     isNcAppMode,
     ncAppOrigin,
@@ -116,6 +117,9 @@ import {
 } from "../../lib/mcp/ncApp";
 
 export const userRouter = Router();
+// A connector whose plane NativeCluster turned off for everyone is refused
+// in words before any route below reads or changes it (user.netPlanes.routes.ts).
+userRouter.use(refuseOffNetPlaneRoutes);
 // Mike's NativeCluster app links connectors from inside its window
 // (MIKE_NC_APP=1 only; nothing here exists otherwise).
 userRouter.use(mcpAppRouter);

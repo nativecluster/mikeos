@@ -47,6 +47,9 @@ sourceDocumentsRouter.get("/:documentId", asyncRoute(async (req, res) => {
     if (result.kind === "credentials") {
       return res.status(400).json({ detail: result.detail });
     }
+    if (result.kind === "unavailable") {
+      return res.status(404).json({ code: "connector_unavailable", detail: result.detail });
+    }
     return sendInternalError(res, result.error, 502);
   } catch (error) {
     // Obtaining the database handle is the only step outside the service's

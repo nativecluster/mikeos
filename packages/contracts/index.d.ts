@@ -684,6 +684,11 @@ export interface CourtListenerConnectorStatus {
     tokenSource: "user" | "org" | null;
     /** The deployment answers lookups from its bulk index. */
     bulkData: boolean;
+    /**
+     * False when CourtListener is off for everyone (Mike's NativeCluster app,
+     * its plane's off switch at 0): no card offers it. Absent means available.
+     */
+    available?: boolean;
 }
 /** A built-in connector tool and whether the user has switched it on. */
 export interface NativeConnectorTool {

@@ -9,11 +9,14 @@
 import type { Db } from "../../lib/supabase";
 import type { McpCallRecord } from "../../lib/mcpConnectors";
 import type { ExternalSource, SourceDocument } from "../../lib/sourceDocuments";
+import type { NetPlane } from "../../lib/nc/netPlanes";
 
 export type SourceDocumentResult =
   | { ok: true; document: SourceDocument }
   | { ok: false; kind: "not_found"; detail: string }
   | { ok: false; kind: "credentials"; detail: string }
+  /** The provider's plane is off for everyone (lib/nc/netPlanes.ts). */
+  | { ok: false; kind: "unavailable"; detail: string }
   | { ok: false; kind: "error"; error: unknown };
 
 export type SourceProviderFetchArgs = {
@@ -30,6 +33,8 @@ export type SourceProviderFetchArgs = {
 export interface SourceProvider {
   /** Static identifier for diagnostics and request deduplication. */
   readonly id: string;
+  /** The net plane its reads go out on, in Mike's NativeCluster app (nc-app.json). */
+  readonly netPlane?: NetPlane;
   /** Whether this provider issued the opaque source-document id. */
   ownsDocumentId(documentId: string): boolean;
   /**

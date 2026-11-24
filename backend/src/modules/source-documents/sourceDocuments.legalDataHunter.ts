@@ -213,6 +213,7 @@ async function fetchDocument(args: SourceProviderFetchArgs): Promise<SourceDocum
 
 export const legalDataHunterSourceProvider: SourceProvider = {
   id: "legal_data_hunter",
+  netPlane: "mcp",
   // The whole `mcp:` namespace is this provider's: a malformed id is still
   // not an upload, so it fails closed as not found rather than falling
   // through to the uploaded-document paths.

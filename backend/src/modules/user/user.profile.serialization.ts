@@ -4,6 +4,7 @@ import { type ApiKeyStatus } from "../../lib/providerCredentials/index";
 import { ROUTER_SLUGS, type RouterModelSelections } from "../../lib/routerModels";
 import { UserProfileRow, MONTHLY_CREDIT_LIMIT } from "./user.profile.storage";
 import { courtlistenerBulkDataEnabled } from "../../lib/courtlistener";
+import { netPlanesOff } from "../../lib/nc/netPlanes";
 
 import { ROUTER_PROFILE_FIELDS } from "./user.profile.routerPreferences";
 
@@ -63,6 +64,9 @@ export function serializeProfile(
             "high",
         mfaOnLogin: row.mfa_on_login === true,
         courtlistenerBulkData: courtlistenerBulkDataEnabled(),
+        // The planes NativeCluster turned off for everyone (Mike's app only;
+        // empty elsewhere): the pages hide their connectors.
+        connectorsOff: netPlanesOff(),
         quickActionsVisible: row.quick_actions_visible !== false,
         responseDetailsVisible: row.response_details_visible === true,
         darkMode: row.dark_mode === true,

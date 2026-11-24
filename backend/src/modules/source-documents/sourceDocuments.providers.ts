@@ -5,6 +5,7 @@
 // hook all consult this list rather than naming providers.
 
 import type { McpCallRecord } from "../../lib/mcpConnectors";
+import { isNetPlaneOff, NET_PLANE_OFF_MESSAGES } from "../../lib/nc/netPlanes";
 import type { ExternalSource, SourceDocument } from "../../lib/sourceDocuments";
 import { courtlistenerSourceProvider } from "./sourceDocuments.courtlistener";
 import { legalDataHunterSourceProvider } from "./sourceDocuments.legalDataHunter";
@@ -104,6 +105,9 @@ export async function getSourceDocument(
   const provider = sourceProviderFor(args.documentId);
   if (!provider) {
     return { ok: false, kind: "not_found", detail: "Document not found" };
+  }
+  if (provider.netPlane && isNetPlaneOff(provider.netPlane)) {
+    return { ok: false, kind: "unavailable", detail: NET_PLANE_OFF_MESSAGES[provider.netPlane] };
   }
   const orgId = args.orgId ?? null;
   const fetchKey = `${provider.id}:${args.userId}:${orgId ?? "personal"}:${args.documentId}`;

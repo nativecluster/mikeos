@@ -80,6 +80,7 @@ async function fetchCase(args: SourceProviderFetchArgs): Promise<SourceDocumentR
 
 export const courtlistenerSourceProvider: SourceProvider = {
   id: "courtlistener",
+  netPlane: "courtlistener",
   ownsDocumentId: (documentId) => caseClusterId(documentId) !== null,
   // Case quotes tolerate whitespace and punctuation drift, as uploads do.
   quoteVerification: "fuzzy",
