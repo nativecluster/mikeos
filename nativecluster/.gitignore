@@ -1,0 +1,3 @@
+# The package build (build/build.sh) is source here, though the repository
+# ignores every other build folder.
+!/build/
