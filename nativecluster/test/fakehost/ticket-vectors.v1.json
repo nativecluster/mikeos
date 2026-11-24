@@ -1,0 +1,172 @@
+{
+  "comment": "Written by `go test ./nativecluster/appsdk -run TestTicketVectors -update`. Every NativeCluster kit verifies each header with key and now_ms and must agree with valid and ticket.",
+  "label": "nativecluster-ticket-v1\n",
+  "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "now_ms": 1791000000000,
+  "ttl_ms": 120000,
+  "cases": [
+    {
+      "name": "a person's request",
+      "header": "eyJpZCI6InIxIiwicmVtb3RlIjoiMTkyLjE2OC4xLjIwOjUyMTQ0IiwidGxzIjp0cnVlLCJzbmkiOiJzdHVkaW8ubG9jYWwiLCJpYXQiOjE3OTEwMDAwMDAwMDAsInBlcnNvbiI6InBfN2YzYSIsImVtYWlsIjoiYW5uQGV4YW1wbGUuY29tIiwibmFtZSI6IkFubiIsInNlc3Npb24iOiJzMSIsImxhYmVsIjoiYnJvd3NlciJ9.AkXFcKgsirp1zuVUmPJwt-bH4l6scR9bJp0bsT1XC3U",
+      "valid": true,
+      "ticket": {
+        "id": "r1",
+        "remote": "192.168.1.20:52144",
+        "tls": true,
+        "sni": "studio.local",
+        "iat": 1791000000000,
+        "person": "p_7f3a",
+        "email": "ann@example.com",
+        "name": "Ann",
+        "session": "s1",
+        "label": "browser"
+      }
+    },
+    {
+      "name": "nobody signed in",
+      "header": "eyJpZCI6InIxIiwicmVtb3RlIjoiMTkyLjE2OC4xLjIwOjUyMTQ0IiwiaWF0IjoxNzkxMDAwMDAwMDAwfQ.xRZGSRH0K6x6sIcXqLptxAdmaXinJnKwB2PNVvcL-nw",
+      "valid": true,
+      "ticket": {
+        "id": "r1",
+        "remote": "192.168.1.20:52144",
+        "iat": 1791000000000
+      }
+    },
+    {
+      "name": "the host's own call",
+      "header": "eyJpZCI6ImgxIiwicmVtb3RlIjoiaG9zdCIsImlhdCI6MTc5MTAwMDAwMDAwMCwiaG9zdCI6dHJ1ZX0.Kc3UCWUWyVvRck6_YELSasZmeTEuVwRgaAXK6MtQuRQ",
+      "valid": true,
+      "ticket": {
+        "id": "h1",
+        "remote": "host",
+        "iat": 1791000000000,
+        "host": true
+      }
+    },
+    {
+      "name": "exactly at the end of its life",
+      "header": "eyJpZCI6InIxIiwicmVtb3RlIjoiMTkyLjE2OC4xLjIwOjUyMTQ0IiwiaWF0IjoxNzkwOTk5ODgwMDAwfQ.F0V0guKnW7GLFxNidKduQeIuI3Gp6rmVELWTtH_I2Yg",
+      "valid": true,
+      "ticket": {
+        "id": "r1",
+        "remote": "192.168.1.20:52144",
+        "iat": 1790999880000
+      }
+    },
+    {
+      "name": "one millisecond past its life",
+      "header": "eyJpZCI6InIxIiwicmVtb3RlIjoiMTkyLjE2OC4xLjIwOjUyMTQ0IiwiaWF0IjoxNzkwOTk5ODc5OTk5fQ.uJJ7FR9ZKEj3Bt3KlBu1a8zOEuGhs1pnQgDHMwYXakI",
+      "valid": false
+    },
+    {
+      "name": "issued exactly its life ahead",
+      "header": "eyJpZCI6InIxIiwicmVtb3RlIjoiMTkyLjE2OC4xLjIwOjUyMTQ0IiwiaWF0IjoxNzkxMDAwMTIwMDAwfQ.CG-Cq4KUOBXKtSpDwxxlZORy3JEnQilKukyLILFbPn0",
+      "valid": true,
+      "ticket": {
+        "id": "r1",
+        "remote": "192.168.1.20:52144",
+        "iat": 1791000120000
+      }
+    },
+    {
+      "name": "issued more than its life ahead",
+      "header": "eyJpZCI6InIxIiwicmVtb3RlIjoiMTkyLjE2OC4xLjIwOjUyMTQ0IiwiaWF0IjoxNzkxMDAwMTIwMDAxfQ.8BZHMEmjz8Q6EJqvoHXoCYbYjmfA-kot9w7ikP_F1_Y",
+      "valid": false
+    },
+    {
+      "name": "a tampered payload",
+      "header": "eyJpZBI6InIxIiwicmVtb3RlIjoiMTkyLjE2OC4xLjIwOjUyMTQ0IiwidGxzIjp0cnVlLCJzbmkiOiJzdHVkaW8ubG9jYWwiLCJpYXQiOjE3OTEwMDAwMDAwMDAsInBlcnNvbiI6InBfN2YzYSIsImVtYWlsIjoiYW5uQGV4YW1wbGUuY29tIiwibmFtZSI6IkFubiIsInNlc3Npb24iOiJzMSIsImxhYmVsIjoiYnJvd3NlciJ9.AkXFcKgsirp1zuVUmPJwt-bH4l6scR9bJp0bsT1XC3U",
+      "valid": false
+    },
+    {
+      "name": "signed with another key",
+      "header": "eyJpZCI6InIxIiwicmVtb3RlIjoiMTkyLjE2OC4xLjIwOjUyMTQ0IiwidGxzIjp0cnVlLCJzbmkiOiJzdHVkaW8ubG9jYWwiLCJpYXQiOjE3OTEwMDAwMDAwMDAsInBlcnNvbiI6InBfN2YzYSIsImVtYWlsIjoiYW5uQGV4YW1wbGUuY29tIiwibmFtZSI6IkFubiIsInNlc3Npb24iOiJzMSIsImxhYmVsIjoiYnJvd3NlciJ9.rJBeJ_lt6CzsXEoZ3TPGvA1x7-1cSmURSIr5oqqR2SQ",
+      "valid": false
+    },
+    {
+      "name": "signed without the label",
+      "header": "eyJpZCI6InIxIiwicmVtb3RlIjoiMTkyLjE2OC4xLjIwOjUyMTQ0IiwidGxzIjp0cnVlLCJzbmkiOiJzdHVkaW8ubG9jYWwiLCJpYXQiOjE3OTEwMDAwMDAwMDAsInBlcnNvbiI6InBfN2YzYSIsImVtYWlsIjoiYW5uQGV4YW1wbGUuY29tIiwibmFtZSI6IkFubiIsInNlc3Npb24iOiJzMSIsImxhYmVsIjoiYnJvd3NlciJ9.xs_UdHzitBhCByPzQNy18VyoG2JHOQpVkpMknLcXBJI",
+      "valid": false
+    },
+    {
+      "name": "no dot",
+      "header": "abc",
+      "valid": false
+    },
+    {
+      "name": "empty",
+      "header": "",
+      "valid": false
+    },
+    {
+      "name": "no remote",
+      "header": "eyJpZCI6InIxIiwiaWF0IjoxNzkxMDAwMDAwMDAwfQ.2o8oOnh1Hrx41Pb5nOpdtmLmyfEW6vCDJh4YeSaSVq0",
+      "valid": false
+    },
+    {
+      "name": "iat a float",
+      "header": "eyJpZCI6InIxIiwicmVtb3RlIjoiMTAuMC4wLjI6MSIsImlhdCI6MTc5MTAwMDAwMDAwMC41fQ.XKooMQONU1krAmOi1-rV-3txGQ5tpvB9_rTcxf8I-qI",
+      "valid": false
+    },
+    {
+      "name": "iat a string",
+      "header": "eyJpZCI6InIxIiwicmVtb3RlIjoiMTAuMC4wLjI6MSIsImlhdCI6IjE3OTEwMDAwMDAwMDAifQ.topoFseYT9GctbD7mmtfEAfUrsuHxekdvh64gH5BGqE",
+      "valid": false
+    },
+    {
+      "name": "iat true",
+      "header": "eyJpZCI6InIxIiwicmVtb3RlIjoiMTAuMC4wLjI6MSIsImlhdCI6dHJ1ZX0.XBoiNFU8UgiUwY2CFDEdwNCgTdRsZGgPUCQMRV4u8X4",
+      "valid": false
+    },
+    {
+      "name": "iat missing",
+      "header": "eyJpZCI6InIxIiwicmVtb3RlIjoiMTAuMC4wLjI6MSJ9.4vLBTLU7h7GgvIDNawWvBz7TIC9G37oX7izKNOBeGCI",
+      "valid": false
+    },
+    {
+      "name": "a payload that is not JSON",
+      "header": "bm90IGpzb24.E8vFKLmKgHh7uPybMC00iMBmMsmkPTnxmsmb-3aGXu0",
+      "valid": false
+    },
+    {
+      "name": "a JSON array",
+      "header": "WzEsMiwzXQ.1Jh1dN1YU2MC63Enasc5YAuUK8FrA1Abs34vE8b6coA",
+      "valid": false
+    },
+    {
+      "name": "padding in the signature",
+      "header": "eyJpZCI6InIxIiwicmVtb3RlIjoiMTkyLjE2OC4xLjIwOjUyMTQ0IiwiaWF0IjoxNzkxMDAwMDAwMDAwfQ.xRZGSRH0K6x6sIcXqLptxAdmaXinJnKwB2PNVvcL-nw=",
+      "valid": false
+    },
+    {
+      "name": "an unknown field",
+      "header": "eyJpZCI6InIxIiwicmVtb3RlIjoiMTAuMC4wLjI6MSIsImlhdCI6MTc5MTAwMDAwMDAwMCwiZXh0cmEiOnsiYSI6MX19.C9427uqD4kTBkeZ5iCcIMqcmCEkeJtOKaroPwjD2O0s",
+      "valid": true,
+      "ticket": {
+        "id": "r1",
+        "remote": "10.0.0.2:1",
+        "iat": 1791000000000
+      }
+    },
+    {
+      "name": "a null person",
+      "header": "eyJpZCI6InIxIiwicmVtb3RlIjoiMTAuMC4wLjI6MSIsImlhdCI6MTc5MTAwMDAwMDAwMCwicGVyc29uIjpudWxsfQ.yqo76echFck-Qz5AMtYefDzu_yvrYibFzMUGrGe-gl0",
+      "valid": true,
+      "ticket": {
+        "id": "r1",
+        "remote": "10.0.0.2:1",
+        "iat": 1791000000000
+      }
+    },
+    {
+      "name": "tls a string",
+      "header": "eyJpZCI6InIxIiwicmVtb3RlIjoiMTAuMC4wLjI6MSIsImlhdCI6MTc5MTAwMDAwMDAwMCwidGxzIjoieWVzIn0.YyoGYaBC_ZKe1RwU_w7uwCZLaUNexhOXE2CJc4580eQ",
+      "valid": false
+    },
+    {
+      "name": "remote a number",
+      "header": "eyJpZCI6InIxIiwicmVtb3RlIjo3LCJpYXQiOjE3OTEwMDAwMDAwMDB9.5yUrismCneqRtWHa9wq82J-S3GOlX8H6iRf7FPeGej8",
+      "valid": false
+    }
+  ]
+}

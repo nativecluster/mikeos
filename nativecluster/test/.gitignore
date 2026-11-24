@@ -1,0 +1,4 @@
+# The harness's own runs (state folders, ledgers, Playwright results)
+.runs/
+# Staged by e2e/stage.ts on every run
+e2e/.upstream/
