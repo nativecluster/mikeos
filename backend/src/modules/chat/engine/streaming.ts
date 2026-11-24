@@ -109,13 +109,17 @@ import {
 import { buildMemoryTurn } from "../../../lib/memory/prompt";
 import { contextWindowFor } from "../../../lib/llm/contextWindow";
 import {
+  answerRoomTokens,
+  fitHistory,
+  HISTORY_SHARE,
+  promptBudgetTokens,
   turnContextBudget,
   type TurnContextBudget,
 } from "../../../lib/llm/contextBudget";
 
 export type { AssistantEvent } from "@mike/contracts";
 import type { AssistantEvent, AssistantErrorCode } from "@mike/contracts";
-import { log } from "../../../lib/log";
+import { log, logEvent } from "../../../lib/log";
 
 /**
  * Tools the model can call that execute outside this process — in the Word
@@ -319,6 +323,12 @@ function throwIfAborted(signal?: AbortSignal) {
   const err = new Error("Stream aborted.");
   err.name = "AbortError";
   throw err;
+}
+
+/** What the model is told when the oldest messages did not fit its window. */
+function earlierMessagesNote(dropped: number): string {
+  const messages = dropped === 1 ? "message of this conversation is" : "messages of this conversation are";
+  return `EARLIER CONVERSATION:\nThe ${dropped} oldest ${messages} not included: they do not fit this model's context window. If the user refers to something you cannot see, say so and ask them to repeat it.`;
 }
 
 /** Tools whose results the dispatcher spends from the turn's budget itself. */
@@ -926,10 +936,46 @@ export async function runLLMStream(params: {
       contextWindow === undefined
         ? turnTools
         : withPagedWebReads(withPagedDocumentReads(turnTools));
-    const requestSystemPrompt =
+    let requestSystemPrompt =
       contextWindow === undefined
         ? systemPrompt
         : `${systemPrompt}\n\n${PAGED_READS_SYSTEM_PROMPT}`;
+    if (contextWindow !== undefined) {
+      // The earlier conversation may take part of the turn's room, never
+      // all of it: the oldest turns are left out until the rest fits, and
+      // the model is told they are missing.
+      const free = promptBudgetTokens({
+        windowTokens: contextWindow,
+        answerTokens: answerRoomTokens(contextWindow),
+        systemPrompt: `${requestSystemPrompt}\n\n${earlierMessagesNote(9_999)}`,
+        tools: requestTools,
+      });
+      const fitted = fitHistory(chatMessages, {
+        historyTokens: Math.floor(Math.max(0, free) * HISTORY_SHARE),
+        ceilingTokens: free,
+        pinned: memory.message ? 1 : 0,
+      });
+      if (!fitted.fits) {
+        throw new UserFacingError(
+          "This message is too long for the selected model's context window. Shorten it, or attach the text as a document so it can be read in parts.",
+        );
+      }
+      if (fitted.dropped > 0) {
+        chatMessages.splice(0, chatMessages.length, ...fitted.messages);
+        requestSystemPrompt = `${requestSystemPrompt}\n\n${earlierMessagesNote(fitted.dropped)}`;
+        logEvent(
+          "info",
+          "chat/context",
+          "earlier messages left out to fit the context window",
+          {
+            dropped_messages: fitted.dropped,
+            kept_messages: fitted.messages.length,
+            window_tokens: contextWindow,
+            history_tokens: fitted.tokens,
+          },
+        );
+      }
+    }
     turnBudget = turnContextBudget(contextWindow, {
       systemPrompt: requestSystemPrompt,
       tools: requestTools,

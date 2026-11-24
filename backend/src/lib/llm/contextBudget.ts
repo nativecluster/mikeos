@@ -360,3 +360,63 @@ export function turnContextBudget(
     });
     return new TurnContextBudget(windowTokens, windowTokens - free);
 }
+
+/** The share of a turn's free room its earlier conversation may take. */
+export const HISTORY_SHARE = 0.6;
+
+/**
+ * A conversation cut to fit: the oldest turns left out until the rest fits
+ * `historyTokens`, always keeping the newest user message and what follows
+ * it (the turn being answered), and starting the rest on a user message.
+ * `pinned` leading messages (a memory turn) are kept while anything older
+ * can go, and go only when the turn being answered needs their room.
+ * `fits` is false only when the turn being answered is over `ceilingTokens`
+ * on its own.
+ */
+export function fitHistory<
+    T extends { role: string; content?: unknown; reasoning?: string },
+>(
+    messages: readonly T[],
+    args: { historyTokens: number; ceilingTokens: number; pinned?: number },
+): { messages: T[]; dropped: number; tokens: number; fits: boolean } {
+    const all = estimateMessageTokens(messages);
+    if (all <= args.historyTokens) {
+        return { messages: [...messages], dropped: 0, tokens: all, fits: true };
+    }
+    const pinnedCount = Math.min(args.pinned ?? 0, messages.length);
+    let lastUser = -1;
+    for (let i = messages.length - 1; i >= pinnedCount; i--) {
+        if (messages[i].role === "user") {
+            lastUser = i;
+            break;
+        }
+    }
+    const currentStart = lastUser >= 0 ? lastUser : Math.max(pinnedCount, messages.length - 1);
+    const pinned = messages.slice(0, pinnedCount);
+    const current = messages.slice(currentStart);
+    const older = messages.slice(pinnedCount, currentStart);
+    const pinnedTokens = estimateMessageTokens(pinned);
+    const currentTokens = estimateMessageTokens(current);
+
+    // The newest earlier messages that fit beside the pinned and current ones.
+    let room = args.historyTokens - pinnedTokens - currentTokens;
+    let keepFrom = older.length;
+    while (keepFrom > 0) {
+        const cost = estimateMessageTokens([older[keepFrom - 1]]);
+        if (cost > room) break;
+        room -= cost;
+        keepFrom -= 1;
+    }
+    // Begin on a user message, as a conversation does.
+    while (keepFrom < older.length && older[keepFrom].role !== "user") keepFrom += 1;
+    const kept = older.slice(keepFrom);
+
+    const keepPinned = pinnedTokens + currentTokens <= args.ceilingTokens;
+    const result = [...(keepPinned ? pinned : []), ...kept, ...current];
+    return {
+        messages: result,
+        dropped: messages.length - result.length,
+        tokens: estimateMessageTokens(result),
+        fits: currentTokens <= args.ceilingTokens,
+    };
+}

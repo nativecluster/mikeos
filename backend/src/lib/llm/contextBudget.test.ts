@@ -6,6 +6,7 @@ import {
     endWithinTokens,
     estimateMessageTokens,
     estimateTokens,
+    fitHistory,
     headWithinTokens,
     MESSAGE_OVERHEAD_TOKENS,
     MIN_PAGE_TOKENS,
@@ -226,5 +227,48 @@ describe("TurnContextBudget", () => {
         })!;
         budget.spendTokens(budget.remaining() - MIN_PAGE_TOKENS);
         expect(budget.pageTokens()).toBe(0);
+    });
+});
+
+describe("fitHistory", () => {
+    const turn = (n: number, size = 300) => [
+        { role: "user", content: `question ${n} ${"q".repeat(size)}` },
+        { role: "assistant", content: `answer ${n} ${"a".repeat(size)}` },
+    ];
+    const history = [...turn(1), ...turn(2), ...turn(3), { role: "user", content: "latest" }];
+
+    it("keeps a conversation that fits", () => {
+        const fitted = fitHistory(history, { historyTokens: 10_000, ceilingTokens: 10_000 });
+        expect(fitted.messages).toEqual(history);
+        expect(fitted.dropped).toBe(0);
+    });
+
+    it("leaves out the oldest turns first, starting on a user message", () => {
+        const fitted = fitHistory(history, { historyTokens: 300, ceilingTokens: 10_000 });
+        expect(fitted.dropped).toBeGreaterThan(0);
+        expect(fitted.messages[0].role).toBe("user");
+        expect(fitted.messages.at(-1)!.content).toBe("latest");
+        expect(fitted.tokens).toBeLessThanOrEqual(300);
+        expect(fitted.fits).toBe(true);
+        // What is kept is the newest, in order.
+        expect(history.slice(-fitted.messages.length)).toEqual(fitted.messages);
+    });
+
+    it("keeps the pinned memory turn while older turns can go", () => {
+        const memory = { role: "user", content: "memory" };
+        const fitted = fitHistory([memory, ...history], {
+            historyTokens: 300,
+            ceilingTokens: 10_000,
+            pinned: 1,
+        });
+        expect(fitted.messages[0]).toBe(memory);
+        expect(fitted.messages.at(-1)!.content).toBe("latest");
+    });
+
+    it("always keeps the turn being answered, and says when it alone is too long", () => {
+        const huge = [...turn(1), { role: "user", content: "x".repeat(30_000) }];
+        const fitted = fitHistory(huge, { historyTokens: 500, ceilingTokens: 5_000 });
+        expect(fitted.messages).toEqual([huge.at(-1)]);
+        expect(fitted.fits).toBe(false);
     });
 });
