@@ -2,6 +2,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { ConnectorApprovalItem } from "@mike/contracts";
 import type { OpenAIToolSchema } from "../llm";
+import { assertNetPlaneOn } from "../nc/netPlanes";
 import { type ConnectorOwner, workspaceFilter } from "../connectorOwner";
 import { AppError } from "../appError";
 import { reportError } from "../observability/sentry";
@@ -67,6 +68,7 @@ async function withMcpClient<T>(
     callback: (client: Client) => Promise<T>,
     db: Db = createServerSupabase(),
 ): Promise<T> {
+    assertNetPlaneOn("mcp");
     await validateRemoteMcpUrl(connector.server_url);
     await resolveConnectorSecrets(connector);
     const authConfig = decryptAuthConfig(connector);

@@ -17,6 +17,7 @@
 // 3. A pasted token or headers, as before (create/update with bearerToken).
 
 import crypto from "node:crypto";
+import { assertNetPlaneOn } from "../nc/netPlanes";
 import { createServerSupabase } from "../supabase";
 import {
     base64Url,
@@ -79,6 +80,7 @@ type DeviceDiscovery = {
 export async function discoverMcpDeviceGrant(
     serverUrl: string,
 ): Promise<DeviceDiscovery | null> {
+    assertNetPlaneOn("mcp");
     try {
         const metadataUrl = await discoverProtectedResourceMetadataUrl(serverUrl);
         const resourceMetadata = await fetchJson(metadataUrl);
@@ -202,6 +204,7 @@ export async function startMcpDeviceAuthorization(
     redirectUri: string,
     db: Db,
 ): Promise<McpDeviceAuthorization | null> {
+    assertNetPlaneOn("mcp");
     const discovery = await discoverMcpDeviceGrant(connector.server_url);
     if (!discovery) return null;
     const client = await deviceClient(connector, discovery, redirectUri, db);
@@ -313,6 +316,7 @@ export async function pollMcpDeviceAuthorization(
     state: string,
     db: Db = createServerSupabase(),
 ): Promise<McpDevicePoll> {
+    assertNetPlaneOn("mcp");
     const found = await loadOwnState(userId, connectorId, state, db);
     if (!found) return { status: "expired" };
     const { row, config } = found;
@@ -377,6 +381,7 @@ export async function completeMcpConnectorOAuthFromPaste(
     /** The app's origin the paste came from (ncAppOrigin of the request). */
     origin: string | null = null,
 ): Promise<void> {
+    assertNetPlaneOn("mcp");
     const { code, state, error } = parsePastedAuthorization(pasted);
     if (error)
         throw new McpLinkError(

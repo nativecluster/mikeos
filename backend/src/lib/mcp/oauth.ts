@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { assertNetPlaneOn } from "../nc/netPlanes";
 import {
     auth as runMcpOAuth,
     type OAuthClientProvider,
@@ -73,6 +74,7 @@ function parseWwwAuthenticate(value: string | null): string | null {
 }
 
 export async function fetchJson(url: string, init?: RequestInit) {
+    assertNetPlaneOn("mcp");
     // Route through the shared guarded egress helper so this call gets the same
     // HTTPS-only / private-IP / connect-time-pinned / no-redirect protections as
     // the connector transport (closes the raw-fetch SSRF gap in OAuth discovery).
@@ -420,6 +422,7 @@ const PERMANENT_OAUTH_ERROR_CODES = new Set([
 ]);
 
 export async function refreshOAuthAccessToken(row: OAuthTokenRow, db: Db) {
+    assertNetPlaneOn("mcp");
     const refreshToken = decryptString(
         row.encrypted_refresh_token,
         row.refresh_token_iv,
@@ -774,6 +777,7 @@ export async function startUserMcpConnectorOAuth(
     redirectUri: string,
     db: Db = createServerSupabase(),
 ): Promise<{ authorizationUrl: string | null; alreadyAuthorized: boolean }> {
+    assertNetPlaneOn("mcp");
     const connector = await loadConnector(userId, connectorId, db);
     const provider = new DbMcpOAuthProvider(
         db,
@@ -853,6 +857,7 @@ export async function completeMcpConnectorOAuthAuthorization(
     /** App mode: the app's origin the finishing request came to (ncAppOrigin). */
     options: { origin?: string | null } = {},
 ): Promise<{ userId: string; connectorId: string }> {
+    assertNetPlaneOn("mcp");
     const { data, error } = await db
         .from("user_mcp_oauth_states")
         .select("*")

@@ -1,6 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { AppError } from "../appError";
+import { assertNetPlaneOn } from "../nc/netPlanes";
 import { SearchApiError } from "./http";
 import { SEARCH_SERVICES } from "./services";
 import type { WebSearchAccount, WebSearchResult } from "./types";
@@ -48,6 +49,7 @@ export function createWebSearch(deps: Deps) {
         options: { account: WebSearchAccount | null; signal?: AbortSignal },
     ): Promise<WebSearchResult[]> {
         const { account, signal } = options;
+        assertNetPlaneOn("websearch");
         if (!account) throw new WebSearchUnavailableError("not_configured");
         const { apiKey } = account;
         const service = SEARCH_SERVICES[account.backend];

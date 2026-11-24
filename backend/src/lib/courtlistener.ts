@@ -1,6 +1,7 @@
 import { downloadFileIfAvailable, listFiles } from "./storage";
 import { devLog } from "./log";
 import { guardedFetch } from "./mcp/client";
+import { assertNetPlaneOn } from "./nc/netPlanes";
 import type { Db } from "./supabase";
 
 const COURTLISTENER_BASE = "https://www.courtlistener.com/api/rest/v4";
@@ -76,6 +77,7 @@ async function courtlistenerFetch<T>(
     init?: RequestInit,
     apiToken?: string | null,
 ): Promise<T> {
+    assertNetPlaneOn("courtlistener");
     const url = pathOrUrl.startsWith("http")
         ? pathOrUrl
         : `${COURTLISTENER_BASE}${pathOrUrl}`;

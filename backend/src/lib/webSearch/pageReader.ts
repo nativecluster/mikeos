@@ -2,6 +2,7 @@ import { AppError } from "../appError";
 import { isBlockedDestinationError } from "../blockedDestination";
 import { reportError } from "../observability/sentry";
 import { guardedFetch, validateRemoteMcpUrl } from "../mcp/client";
+import { assertNetPlaneOn } from "../nc/netPlanes";
 import { extractPdfTextForModel } from "../pdfText";
 import { withTimeout } from "./http";
 import { SEARCH_SERVICES } from "./services";
@@ -228,6 +229,7 @@ export async function readWebPage(
     url: string,
     options: ReadOptions = {},
 ): Promise<WebPage> {
+    assertNetPlaneOn("websearch");
     // Search services cannot read every page, so one they could not read is
     // read here instead.
     const page =
