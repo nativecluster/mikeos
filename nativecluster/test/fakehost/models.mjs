@@ -376,6 +376,26 @@ export class RealModels {
   async call(path, body, req, res, raw) {
     const scripted = this.script.shift();
     if (scripted) return new FakeModels({ delayMs: 0 }).call(path, body, req, res);
+    // The host's socket and the local address read two fields differently:
+    // the socket ignores `think` for a model that does not think, where the
+    // local address refuses it (400 invalid_value, measured 2026-11-24), and
+    // `cache_key` is the socket's own (a grant's warm conversation). An
+    // app's call is the socket's, so the forward says what the socket means.
+    if (body && typeof body === "object" && path === "/v1/chat/completions") {
+      let changed = false;
+      if ("cache_key" in body) {
+        delete body.cache_key;
+        changed = true;
+      }
+      if ("think" in body) {
+        const m = (await this.list().catch(() => [])).find((x) => x.id === body.model);
+        if (!m?.capabilities?.includes("thinking")) {
+          delete body.think;
+          changed = true;
+        }
+      }
+      if (changed) raw = Buffer.from(JSON.stringify(body));
+    }
     let up;
     try {
       up = await this.request("POST", path, { body: raw, headers: { "content-type": req.headers["content-type"] ?? "application/json", accept: req.headers.accept ?? "*/*" } });
