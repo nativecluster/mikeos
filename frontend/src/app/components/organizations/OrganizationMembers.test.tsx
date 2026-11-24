@@ -1145,3 +1145,21 @@ describe("OrganizationMembers", () => {
     expect(screen.getByRole("button", { name: "Add member" })).toBeEnabled();
   });
 });
+
+describe("OrganizationMembers in the NativeCluster app", () => {
+  it("offers no Add member, and says sharing with the group is not available yet", async () => {
+    vi.stubEnv("NEXT_PUBLIC_MIKE_NC_APP", "1");
+    try {
+      render(<OrganizationMembers orgId="org-1" />);
+      expect(await screen.findByText("William Chen")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Add member" })).toBeNull();
+      expect(
+        screen.getByText(
+          "Sharing with your group isn't available in the NativeCluster app yet.",
+        ),
+      ).toBeInTheDocument();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});

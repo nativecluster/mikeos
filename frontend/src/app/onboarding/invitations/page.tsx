@@ -4,8 +4,10 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { OnboardingInvitations } from "@/app/components/auth/OnboardingInvitations";
 import { OnboardingShell } from "@/app/components/auth/OnboardingShell";
+import { onboardingStepLabel, pathAfterPractice } from "@/app/onboarding/steps";
 import { FullScreenLoader } from "@/app/components/shared/FullScreenLoader";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { isNcApp } from "@/app/lib/ncApp";
 import { useUserProfile } from "@/app/contexts/UserProfileContext";
 import { PillButtonUI } from "@mike/ui";
 
@@ -18,7 +20,14 @@ export default function OnboardingInvitationsPage() {
         if (!authLoading && !user) router.replace("/login");
     }, [authLoading, router, user]);
 
-    if (authLoading || loading || !user || !profile) {
+    // The NativeCluster app has no organization invitations: an old link
+    // or a Back button that lands here goes on to the next step.
+    const skipped = isNcApp();
+    useEffect(() => {
+        if (skipped) router.replace(pathAfterPractice());
+    }, [router, skipped]);
+
+    if (skipped || authLoading || loading || !user || !profile) {
         return <FullScreenLoader />;
     }
 
@@ -31,7 +40,7 @@ function InvitationStep({ userId }: { userId: string }) {
 
     return (
         <OnboardingShell
-            step="Step 3 of 4"
+            step={onboardingStepLabel("invitations")}
             title="Organization invitations"
         >
             <OnboardingInvitations

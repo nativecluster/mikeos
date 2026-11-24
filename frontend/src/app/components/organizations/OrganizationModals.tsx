@@ -23,6 +23,7 @@ import {
   type InvitableOrgRole,
 } from "@/app/lib/permissions";
 import { userFacingApiError } from "@/app/lib/userFacingError";
+import { isNcApp } from "@/app/lib/ncApp";
 import { settleBulkRequests } from "@/app/lib/bulkRequests";
 
 function friendlyError(error: unknown, fallback: string) {
@@ -167,6 +168,9 @@ export function CreateOrganizationModal({
             </p>
           </div>
 
+          {/* Accounts are per computer in the NativeCluster app: nobody to
+              invite. */}
+          {isNcApp() ? null : (
           <div>
             <FieldLabel as="p">Invite members</FieldLabel>
             <AddUserInput
@@ -215,6 +219,7 @@ export function CreateOrganizationModal({
               the organization page.
             </p>
           </div>
+          )}
         </div>
       </Modal>
       <WarningPopup

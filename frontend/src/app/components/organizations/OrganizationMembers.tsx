@@ -70,6 +70,7 @@ import {
   type OrgRole,
 } from "@/app/lib/permissions";
 import { userFacingApiError } from "@/app/lib/userFacingError";
+import { isNcApp, NC_APP_SHARING_UNAVAILABLE } from "@/app/lib/ncApp";
 import { OrganizationDepartedMembers } from "./OrganizationDepartedMembers";
 import { InviteOrganizationMemberModal } from "./OrganizationModals";
 import { useIdSet } from "@/app/hooks/useIdSet";
@@ -487,21 +488,32 @@ export function OrganizationMembers({
             placeholder:
               tab === "departed" ? "Search departed members…" : "Search members…",
           },
-          {
-            type: "new",
-            title: isAdmin
-              ? "Add member"
-              : "Only organization admins can add members",
-            disabled: !isAdmin,
-            onClick: () => {
-              setInviteOpen(true);
-              // The modal shows the invitation list this page loaded, which
-              // by now may name people who have already accepted.
-              void refreshPeople();
-            },
-          },
+          // Accounts are per computer in the NativeCluster app: nobody to
+          // invite.
+          ...(isNcApp()
+            ? []
+            : [
+                {
+                  type: "new" as const,
+                  title: isAdmin
+                    ? "Add member"
+                    : "Only organization admins can add members",
+                  disabled: !isAdmin,
+                  onClick: () => {
+                    setInviteOpen(true);
+                    // The modal shows the invitation list this page loaded,
+                    // which by now may name people who have already accepted.
+                    void refreshPeople();
+                  },
+                },
+              ]),
         ]}
       />
+      {isNcApp() ? (
+        <p className="mb-4 text-sm text-gray-500">
+          {NC_APP_SHARING_UNAVAILABLE}
+        </p>
+      ) : null}
 
       {tab === "departed" ? (
         <OrganizationDepartedMembers

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MikeApiError } from "@/app/lib/mikeApi";
@@ -291,6 +291,45 @@ describe("OrganizationsOverview", () => {
     );
     // The list is re-read so the new organization appears in it.
     expect(mocks.listOrgs.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  describe("in the NativeCluster app, whose accounts are per computer", () => {
+    beforeEach(() => vi.stubEnv("NEXT_PUBLIC_MIKE_NC_APP", "1"));
+    afterEach(() => vi.unstubAllEnvs());
+
+    it("says in one line that sharing with the group is not available, in place of invitations", async () => {
+      mocks.listMyOrgInvitations.mockResolvedValueOnce([INVITATION]);
+      render(<OrganizationsOverview />);
+      await screen.findByText("Elite Law LLP");
+
+      expect(
+        screen.getByText(
+          "Sharing with your group isn't available in the NativeCluster app yet.",
+        ),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("heading", { name: "Invitations" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("creates an organization without inviting anyone", async () => {
+      const user = userEvent.setup();
+      mocks.createOrg.mockResolvedValue({ ...ORG, id: "org-2", name: "New Chambers" });
+      render(<OrganizationsOverview />);
+      await screen.findByText("Elite Law LLP");
+
+      await user.click(screen.getByRole("button", { name: "New organization" }));
+      await settleModalFocus();
+      expect(screen.queryByPlaceholderText("Add member by email…")).toBeNull();
+      expect(screen.queryByText("Invite members")).toBeNull();
+      await user.type(screen.getByLabelText("Organization name"), "New Chambers");
+      await user.click(screen.getByRole("button", { name: "Create" }));
+
+      await waitFor(() =>
+        expect(mocks.createOrg).toHaveBeenCalledWith("New Chambers"),
+      );
+      expect(mocks.createOrgInvitation).not.toHaveBeenCalled();
+    });
   });
 
   it("says so when the person belongs to no organization", async () => {

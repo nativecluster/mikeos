@@ -130,6 +130,21 @@ describe("OnboardingPracticePage", () => {
     expect(updatePersonalisation).not.toHaveBeenCalled();
   });
 
+  it("skips to the model step in the NativeCluster app, which has no invitations", async () => {
+    vi.stubEnv("NEXT_PUBLIC_MIKE_NC_APP", "1");
+    try {
+      const user = userEvent.setup();
+      render(<OnboardingPracticePage />);
+      expect(screen.getByText("Step 2 of 3")).toBeVisible();
+
+      await user.click(screen.getByRole("button", { name: "Skip" }));
+
+      expect(push).toHaveBeenCalledWith("/onboarding/models");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("allows personalisation to be skipped", async () => {
     const user = userEvent.setup();
     render(<OnboardingPracticePage />);

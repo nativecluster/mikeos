@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { OnboardingShell } from "@/app/components/auth/OnboardingShell";
+import { onboardingStepLabel } from "@/app/onboarding/steps";
 import { authInputUIClassName, InputUI, PillButtonUI } from "@mike/ui";
 import { FullScreenLoader } from "@/app/components/shared/FullScreenLoader";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -75,7 +76,7 @@ function ProfileDetailsForm({
 
     return (
         <OnboardingShell
-            step="Step 1 of 4"
+            step={onboardingStepLabel("profile")}
             title="Tell us about you"
             description="Add the details we should use across Mike."
         >
