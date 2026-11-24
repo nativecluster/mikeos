@@ -5,6 +5,7 @@ import { buildCustomRoute } from "next/dist/lib/build-custom-route";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import nextConfig from "../../../next.config";
 import { STANDARD_FONT_DATA_URL } from "../components/shared/views/highlightQuote";
+import { securityHeaders } from "./securityHeaders";
 
 /**
  * The headers next.config.ts attaches to `path`. Each rule's source is
@@ -82,6 +83,27 @@ describe("web app security headers", () => {
             .find((directive) => directive.startsWith("font-src "));
 
         expect(fontSrc?.split(" ")).toContain(new URL(STANDARD_FONT_DATA_URL).origin);
+    });
+
+    it("names no font CDN in the NativeCluster app, whose pages load nothing from outside", async () => {
+        vi.stubEnv("NODE_ENV", "production");
+        vi.stubEnv("NEXT_PUBLIC_MIKE_NC_APP", "1");
+        const policy = (await pageHeaders())["Content-Security-Policy-Report-Only"];
+        const fontSrc = policy
+            .split(";")
+            .map((directive) => directive.trim())
+            .find((directive) => directive.startsWith("font-src "));
+
+        expect(fontSrc).toBe("font-src 'self' data: blob:");
+        expect(policy).not.toContain("unpkg.com");
+        expect(policy).not.toContain("cdn.jsdelivr.net");
+    });
+
+    it("keeps the font CDNs everywhere else", () => {
+        const policy = securityHeaders(true, false).find(
+            (header) => header.key === "Content-Security-Policy-Report-Only",
+        )?.value;
+        expect(policy).toContain("https://cdn.jsdelivr.net https://unpkg.com");
     });
 
     it("does not advertise the framework", () => {
