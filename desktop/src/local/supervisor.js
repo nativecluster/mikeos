@@ -29,6 +29,7 @@ const { loadOrCreateSecrets } = require("./secrets");
 const { startGateway } = require("./gateway");
 const { localEnvironment } = require("./environment");
 const { installBundledWorkflows } = require("./workflows");
+const { backendModelEnvironment, findNativeCluster } = require("./nativecluster");
 
 const children = []; // [{name, proc}] in boot order
 let gatewayServer = null;
@@ -336,6 +337,10 @@ async function startLocalStack(app, status = () => {}) {
     status("Starting Mike services…");
     assertBackendNodeSupported(paths.backendDir);
     const soffice = findSoffice();
+    // NativeCluster on this Mac, when it answers, runs every model call;
+    // otherwise local models stay on Ollama.
+    const nativeCluster = await findNativeCluster();
+    throwIfAborted();
     spawnService("backend", process.execPath,
       [path.join(paths.backendDir, "dist", "index.js")], {
       dirs,
@@ -356,7 +361,7 @@ async function startLocalStack(app, status = () => {}) {
         BACKEND_PUBLIC_URL: BACKEND_URL,
         DOWNLOAD_SIGNING_SECRET: secrets.downloadSigningSecret,
         USER_API_KEYS_ENCRYPTION_SECRET: secrets.userApiKeysEncryptionSecret,
-        OLLAMA_BASE_URL: "http://127.0.0.1:11434/v1",
+        ...backendModelEnvironment(nativeCluster),
         // The backend's per-IP rate limits (backend/src/app.ts) are sized for
         // a shared server where one IP is one client among many. Here every
         // request is 127.0.0.1 and there is exactly one user, so the server

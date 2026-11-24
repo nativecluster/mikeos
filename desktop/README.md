@@ -215,10 +215,18 @@ choice) skips the chooser, so automation and returning users never see it.
 
 Known limits (deliberate v1 scope): password reset by email needs an SMTP
 server, so it's unavailable in local mode (stated on the connect screen);
-LLM calls still need a per-user API key (Settings → API Keys) or a local
-Ollama; docx→pdf renditions activate only if LibreOffice is installed (the
+LLM calls still need a per-user API key (Settings → API Keys), a local
+Ollama, or NativeCluster; docx→pdf renditions activate only if LibreOffice is installed (the
 supervisor auto-detects `/Applications/LibreOffice.app`) — without it the
 product falls back to client-side docx preview, as designed.
+
+When NativeCluster is installed on the Mac (`~/.local/bin/nativecluster`) and
+answers `nativecluster env`, the supervisor gives the backend the env file
+that command prints (`NATIVECLUSTER_ENV_FILE`, never the key itself) and sets
+`MIKE_INFERENCE_PROVIDER=nativecluster`: every model call then runs on the
+group's own Macs, and the pickers offer NativeCluster's models alone. Without
+it, local models stay on Ollama as before. See
+[docs/nativecluster.md](../docs/nativecluster.md).
 
 `local:fetch` also downloads the upstream license/copyright files for the exact
 PostgreSQL, native packager, PostgREST and GoTrue versions, even when their binaries
