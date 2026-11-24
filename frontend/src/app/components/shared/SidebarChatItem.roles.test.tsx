@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SidebarChatItem } from "./SidebarChatItem";
 import type { Chat } from "@/app/components/shared/types";
 
@@ -47,6 +47,24 @@ beforeEach(() => {
     vi.clearAllMocks();
     deleteChat.mockResolvedValue(undefined);
     leaveChat.mockResolvedValue(undefined);
+});
+
+describe("SidebarChatItem in the NativeCluster app", () => {
+    beforeEach(() => vi.stubEnv("NEXT_PUBLIC_MIKE_NC_APP", "1"));
+    afterEach(() => vi.unstubAllEnvs());
+
+    it("offers an owner no Share: accounts are per computer", async () => {
+        render(
+            <SidebarChatItem
+                chat={chat({ is_owner: true })}
+                isActive
+                onSelect={vi.fn()}
+            />,
+        );
+        openMenu();
+        expect(await screen.findByRole("menuitem", { name: "Rename" })).toBeVisible();
+        expect(screen.queryByRole("menuitem", { name: "Share" })).toBeNull();
+    });
 });
 
 describe("SidebarChatItem role gates", () => {

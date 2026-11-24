@@ -26,6 +26,7 @@ import { userFacingApiError } from "@/app/lib/userFacingError";
 import type { Chat } from "@/app/components/shared/types";
 import { ChatSkeuoIcon } from "@/app/components/shared/AppSidebarSkeuoIcons";
 import { ChatAccessModal } from "@/app/components/assistant/ChatAccessModal";
+import { isNcApp } from "@/app/lib/ncApp";
 import { cn } from "@/app/lib/utils";
 import {
     LIQUID_GLASS_SELECTED_CLASS,
@@ -67,7 +68,8 @@ export function SidebarChatItem({
     // Chat management belongs to owners; editors can still send messages.
     const role = roleFrom(chat);
     const canRename = can(role, "access.manage");
-    const canShare = can(role, "access.manage");
+    // Accounts are per computer in the NativeCluster app: nobody to share with.
+    const canShare = !isNcApp() && can(role, "access.manage");
     const canDelete = can(role, "container.delete");
     const canLeave = chat.can_leave === true && chat.project_id === null && role !== "owner";
     // One label for the row's tooltip and its accessible name, so the

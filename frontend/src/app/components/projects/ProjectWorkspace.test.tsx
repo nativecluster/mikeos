@@ -56,7 +56,9 @@ vi.mock("@/app/components/modals/AccessModal", () => ({
     AccessModal: () => null,
 }));
 vi.mock("./ProjectDetailsModal", () => ({
-    ProjectDetailsModal: () => null,
+    ProjectDetailsModal: ({ onShareProject }: { onShareProject?: () => void }) => (
+        <span data-testid="details-share">{onShareProject ? "share" : "no share"}</span>
+    ),
 }));
 // The real modal owns its own reads and reports the enabled flag on every
 // load and poll; this stand-in lets a test fire that callback on demand.
@@ -106,6 +108,21 @@ describe("ProjectWorkspaceProvider", () => {
         expect(
             await screen.findByRole("button", { name: "Upload" }),
         ).toBeEnabled();
+    });
+
+    it("offers Share from the project's details", () => {
+        render(<ProjectWorkspaceProvider projectId="project-1"><span /></ProjectWorkspaceProvider>);
+        expect(screen.getByTestId("details-share")).toHaveTextContent(/^share$/);
+    });
+
+    it("offers no Share from the details in the NativeCluster app, whose accounts are per computer", () => {
+        vi.stubEnv("NEXT_PUBLIC_MIKE_NC_APP", "1");
+        try {
+            render(<ProjectWorkspaceProvider projectId="project-1"><span /></ProjectWorkspaceProvider>);
+            expect(screen.getByTestId("details-share")).toHaveTextContent("no share");
+        } finally {
+            vi.unstubAllEnvs();
+        }
     });
 
     it("keeps one project object while the memory poll reports no change", async () => {

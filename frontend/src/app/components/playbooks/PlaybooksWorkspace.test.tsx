@@ -758,6 +758,32 @@ describe("playbooks page", () => {
     expect(screen.getByLabelText("Rule")).toHaveValue("Liability cap");
   });
 
+  it("offers no People anywhere in the NativeCluster app, whose accounts are per computer", async () => {
+    vi.stubEnv("NEXT_PUBLIC_MIKE_NC_APP", "1");
+    try {
+      const user = userEvent.setup();
+      render(<PlaybooksPage />);
+      const trigger = await screen.findByRole("button", {
+        name: "Actions for Playbook B",
+      });
+      await user.click(trigger);
+      expect(
+        within(screen.getByRole("menu"))
+          .getAllByRole("menuitem")
+          .map((item) => item.textContent),
+      ).toEqual(["Open", "Details", "Run", "Delete"]);
+      await user.click(screen.getByRole("menuitem", { name: "Details" }));
+      const details = await screen.findByRole("dialog", { name: "Details" });
+      expect(within(details).queryByRole("button", { name: "People" })).toBeNull();
+      await user.click(within(details).getByRole("button", { name: "Close" }));
+
+      await user.click(screen.getByRole("link", { name: "Playbook A" }));
+      expect(screen.queryByRole("button", { name: "Playbook people" })).toBeNull();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("opens Details for the row from its context menu", async () => {
     render(<PlaybooksPage />);
     const link = await screen.findByRole("link", { name: "Playbook B" });

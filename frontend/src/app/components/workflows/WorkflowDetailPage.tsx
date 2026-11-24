@@ -56,6 +56,7 @@ import {
   type HeaderActionsMenuItem,
 } from "@/app/components/shared/HeaderActionsMenu";
 import { AccessModal } from "@/app/components/modals/AccessModal";
+import { isNcApp } from "@/app/lib/ncApp";
 import { AddDocumentsModal } from "@/app/components/modals/AddDocumentsModal";
 import { OpenSourceWorkflowModal } from "@/app/components/workflows/OpenSourceWorkflowModal";
 import { PageHeader } from "@/app/components/shared/PageHeader";
@@ -688,7 +689,9 @@ export function WorkflowDetailPage({ id, workflowType }: Props) {
               ]
             : [],
           [
-            canShare
+            // Accounts are per computer in the NativeCluster app: nobody to
+            // share with.
+            canShare && !isNcApp()
               ? {
                   onClick: () => {
                     setShareRefreshError(null);

@@ -50,6 +50,7 @@ import {
 } from "./useAssistantDocumentPanel";
 import { AssistantWorkflowModal } from "./AssistantWorkflowModal";
 import { ChatAccessModal } from "./ChatAccessModal";
+import { isNcApp } from "@/app/lib/ncApp";
 import { LeaveChatPopup } from "./LeaveChatPopup";
 import type {
     AssistantEvent,
@@ -780,12 +781,13 @@ export function AssistantChatColumn({
     };
 
     const chatActionItems: HeaderActionsMenuItem[] = can(activeChatRole, "access.manage") ? [
-        {
+        // Accounts are per computer in the NativeCluster app: nobody to share with.
+        ...(isNcApp() ? [] : [{
             label: "Share",
             icon: Users,
             onSelect: handleShareChat,
             disabled: !activeChat,
-        },
+        }]),
         {
             label: "Rename",
             icon: Pencil,

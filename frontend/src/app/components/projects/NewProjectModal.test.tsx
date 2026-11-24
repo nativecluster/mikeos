@@ -443,6 +443,28 @@ describe("NewProjectModal sharing", () => {
         );
     });
 
+    it("goes from details straight to documents in the NativeCluster app, whose accounts are per computer", async () => {
+        vi.stubEnv("NEXT_PUBLIC_MIKE_NC_APP", "1");
+        try {
+            const user = userEvent.setup({ delay: null });
+            renderModal();
+
+            await user.type(screen.getByPlaceholderText("Add project name"), "Matter");
+            await user.click(screen.getByRole("button", { name: "Next" }));
+            expect(screen.getByRole("dialog", { name: "Add Documents" })).toBeVisible();
+            expect(screen.queryByText("Share Access")).toBeNull();
+
+            await user.click(screen.getByRole("button", { name: "Back" }));
+            expect(screen.getByPlaceholderText("Add project name")).toHaveValue("Matter");
+
+            await submit(user);
+            await waitFor(() => expect(createProject).toHaveBeenCalled());
+            expect(grantProjectAccess).not.toHaveBeenCalled();
+        } finally {
+            vi.unstubAllEnvs();
+        }
+    });
+
     it("does not create or redirect until document selection is finished", async () => {
         const user = userEvent.setup({ delay: null });
         const onCreated = renderModal();

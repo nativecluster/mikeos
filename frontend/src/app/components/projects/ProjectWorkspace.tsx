@@ -41,6 +41,7 @@ import {
     type AccessContact,
 } from "@/app/components/popups/PermissionDeniedPopup";
 import { AccessModal } from "@/app/components/modals/AccessModal";
+import { isNcApp } from "@/app/lib/ncApp";
 import { notifyError } from "@/app/lib/userFacingError";
 import { useAssignLatest } from "@/app/hooks/useLatestRef";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -657,10 +658,14 @@ export function ProjectWorkspaceProvider({
                         canEdit={canDo("access.manage")}
                         onClose={() => setProjectDetailsOpen(false)}
                         onSave={handleProjectDetailsSave}
-                        onShareProject={() => {
-                            setProjectDetailsOpen(false);
-                            setAccessModalOpen(true);
-                        }}
+                        onShareProject={
+                            isNcApp()
+                                ? undefined
+                                : () => {
+                                      setProjectDetailsOpen(false);
+                                      setAccessModalOpen(true);
+                                  }
+                        }
                     />
 
                     <ConfirmPopup

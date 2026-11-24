@@ -43,6 +43,7 @@ import {
     type PendingDirectGrant,
     type PendingOrgOverride,
 } from "../modals/CreateAccessStep";
+import { isNcApp } from "@/app/lib/ncApp";
 
 const DEFAULT_LANGUAGE = "English";
 const DEFAULT_PRACTICE = "";
@@ -122,6 +123,9 @@ export function NewWorkflowModal({
     const [step, setStep] = useState<"details" | "access" | "assets">(
         "details",
     );
+    // The NativeCluster app has no one to share with (accounts are per
+    // computer), so it skips the access step.
+    const skipAccessStep = isNcApp();
     const [type, setType] = useState<"assistant" | "tabular">("assistant");
     const [language, setLanguage] = useState(DEFAULT_LANGUAGE);
     const [customLanguage, setCustomLanguage] = useState("");
@@ -548,8 +552,10 @@ export function NewWorkflowModal({
         if (viewOnly || !title.trim()) return;
 
         if (!isEditing) {
+            // A form submission never creates: only the Create button does.
             if (step === "details") {
-                setStep("access");
+                if (!skipAccessStep) setStep("access");
+                else if (type === "assistant") setStep("assets");
             }
             return;
         }
@@ -696,11 +702,14 @@ export function NewWorkflowModal({
             primaryAction={
                 viewOnly
                     ? undefined
-                    : !isEditing && step === "details"
+                    : !isEditing &&
+                        step === "details" &&
+                        !(skipAccessStep && type === "tabular")
                       ? {
                             label: "Next",
                             type: "button",
-                            onClick: () => setStep("access"),
+                            onClick: () =>
+                                setStep(skipAccessStep ? "assets" : "access"),
                             disabled: !title.trim() || loading,
                         }
                       : !isEditing && step === "access" && type === "assistant"
@@ -734,7 +743,8 @@ export function NewWorkflowModal({
                     ? {
                           label: "Back",
                           type: "button",
-                          onClick: () => setStep("access"),
+                          onClick: () =>
+                              setStep(skipAccessStep ? "details" : "access"),
                           disabled: loading,
                       }
                     : !isEditing && step === "access"

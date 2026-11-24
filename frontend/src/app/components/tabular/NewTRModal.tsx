@@ -48,6 +48,7 @@ import {
     type PendingDirectGrant,
     type PendingOrgOverride,
 } from "../modals/CreateAccessStep";
+import { isNcApp } from "@/app/lib/ncApp";
 import { useConfiguredModels } from "@/app/hooks/useConfiguredModels";
 import { appendMissingById } from "@/app/lib/idCollections";
 
@@ -103,6 +104,9 @@ function NewTRModalForWorkspace({
     const [step, setStep] = useState<"details" | "access" | "documents">(
         "details",
     );
+    // The NativeCluster app has no one to share with (accounts are per
+    // computer), so it skips the access step.
+    const skipAccessStep = isNcApp();
     const [title, setTitle] = useState("");
     const [underProject, setUnderProject] = useState(false);
     const [selectedProjectId, setSelectedProjectId] = useState("");
@@ -303,7 +307,7 @@ function NewTRModalForWorkspace({
         if (!selectedModel) return;
         if (underProject && !selectedProjectId) return;
         if (step === "details") {
-            setStep("access");
+            setStep(skipAccessStep ? "documents" : "access");
             return;
         }
         if (step === "access" || submitterValue(e) !== "create-review") {
@@ -568,7 +572,8 @@ function NewTRModalForWorkspace({
                 step === "documents"
                     ? {
                           label: "Back",
-                          onClick: () => setStep("access"),
+                          onClick: () =>
+                              setStep(skipAccessStep ? "details" : "access"),
                           disabled: uploading || reviewExists,
                           title: reviewExists
                               ? "The review has been created — its details and access can be changed from the review itself."
@@ -592,7 +597,8 @@ function NewTRModalForWorkspace({
                     ? {
                           label: "Next",
                           type: "button",
-                          onClick: () => setStep("access"),
+                          onClick: () =>
+                              setStep(skipAccessStep ? "documents" : "access"),
                           disabled:
                               !title.trim() ||
                               (underProject && !selectedProjectId) ||

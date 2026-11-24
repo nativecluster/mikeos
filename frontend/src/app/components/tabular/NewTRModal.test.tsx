@@ -244,6 +244,30 @@ describe("NewTRModal", () => {
         );
     });
 
+    it("goes from details straight to documents in the NativeCluster app, whose accounts are per computer", () => {
+        vi.stubEnv("NEXT_PUBLIC_MIKE_NC_APP", "1");
+        try {
+            const onAdd = vi.fn();
+            render(<NewTRModal open onClose={vi.fn()} onAdd={onAdd} />);
+
+            fireEvent.change(screen.getByLabelText("Review name"), {
+                target: { value: "Closing review" },
+            });
+            fireEvent.click(screen.getByRole("button", { name: "Next" }));
+            expect(screen.queryByText("Share Access")).toBeNull();
+            expect(screen.getByText("Document directory")).toBeInTheDocument();
+
+            fireEvent.click(screen.getByRole("button", { name: "Back" }));
+            expect(screen.getByLabelText("Review name")).toHaveValue("Closing review");
+            fireEvent.click(screen.getByRole("button", { name: "Next" }));
+
+            fireEvent.click(screen.getByRole("button", { name: "Create" }));
+            expect(onAdd).toHaveBeenCalledTimes(1);
+        } finally {
+            vi.unstubAllEnvs();
+        }
+    });
+
     it("prevents duplicate review creation while submission is pending", async () => {
         let finishAdd: (() => void) | undefined;
         const onAdd = vi.fn(
