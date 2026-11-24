@@ -772,6 +772,8 @@ function WorkspaceConnectors({
   // browser lands on (ConnectorAppLink.tsx).
   const connectConnectorInApp = async (
     connectorId: string,
+    /** The connector's name, for one created moments ago (not yet in `connectors`). */
+    connectorName?: string,
   ): Promise<McpConnectorSummary | null> => {
     const started = (await startMcpConnectorOAuth(connectorId)) as Awaited<
       ReturnType<typeof startMcpConnectorOAuth>
@@ -792,6 +794,7 @@ function WorkspaceConnectors({
           kind: "mcp",
           connectorId,
           name:
+            connectorName ??
             connectors.find((connector) => connector.id === connectorId)?.name ??
             "connector",
           authorizationUrl: started.authorizationUrl,
@@ -815,8 +818,9 @@ function WorkspaceConnectors({
 
   const connectConnectorOAuth = async (
     connectorId: string,
+    connectorName?: string,
   ): Promise<McpConnectorSummary | null> => {
-    if (isNcAppMode()) return connectConnectorInApp(connectorId);
+    if (isNcAppMode()) return connectConnectorInApp(connectorId, connectorName);
     const popup = window.open(
       "about:blank",
       "mike_mcp_oauth",
@@ -973,10 +977,10 @@ function WorkspaceConnectors({
     surface: CreateSurface = "modal",
   ) => {
     await runSensitiveAction({ type: "create", draft, surface }, async () => {
-      const authorizeConnector = async (connectorId: string) => {
+      const authorizeConnector = async (connectorId: string, name: string) => {
         if (surface === "page") setAuthorizingPresetUrl(draft.serverUrl);
         try {
-          return await connectConnectorOAuth(connectorId);
+          return await connectConnectorOAuth(connectorId, name);
         } finally {
           if (surface === "page") setAuthorizingPresetUrl(null);
         }
@@ -1029,12 +1033,12 @@ function WorkspaceConnectors({
           if (surface === "modal") {
             setAddAuthMessage(
               isNcAppMode()
-                ? "Finish connecting this MCP server in the window that opened."
+                ? "Finish connecting this MCP server in the Connect dialog."
                 : "Complete authorization in the popup to finish connecting this MCP server.",
             );
             setAddStep("auth");
           }
-          const authorized = await authorizeConnector(connector.id);
+          const authorized = await authorizeConnector(connector.id, connector.name);
           if (authorized && surface === "modal") {
             setAddAuthMessage(null);
             setAddResult(authorized);
@@ -1051,6 +1055,13 @@ function WorkspaceConnectors({
         // closeAddModal has already reset the modal, so surfacing an
         // error would be noise. Just release the busy lock via `finally`.
         if (err instanceof McpOAuthCancelledError) {
+          // Mike's NativeCluster app: Cancel in the Connect dialog leaves the
+          // custom connector's own dialog open, back at its form (a token
+          // may be the way in); a closed one is reset when it next opens.
+          if (surface === "modal") {
+            setAddStep("form");
+            setAddAuthMessage(null);
+          }
           const discarded = await discardCreatedConnector();
           if (!discarded) {
             setAddError(

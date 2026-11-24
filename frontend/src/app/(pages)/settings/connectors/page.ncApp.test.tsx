@@ -266,6 +266,11 @@ describe("ConnectorsPage in the NativeCluster app", () => {
             await flushMicrotasks();
         });
         expect(deleteMcpConnector).toHaveBeenCalledWith("connector-1");
+        // The custom connector's own dialog is back at its form, what was
+        // typed kept, not left saying "Authorizing...".
+        expect(screen.queryByText("Authentication required")).toBeNull();
+        expect(screen.getByPlaceholderText("Connector label")).toHaveValue("Files");
+        expect(screen.getByRole("button", { name: "Connect" })).toBeEnabled();
     });
 });
 
@@ -323,6 +328,7 @@ describe("ConnectorsPage's buttons in the NativeCluster app", () => {
         );
         const link = await screen.findByRole("link", { name: /open the sign-in page/i });
         expect(link.getAttribute("href")).toBe("https://mcp.notion.com/authorize?state=s");
+        expect(screen.getByText("Connect Notion")).toBeInTheDocument();
         expect(screen.getByLabelText("Address from your browser")).toBeInTheDocument();
         expect(open).not.toHaveBeenCalled();
         expect(screen.queryByText("Could not add connector")).toBeNull();
