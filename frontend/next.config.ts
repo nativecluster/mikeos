@@ -3,6 +3,7 @@ import type { NextConfig } from "next";
 import { withSentryConfig } from "@sentry/nextjs/config";
 import { releaseName } from "@mike/client";
 import { securityHeaders } from "./src/app/lib/securityHeaders";
+import { ncAppRedirects } from "./src/app/lib/ncAppRoutes";
 
 // The repository root: the parent of this directory, here and in the Docker
 // image (frontend/Dockerfile mirrors the layout at /app/frontend and
@@ -90,6 +91,10 @@ const nextConfig: NextConfig = {
                 destination: "/settings/:path*",
                 permanent: true,
             },
+            // Mike's own sign-in, recovery and onboarding screens lead home
+            // in the NativeCluster app, where NativeCluster signs people in.
+            // None elsewhere.
+            ...ncAppRedirects(),
         ];
     },
     skipTrailingSlashRedirect: true,

@@ -9,6 +9,7 @@ const state = vi.hoisted(() => ({
         onboardingComplete: false,
     } as { displayName: string | null; onboardingComplete: boolean },
     replace: vi.fn(),
+    completeOnboarding: vi.fn(),
 }));
 
 vi.mock("next/navigation", () => ({
@@ -21,7 +22,11 @@ vi.mock("@/app/contexts/AuthContext", () => ({
 }));
 
 vi.mock("@/app/contexts/UserProfileContext", () => ({
-    useUserProfile: () => ({ profile: state.profile, loading: false }),
+    useUserProfile: () => ({
+        profile: state.profile,
+        loading: false,
+        completeOnboarding: state.completeOnboarding,
+    }),
 }));
 
 vi.mock("@/app/components/shared/FullScreenLoader", () => ({
@@ -36,6 +41,26 @@ describe("OnboardingGate", () => {
             onboardingComplete: false,
         };
         state.replace.mockReset();
+        state.completeOnboarding.mockReset().mockResolvedValue(true);
+        vi.unstubAllEnvs();
+    });
+
+    it("has no onboarding in the NativeCluster app: the person is let in, marked onboarded once", async () => {
+        vi.stubEnv("NEXT_PUBLIC_MIKE_NC_APP", "1");
+        const { rerender } = render(
+            <OnboardingGate>
+                <div>Main app</div>
+            </OnboardingGate>,
+        );
+        expect(screen.getByText("Main app")).toBeInTheDocument();
+        await waitFor(() => expect(state.completeOnboarding).toHaveBeenCalledTimes(1));
+        rerender(
+            <OnboardingGate>
+                <div>Main app</div>
+            </OnboardingGate>,
+        );
+        expect(state.completeOnboarding).toHaveBeenCalledTimes(1);
+        expect(state.replace).not.toHaveBeenCalled();
     });
 
     it("keeps incomplete users out of the main app", async () => {
