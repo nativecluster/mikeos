@@ -725,10 +725,11 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
                           .catch(() => undefined)
                           .then(() => onReasoningSelected(next));
                     }}
-                    onNoModelsClick={() => {
+                    onNoModelsClick={(reason) => {
                       setModelError(
                         NO_MODELS_MESSAGES[
-                          noModelsReason(keyStatus, routerSelections ?? {})
+                          reason ??
+                            noModelsReason(keyStatus, routerSelections ?? {})
                         ],
                       );
                     }}

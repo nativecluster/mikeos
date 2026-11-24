@@ -24,9 +24,11 @@ import { type ApiKeyState, type OrgPreferences } from "@/app/lib/mikeApi";
 import { mergeConfiguredModelOptions } from "@/app/components/assistant/ModelToggle";
 import {
   MODELS,
+  NATIVECLUSTER_GROUP,
   SETTINGS_MODELS,
   allRouterModelOptions,
   canonicalModelId,
+  inferenceProviderModels,
   type ModelOption,
 } from "@mike/client";
 import { isModelAvailable } from "@/app/lib/modelAvailability";
@@ -39,6 +41,7 @@ import { SettingsRow } from "@/app/components/settings/SettingsRow";
 import { SETTINGS_CONTROL_CLASS } from "@/app/components/settings/SettingsTextInput";
 import { useOllamaModels } from "@/app/hooks/useOllamaModels";
 import { useConfiguredModels } from "@/app/hooks/useConfiguredModels";
+import { useNativeClusterModels } from "@/app/hooks/useNativeClusterModels";
 import { useModelApiKeys } from "@/app/hooks/useModelApiKeys";
 import { useModelRouterSelections } from "@/app/hooks/useModelRouterSelections";
 import { useOrgPreferencesSettings } from "@/app/hooks/useOrgPreferencesSettings";
@@ -177,6 +180,20 @@ function ModelPreferencesView({
   const routerLists = useModelRouterSelections();
   const ollamaModels = useOllamaModels();
   const configuredModels = useConfiguredModels();
+  const nativeCluster = useNativeClusterModels();
+  // Every dropdown's rows: the catalog given, the deployment's configured
+  // models and NativeCluster's, or NativeCluster's alone where every model
+  // call goes there.
+  const preferenceOptions = (catalog: readonly ModelOption[]) =>
+    inferenceProviderModels(
+      mergeConfiguredModelOptions(configuredModels, [
+        ...catalog,
+        ...selectedRouterOptions,
+        ...ollamaModels,
+        ...nativeCluster.models,
+      ]),
+      nativeCluster.inferenceOnly,
+    );
   const preferenceModelId = (id: string) =>
     configuredModels.some((model) => model.id === id) ? id : canonicalModelId(id);
   const [savingField, setSavingField] = useState<PreferenceField | null>(
@@ -248,11 +265,7 @@ function ModelPreferencesView({
               value={preferenceModelId(
                 optimisticValues.titleModel ?? values?.titleModel ?? "",
               )}
-              options={mergeConfiguredModelOptions(configuredModels, [
-                ...SETTINGS_MODELS,
-                ...selectedRouterOptions,
-                ...ollamaModels,
-              ])}
+              options={preferenceOptions(SETTINGS_MODELS)}
               apiKeys={apiKeys}
               isSaving={savingField === "titleModel"}
               isSaved={savedField === "titleModel"}
@@ -272,11 +285,7 @@ function ModelPreferencesView({
               value={preferenceModelId(
                 optimisticValues.tabularModel ?? values?.tabularModel ?? "",
               )}
-              options={mergeConfiguredModelOptions(configuredModels, [
-                ...MODELS,
-                ...selectedRouterOptions,
-                ...ollamaModels,
-              ])}
+              options={preferenceOptions(MODELS)}
               apiKeys={apiKeys}
               isSaving={savingField === "tabularModel"}
               isSaved={savedField === "tabularModel"}
@@ -299,11 +308,7 @@ function ModelPreferencesView({
                   values?.memoryCuratorModel ??
                   "",
               )}
-              options={mergeConfiguredModelOptions(configuredModels, [
-                ...SETTINGS_MODELS,
-                ...selectedRouterOptions,
-                ...ollamaModels,
-              ])}
+              options={preferenceOptions(SETTINGS_MODELS)}
               apiKeys={apiKeys}
               isSaving={savingField === "memoryCuratorModel"}
               isSaved={savedField === "memoryCuratorModel"}
@@ -336,11 +341,7 @@ function ModelPreferencesView({
               value={preferenceModelId(
                 optimisticValues.subagentModel ?? values?.subagentModel ?? "",
               )}
-              options={mergeConfiguredModelOptions(configuredModels, [
-                ...MODELS,
-                ...selectedRouterOptions,
-                ...ollamaModels,
-              ])}
+              options={preferenceOptions(MODELS)}
               apiKeys={apiKeys}
               isSaving={savingField === "subagentModel"}
               isSaved={savedField === "subagentModel"}
@@ -396,6 +397,7 @@ function ModelPreferenceDropdown({
   const availableOptions = options.filter((model) => {
     if (model.source === "Configured") return true;
     if (model.group === "Local") return true;
+    if (model.group === NATIVECLUSTER_GROUP) return true;
     return apiKeys ? isModelAvailable(model.id, apiKeys) : false;
   });
   const selected = availableOptions.find((model) => model.id === value);

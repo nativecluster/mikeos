@@ -59,6 +59,8 @@ const ALWAYS_REASONING_LEVELS: readonly ReasoningLevel[] =
 export function reasoningLevelsForModel(
   modelId: string,
 ): readonly ReasoningLevel[] {
+  // NativeCluster takes thinking as on or off (its `think` field).
+  if (modelId.startsWith("nativecluster/")) return ["none", "high"];
   const catalogId = modelId.startsWith("bedrock/")
     ? // Bedrock names Claude "anthropic.claude-…", optionally behind a
       // cross-region inference-profile prefix ("us.", "us-gov.") or at the
@@ -128,6 +130,7 @@ export const MODEL_TOGGLE_GROUPS: readonly ModelToggleGroup[] = [
   "xAI",
   "Configured",
   "Local",
+  "NativeCluster",
   "Other providers",
 ];
 

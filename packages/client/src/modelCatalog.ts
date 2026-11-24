@@ -188,7 +188,8 @@ export function isRouterModelSelected(
 
 /**
  * The ids a composer accepts as a selection: the static catalog, any
- * deployment-configured model, local models and router-prefixed ids.
+ * deployment-configured model, local models, NativeCluster's models and
+ * router-prefixed ids.
  */
 export function isAllowedModelId(
   id: string,
@@ -198,8 +199,53 @@ export function isAllowedModelId(
     ALLOWED_MODEL_IDS.has(id) ||
     configuredModelIds.includes(id) ||
     id.startsWith("ollama/") ||
+    isNativeClusterModelId(id) ||
     routerForModelId(id) !== null
   );
+}
+
+// ---------------------------------------------------------------------------
+// NativeCluster
+// ---------------------------------------------------------------------------
+
+/**
+ * NativeCluster runs models on a group's own Macs. Its models are listed
+ * live (GET /models/nativecluster) as "nativecluster/<model>", and a
+ * deployment can make it the only provider (MIKE_INFERENCE_PROVIDER), in
+ * which case the pickers offer nothing else.
+ */
+export const NATIVECLUSTER_GROUP = "NativeCluster";
+
+export function isNativeClusterModelId(id: string): boolean {
+  return id.startsWith("nativecluster/") && id.length > "nativecluster/".length;
+}
+
+/** Picker rows for NativeCluster's models, as GET /models/nativecluster lists them. */
+export function nativeClusterModelOptions(
+  models: readonly { id: string }[],
+): ModelOption[] {
+  return models
+    .filter((model) => isNativeClusterModelId(model.id))
+    .map((model) => ({
+      id: model.id,
+      label: modelDisplayName(model.id),
+      group: NATIVECLUSTER_GROUP,
+      source: NATIVECLUSTER_GROUP,
+    }));
+}
+
+/**
+ * The rows a picker may offer: all of them, or, where every model call goes
+ * to NativeCluster, NativeCluster's alone. The server refuses the rest
+ * either way; this keeps them out of sight.
+ */
+export function inferenceProviderModels<T extends { id: string }>(
+  options: readonly T[],
+  inferenceOnly: boolean,
+): T[] {
+  return inferenceOnly
+    ? options.filter((option) => isNativeClusterModelId(option.id))
+    : [...options];
 }
 
 // ---------------------------------------------------------------------------
@@ -216,7 +262,7 @@ const MODEL_NAME_ACRONYMS: Record<string, string> = {
 export function modelDisplayName(modelId: string): string {
   const normalized = modelId
     .replace(
-      /^(?:openrouter|vercel|opencode-go|bedrock|azure-foundry|azure|vertex|xai|custom|ollama)\//,
+      /^(?:openrouter|vercel|opencode-go|bedrock|azure-foundry|azure|vertex|xai|custom|ollama|nativecluster)\//,
       "",
     )
     .split("/")
@@ -414,14 +460,18 @@ export function allRouterModelOptions(
 // Availability
 // ---------------------------------------------------------------------------
 
-/** The key provider behind a model; "ollama" is local and needs no key. */
+/**
+ * The key provider behind a model; "ollama" and "nativecluster" run on the
+ * deployment's own machines and need no key from the person.
+ */
 export type ModelProvider =
   | "claude"
   | "gemini"
   | "openai"
   | "mistral"
   | RouterSlug
-  | "ollama";
+  | "ollama"
+  | "nativecluster";
 
 /** Key providers that serve chat models (CourtListener does not). */
 const MODEL_KEY_PROVIDERS = [
@@ -458,12 +508,14 @@ export function modelGroupToProvider(group: ModelOption["group"]): ModelProvider
   if (group === "Vercel AI Gateway") return "vercel";
   if (group === "OpenCode Go") return "opencode-go";
   if (group === "Local") return "ollama";
+  if (group === NATIVECLUSTER_GROUP) return "nativecluster";
   return "gemini";
 }
 
 /** The key provider that serves a model id, or null for an unknown id. */
 export function getModelProvider(modelId: string): ModelProvider | null {
   if (modelId.startsWith("ollama/")) return "ollama"; // dynamic, not in the static list
+  if (isNativeClusterModelId(modelId)) return "nativecluster";
   const router = routerForModelId(modelId);
   if (router) return router;
   const model = SETTINGS_MODELS.find(
@@ -477,7 +529,8 @@ export function isProviderAvailable(
   provider: ModelProvider,
   keys: ProviderKeyStates,
 ): boolean {
-  if (provider === "ollama") return true; // local, no key needed
+  // Local, or the group's own Macs: no key needed.
+  if (provider === "ollama" || provider === "nativecluster") return true;
   return !!keys[provider]?.configured && keys[provider]?.enabled !== false;
 }
 
@@ -509,6 +562,7 @@ const PROVIDER_NAMES: Record<
   xai: { name: "xAI" },
   custom: { name: "OpenAI-compatible endpoint" },
   ollama: { name: "Local", product: "Ollama" },
+  nativecluster: { name: "NativeCluster" },
 };
 
 /**
@@ -547,6 +601,7 @@ export function unavailableModelMessage(
 // ---------------------------------------------------------------------------
 
 export type NoModelsReason =
+  | "nativecluster"
   | "api-keys"
   | "router-models"
   | "providers-disabled"
@@ -602,6 +657,8 @@ export function noModelsReason(
 }
 
 export const NO_MODELS_MESSAGES: Record<NoModelsReason, string> = {
+  nativecluster:
+    "NativeCluster has no chat models for Mike yet. Make sure NativeCluster is open and signed in, and that your cluster has a chat model.",
   "router-models":
     "Your router is connected, but it has no saved models. Open your provider in Bring Your Own Keys and add a model under Model Selections.",
   "providers-disabled":

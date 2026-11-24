@@ -1,10 +1,12 @@
 "use client";
 
+import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { OrganizationSkeuoIcon } from "@/app/components/shared/AppSidebarSkeuoIcons";
 import { EmptyState } from "@/app/components/ui/empty-state";
 import { isOrgAdmin } from "@/app/lib/permissions";
 import { PillButtonUI } from "@mike/ui";
+import { useNativeClusterModels } from "@/app/hooks/useNativeClusterModels";
 import { OrganizationProviderKeys } from "./OrganizationProviderKeys";
 import {
   organizationSettingsHref,
@@ -20,6 +22,13 @@ import {
 export function OrganizationProvidersSettings() {
   const router = useRouter();
   const { orgId, org } = useOrganizationSettings();
+  // Where every model call goes to NativeCluster there are no provider
+  // keys; an old link opens the organization's General page.
+  const { inferenceOnly } = useNativeClusterModels();
+  useEffect(() => {
+    if (inferenceOnly) router.replace(organizationSettingsHref(orgId));
+  }, [inferenceOnly, orgId, router]);
+  if (inferenceOnly) return null;
 
   if (org && !isOrgAdmin(org.role))
     return (

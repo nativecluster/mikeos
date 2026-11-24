@@ -61,7 +61,7 @@ function VisibleNoModelsWarning({
                               router.push(settingsHref);
                           },
                       }
-                    : organizationFix
+                    : organizationFix || reason === "nativecluster"
                       ? undefined
                       : {
                             label: "Open Bring Your Own Keys",

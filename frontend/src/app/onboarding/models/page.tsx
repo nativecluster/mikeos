@@ -14,6 +14,7 @@ import {
     readStoredWorkspace,
 } from "@/app/contexts/WorkspaceContext";
 import { apiKeyStateFromStatus } from "@/app/lib/apiKeyState";
+import { useNativeClusterModels } from "@/app/hooks/useNativeClusterModels";
 import { getOrgApiKeys, listOrgs, type ApiKeyState } from "@/app/lib/mikeApi";
 import { PillButtonUI } from "@mike/ui";
 
@@ -112,6 +113,8 @@ function ModelStep({ userId }: { userId: string }) {
     const router = useRouter();
     const { profile, completeOnboarding } = useUserProfile();
     const joined = useJoinedOrganization(userId);
+    // Where every model call goes to NativeCluster there are no keys to add.
+    const { inferenceOnly } = useNativeClusterModels();
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState(false);
 
@@ -132,10 +135,14 @@ function ModelStep({ userId }: { userId: string }) {
         <OnboardingShell
             step="Step 4 of 4"
             title="Connect a model"
-            description={stepDescription(profile?.apiKeys, joined)}
+            description={
+                inferenceOnly
+                    ? "Mike runs every model on NativeCluster, on your group's own Macs, so there are no keys to add. You can finish now."
+                    : stepDescription(profile?.apiKeys, joined)
+            }
             width="wide"
         >
-            <PersonalProviderKeys intro={null} />
+            {inferenceOnly ? null : <PersonalProviderKeys intro={null} />}
             <WarningPopup
                 open={error}
                 onClose={() => setError(false)}

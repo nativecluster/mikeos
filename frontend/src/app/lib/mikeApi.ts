@@ -1205,6 +1205,23 @@ export async function getOllamaModels(): Promise<OllamaModelOption[]> {
     return models;
 }
 
+/** GET /models/nativecluster: the group's own Macs, through NativeCluster. */
+export interface NativeClusterCatalog {
+    /** Every model call goes to NativeCluster: offer no other provider. */
+    inferenceOnly: boolean;
+    models: { id: string; label: string; group: "NativeCluster" }[];
+}
+
+export async function getNativeClusterModels(): Promise<NativeClusterCatalog> {
+    const catalog = await apiRequest<Partial<NativeClusterCatalog>>(
+        "settings.keys", "/models/nativecluster",
+    );
+    return {
+        inferenceOnly: catalog.inferenceOnly === true,
+        models: Array.isArray(catalog.models) ? catalog.models : [],
+    };
+}
+
 export async function getConfiguredModels(): Promise<ConfiguredModelOption[]> {
     const { models } = await apiRequest<{ models: ConfiguredModelOption[] }>(
         "settings.keys", "/models/configured",

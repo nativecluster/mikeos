@@ -21,6 +21,7 @@ import { useAuth } from "@/app/contexts/AuthContext";
 import { useOrganizationInvitationCount } from "@/app/hooks/useOrganizationInvitationCount";
 import { useMemberDataActions } from "@/app/hooks/useMemberDataActions";
 import { useWorkspaceSettingsScope } from "@/app/hooks/useWorkspaceSettingsScope";
+import { useNativeClusterModels } from "@/app/hooks/useNativeClusterModels";
 import {
     SettingsShell,
     type SettingsShellGroup,
@@ -146,6 +147,9 @@ export default function SettingsLayout({
     const hidePrivacyData = !canExport && !canDelete;
     const scope = useWorkspaceSettingsScope().kind;
     const hideGoverned = scope !== "personal" && scope !== "organization";
+    // Where every model call goes to NativeCluster there are no provider
+    // keys to bring.
+    const { inferenceOnly } = useNativeClusterModels();
     const visibleGroups = useMemo(
         () =>
             GROUPS.map((group) => ({
@@ -153,10 +157,11 @@ export default function SettingsLayout({
                 tabs: group.tabs.filter(
                     (tab) =>
                         !(hidePrivacyData && tab.id === "privacy-data") &&
-                        !(hideGoverned && GOVERNED_TAB_IDS.has(tab.id)),
+                        !(hideGoverned && GOVERNED_TAB_IDS.has(tab.id)) &&
+                        !(inferenceOnly && tab.id === "byok"),
                 ),
             })),
-        [hideGoverned, hidePrivacyData],
+        [hideGoverned, hidePrivacyData, inferenceOnly],
     );
     // Search only what is listed: an entry on a hidden tab would open a page
     // the person is not offered.

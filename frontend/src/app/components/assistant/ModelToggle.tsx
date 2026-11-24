@@ -11,7 +11,9 @@ import { isModelAvailable } from "@/app/lib/modelAvailability";
 import {
   MODELS,
   allRouterModelOptions,
+  inferenceProviderModels,
   modelDisplayName,
+  NATIVECLUSTER_GROUP,
   noModelsReason,
   type ModelOption,
   type NoModelsReason,
@@ -24,6 +26,7 @@ import {
 } from "@/app/contexts/WorkspaceContext";
 import { useOllamaModels } from "@/app/hooks/useOllamaModels";
 import { useConfiguredModels } from "@/app/hooks/useConfiguredModels";
+import { useNativeClusterModels } from "@/app/hooks/useNativeClusterModels";
 
 export type { ReasoningLevel };
 
@@ -82,18 +85,25 @@ export function ModelToggle({
 }: Props) {
   const ollamaModels = useOllamaModels();
   const configuredModels = useConfiguredModels();
-  const models = mergeConfiguredModelOptions(configuredModels, [
-    ...MODELS,
-    ...allRouterModelOptions(routerSelections),
-    ...ollamaModels.map((model) => ({
-      ...model,
-      label: modelDisplayName(model.id),
-      source: "Local",
-    })),
-  ]);
+  const nativeCluster = useNativeClusterModels();
+  // Where every model call goes to NativeCluster, it is all there is.
+  const models = inferenceProviderModels(
+    mergeConfiguredModelOptions(configuredModels, [
+      ...MODELS,
+      ...allRouterModelOptions(routerSelections),
+      ...ollamaModels.map((model) => ({
+        ...model,
+        label: modelDisplayName(model.id),
+        source: "Local",
+      })),
+      ...nativeCluster.models,
+    ]),
+    nativeCluster.inferenceOnly,
+  );
   const availableModels = models.filter((model) => {
     if (model.source === "Configured") return true;
     if (model.group === "Local") return true;
+    if (model.group === NATIVECLUSTER_GROUP) return true;
     if (apiKeysLoading) return false; // nothing offered until known
     if (!apiKeys) return true; // unknown after a failed load → fail open
     return isModelAvailable(model.id, apiKeys);
@@ -122,7 +132,9 @@ export function ModelToggle({
   const { workspaceId } = useWorkspace();
   const inOrganization =
     workspaceId !== null && workspaceId !== PERSONAL_WORKSPACE;
-  const emptyReason = noModelsReason(apiKeys, routerSelections, inOrganization);
+  const emptyReason = nativeCluster.inferenceOnly
+    ? "nativecluster"
+    : noModelsReason(apiKeys, routerSelections, inOrganization);
   return (
     <ModelToggleUI
       value={value}

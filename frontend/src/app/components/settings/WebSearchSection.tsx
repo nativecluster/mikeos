@@ -17,6 +17,7 @@ import { useUserProfile } from "@/app/contexts/UserProfileContext";
 import { useWorkspace } from "@/app/contexts/WorkspaceContext";
 import { useAssignLatest } from "@/app/hooks/useLatestRef";
 import { useModelApiKeys } from "@/app/hooks/useModelApiKeys";
+import { useNativeClusterModels } from "@/app/hooks/useNativeClusterModels";
 import { isProviderAvailable } from "@/app/lib/modelAvailability";
 import {
   getOrgPreferences,
@@ -220,8 +221,12 @@ function WebSearchCard({ store }: { store: WebSearchStore }) {
     setSaving(false);
   };
 
+  // Where every model call goes to NativeCluster, no provider runs its own
+  // search: Mike's search services are all there is.
+  const { inferenceOnly } = useNativeClusterModels();
   const providerFamilies = PROVIDER_FAMILIES.filter(
-    ({ family }) => apiKeys && isProviderAvailable(family, apiKeys),
+    ({ family }) =>
+      !inferenceOnly && apiKeys && isProviderAvailable(family, apiKeys),
   ).map(({ family, label, provider }) => ({
     family,
     label,

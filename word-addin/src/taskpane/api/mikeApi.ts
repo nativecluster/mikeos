@@ -149,6 +149,29 @@ export async function getOllamaModels(): Promise<OllamaModelOption[]> {
   return body.models ?? [];
 }
 
+/** GET /models/nativecluster: the group's own Macs, through NativeCluster. */
+export interface NativeClusterCatalog {
+  /** Every model call goes to NativeCluster: offer no other provider. */
+  inferenceOnly: boolean;
+  models: { id: string; label: string; group: "NativeCluster" }[];
+}
+
+/** NativeCluster's models, and whether they are the only ones offered. */
+export async function getNativeClusterModels(): Promise<NativeClusterCatalog> {
+  const res = await fetchWithRefresh(`${BASE_URL}/models/nativecluster`, {
+    cache: "no-store",
+    headers: { Accept: "application/json", ...(await getAuthHeaders()) },
+  });
+  // Like local models: an older backend or a NativeCluster that is down
+  // leaves nothing to add, and nothing the user asked for has failed.
+  if (!res.ok) return { inferenceOnly: false, models: [] };
+  const body = (await res.json()) as Partial<NativeClusterCatalog>;
+  return {
+    inferenceOnly: body.inferenceOnly === true,
+    models: Array.isArray(body.models) ? body.models : [],
+  };
+}
+
 interface WordChatServerMessage {
   id: string;
   role: "user" | "assistant";

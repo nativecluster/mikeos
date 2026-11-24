@@ -30,6 +30,7 @@ import { getOrg, type Org } from "@/app/lib/mikeApi";
 import { isOrgAdmin, isOrgOwner } from "@/app/lib/permissions";
 import { userFacingApiError } from "@/app/lib/userFacingError";
 import { PillButtonUI } from "@mike/ui";
+import { useNativeClusterModels } from "@/app/hooks/useNativeClusterModels";
 
 // An organization's settings area: the same frame as a person's settings,
 // with its sections down the side.
@@ -197,6 +198,8 @@ export function OrganizationSettingsFrame({
   const { orgId, org } = useOrganizationSettings();
   const canManage = org !== null && isOrgAdmin(org.role);
   const isOwner = org !== null && isOrgOwner(org.role);
+  // Where every model call goes to NativeCluster there are no provider keys.
+  const { inferenceOnly } = useNativeClusterModels();
   const tabs = useMemo<SettingsShellTab[]>(
     () => [
       {
@@ -221,13 +224,17 @@ export function OrganizationSettingsFrame({
               label: "Audit log",
               href: organizationSettingsHref(orgId, "audit"),
             },
-            {
-              id: "providers",
-              icon: KeyRound,
-              // Named as the same setting is in a person's own settings.
-              label: "Bring Your Own Keys",
-              href: organizationSettingsHref(orgId, "providers"),
-            },
+            ...(inferenceOnly
+              ? []
+              : [
+                  {
+                    id: "providers",
+                    icon: KeyRound,
+                    // Named as the same setting is in a person's own settings.
+                    label: "Bring Your Own Keys",
+                    href: organizationSettingsHref(orgId, "providers"),
+                  },
+                ]),
           ]
         : []),
       // Its actions reach every member's work, so it is its owners' alone.
@@ -243,7 +250,7 @@ export function OrganizationSettingsFrame({
           ]
         : []),
     ],
-    [canManage, isOwner, orgId],
+    [canManage, inferenceOnly, isOwner, orgId],
   );
 
   return (

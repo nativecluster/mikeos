@@ -40,9 +40,16 @@ vi.mock("@/app/hooks/useWorkspaceSettingsScope", () => ({
     useWorkspaceSettingsScope: () => settingsScope.current,
 }));
 
+// Whether every model call goes to NativeCluster; not unless a test says so.
+const nativeCluster = vi.hoisted(() => ({ models: [], inferenceOnly: false }));
+vi.mock("@/app/hooks/useNativeClusterModels", () => ({
+    useNativeClusterModels: () => nativeCluster,
+}));
+
 describe("SettingsLayout", () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        nativeCluster.inferenceOnly = false;
         pathname = "/settings/memory";
         vi.mocked(listMyOrgInvitations).mockResolvedValue([]);
         dataActions.canExport = true;
@@ -69,6 +76,18 @@ describe("SettingsLayout", () => {
         expect(
             tabNames(screen.getByRole("list", { name: "Workspace" })),
         ).toEqual(WORKSPACE_TABS);
+    });
+
+    it("does not list Bring Your Own Keys where every model call goes to NativeCluster", () => {
+        nativeCluster.inferenceOnly = true;
+        render(
+            <SettingsLayout>
+                <div />
+            </SettingsLayout>,
+        );
+        expect(
+            tabNames(screen.getByRole("list", { name: "Workspace" })),
+        ).toEqual(WORKSPACE_TABS.filter((tab) => tab !== "Bring Your Own Keys"));
     });
 
     it.each(["managed", "loading"])(

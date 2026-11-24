@@ -5,12 +5,20 @@ import {
   reasoningLevelsForModel,
   type ReasoningLevel,
 } from "@mike/ui";
-import { getOllamaModels, type ApiKeyStatus } from "../../api/mikeApi";
+import {
+  getNativeClusterModels,
+  getOllamaModels,
+  type ApiKeyStatus,
+} from "../../api/mikeApi";
 import {
   MODELS,
+  NATIVECLUSTER_GROUP,
   allRouterModelOptions,
+  inferenceProviderModels,
   modelDisplayName,
+  nativeClusterModelOptions,
   type ModelOption,
+  type NoModelsReason,
   type RouterSelections,
 } from "@mike/client";
 import { isModelAvailable } from "../../lib/modelCatalog";
@@ -35,11 +43,33 @@ export function ModelToggle({
   /** Each router's saved Model Selections; null before the profile loads. */
   routerSelections: RouterSelections | null;
   compact?: boolean;
-  onNoModelsClick?: () => void;
+  /** "nativecluster" when every model call goes to NativeCluster. */
+  onNoModelsClick?: (reason?: NoModelsReason) => void;
   reasoningLevel?: ReasoningLevel;
   onReasoningChange?: (level: ReasoningLevel) => void;
 }): React.ReactElement {
   const [ollamaModels, setOllamaModels] = useState<ModelOption[]>([]);
+  const [nativeCluster, setNativeCluster] = useState<{
+    models: ModelOption[];
+    inferenceOnly: boolean;
+  }>({ models: [], inferenceOnly: false });
+
+  useEffect(() => {
+    let cancelled = false;
+    void getNativeClusterModels()
+      .then((catalog) => ({
+        models: nativeClusterModelOptions(catalog.models),
+        inferenceOnly: catalog.inferenceOnly,
+      }))
+      // Not reachable: offer what else there is; the server still decides.
+      .catch(() => ({ models: [], inferenceOnly: false }))
+      .then((catalog) => {
+        if (!cancelled) setNativeCluster(catalog);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -63,15 +93,17 @@ export function ModelToggle({
       label: modelDisplayName(model.id),
       source: "Local",
     }));
-    return [
-      ...MODELS,
-      ...routerOptions,
-      ...localOptions,
-    ].filter(
+    // Where every model call goes to NativeCluster, it is all there is.
+    return inferenceProviderModels(
+      [...MODELS, ...routerOptions, ...localOptions, ...nativeCluster.models],
+      nativeCluster.inferenceOnly,
+    ).filter(
       (model) =>
-        model.group === "Local" || isModelAvailable(model.id, keyStatus),
+        model.group === "Local" ||
+        model.group === NATIVECLUSTER_GROUP ||
+        isModelAvailable(model.id, keyStatus),
     );
-  }, [keyStatus, ollamaModels, routerSelections]);
+  }, [keyStatus, nativeCluster, ollamaModels, routerSelections]);
   const selected = models.find((model) => model.id === value);
   const supportedReasoningLevels = reasoningLevelsForModel(value);
   const normalizedReasoningLevel = reasoningLevel
@@ -104,7 +136,14 @@ export function ModelToggle({
       loading={keyStatusLoading}
       compact={compact}
       emptyLabel="No Models"
-      onEmptyClick={onNoModelsClick}
+      onEmptyClick={
+        onNoModelsClick
+          ? () =>
+              onNoModelsClick(
+                nativeCluster.inferenceOnly ? "nativecluster" : undefined,
+              )
+          : undefined
+      }
       reasoningLevel={normalizedReasoningLevel}
       onReasoningChange={onReasoningChange}
       reasoningLevels={supportedReasoningLevels}

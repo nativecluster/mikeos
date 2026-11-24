@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+    NATIVECLUSTER_GROUP,
+    NO_MODELS_MESSAGES,
     ROUTER_SLUGS,
+    getModelProvider,
+    inferenceProviderModels,
+    isModelAvailable,
+    isOrganizationNoModelsReason,
+    nativeClusterModelOptions,
+    providerLabel,
     bedrockCatalogModel,
     isAllowedModelId,
     isRouterModelSelected,
@@ -294,5 +302,51 @@ describe("explicit cloud protocols", () => {
             label: "Mistral Large 2411",
             group: "Mistral AI",
         });
+    });
+});
+
+describe("NativeCluster", () => {
+    it("names its models and groups them under NativeCluster", () => {
+        expect(
+            nativeClusterModelOptions([
+                { id: "nativecluster/qwen3.8:27b" },
+                { id: "ollama/qwen3.8" },
+            ]),
+        ).toEqual([
+            {
+                id: "nativecluster/qwen3.8:27b",
+                label: "Qwen3.8 (27b)",
+                group: NATIVECLUSTER_GROUP,
+                source: NATIVECLUSTER_GROUP,
+            },
+        ]);
+    });
+
+    it("needs no key from the person", () => {
+        expect(getModelProvider("nativecluster/qwen3.8:27b")).toBe(
+            "nativecluster",
+        );
+        expect(isModelAvailable("nativecluster/qwen3.8:27b", {})).toBe(true);
+        expect(isAllowedModelId("nativecluster/qwen3.8:27b")).toBe(true);
+        expect(isAllowedModelId("nativecluster/")).toBe(false);
+        expect(providerLabel("nativecluster")).toBe("NativeCluster");
+    });
+
+    it("is all a picker offers where every model call goes to it", () => {
+        const options = [
+            { id: "claude-sonnet-5-5" },
+            { id: "ollama/llama3.2" },
+            { id: "nativecluster/qwen3.8:27b" },
+        ];
+        expect(inferenceProviderModels(options, false)).toEqual(options);
+        expect(inferenceProviderModels(options, true)).toEqual([
+            { id: "nativecluster/qwen3.8:27b" },
+        ]);
+    });
+
+    it("explains an empty picker without pointing at keys", () => {
+        expect(NO_MODELS_MESSAGES.nativecluster).toMatch(/NativeCluster/);
+        expect(NO_MODELS_MESSAGES.nativecluster).not.toMatch(/key/i);
+        expect(isOrganizationNoModelsReason("nativecluster")).toBe(false);
     });
 });
