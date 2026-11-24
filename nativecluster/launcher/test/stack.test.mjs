@@ -3,7 +3,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { backendEnv, stackPaths } from "../lib/stack.mjs";
+import { backendEnv, pgliteEnv, PGLITE_NODE_FLAGS, stackPaths } from "../lib/stack.mjs";
 
 const secrets = { anonKey: "anon.jwt", serviceRoleKey: "service.jwt", downloadSigningSecret: "d".repeat(64), userApiKeysEncryptionSecret: "u".repeat(64), jwtSecret: "j".repeat(96) };
 
@@ -50,4 +50,19 @@ test("no public URL, and nothing of the host's to the app or of the launcher's s
   assert.equal(e.LB_MIKE_WEBSEARCH, "0", "an off switch passes on");
   const text = JSON.stringify(e);
   assert.ok(!text.includes("j".repeat(96)), "never the JWT secret");
+});
+
+test("PGlite's child: a small young generation, the allocator's large cache off, nothing of the launcher's", () => {
+  assert.deepEqual(PGLITE_NODE_FLAGS, ["--max-semi-space-size=2"]);
+  const saved = { ...process.env };
+  Object.assign(process.env, { LB_APP_SOCKET: "/x/app.sock", LB_SECRETS_STDIN: "1", NODE_OPTIONS: "--inspect" });
+  try {
+    const e = pgliteEnv();
+    assert.equal(e.MallocLargeCache, "0");
+    assert.equal(e.PATH, "/usr/bin:/bin:/usr/sbin:/sbin");
+    for (const name of ["LB_APP_SOCKET", "LB_SECRETS_STDIN", "NODE_OPTIONS"]) assert.equal(e[name], undefined, name);
+  } finally {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    Object.assign(process.env, saved);
+  }
 });

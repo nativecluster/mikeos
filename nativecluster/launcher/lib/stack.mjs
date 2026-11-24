@@ -66,6 +66,27 @@ function baseEnv() {
   };
 }
 
+// PGlite's child, on the package's Node: its flags and its environment, for
+// its memory (measured on Node 24, 2026-11-24; pglite-server.mjs has
+// Postgres's own settings):
+// - MallocLargeCache=0 (libmalloc's, read as the process starts; not in
+//   malloc(3)). V8's optimizing compiler takes about 600 MB at once for one
+//   of Postgres's largest functions (one of 107 KB, compiled in 80 ms), and
+//   frees it. macOS's allocator kept the freed blocks resident in its large
+//   cache: 547 MB of a restarted PGlite's 906 MB footprint, there until
+//   later allocations evicted them (seconds to minutes, or never while
+//   idle). Off, they go back at once; the compile still peaks, for those
+//   80 ms. (Compiling with Liftoff alone avoids the peak, but Mike's reads
+//   then took 21-24 ms in place of 14-15.)
+// - --max-semi-space-size=2 (MB). Under a burst of Mike's work (200 writes,
+//   uploads) V8's young generation grew this process's JS heap from 57 MB
+//   to 157 MB and kept it; at 2 MB it stays near 34 MB, at the same speed.
+export const PGLITE_NODE_FLAGS = ["--max-semi-space-size=2"];
+
+export function pgliteEnv() {
+  return { ...baseEnv(), MallocLargeCache: "0" };
+}
+
 /**
  * The net planes' off switches (nc-app.json), which the host sets to "0" in
  * the app's environment when a plane is off for everyone: passed on to the
@@ -404,9 +425,9 @@ export function createStack({ pkgDir, dataDir, socketsDir, hostSocket, credentia
       mkdirSync(paths.storage, { recursive: true, mode: 0o700 });
       step("Opening Mike's database");
       const fresh = !existsSync(path.join(paths.pgliteDir, "PG_VERSION"));
-      const db = startChild("pglite", paths.node, [paths.pgliteServer, paths.pgliteDir, paths.pgSocket], {
+      const db = startChild("pglite", paths.node, [...PGLITE_NODE_FLAGS, paths.pgliteServer, paths.pgliteDir, paths.pgSocket], {
         cwd: paths.launcherDir,
-        env: baseEnv(),
+        env: pgliteEnv(),
         stdin: "pipe",
         onExit: () => {
           if (!stopping) fail(new Error("Mike's database stopped (logs/pglite.log)"));
