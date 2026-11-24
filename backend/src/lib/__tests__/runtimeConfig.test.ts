@@ -50,6 +50,19 @@ describe("runtime authentication configuration", () => {
     ).toThrow(/FRONTEND_URL must use https in production/);
   });
 
+  // A NativeCluster app has no fixed public address: each computer serves it
+  // on an origin of its own, and the backend answers its launcher on a socket.
+  it("lets a NativeCluster app run in production without public URLs, still checking one that is set", () => {
+    const app = { ...validProduction, MIKE_NC_APP: "1", FRONTEND_URL: undefined, API_PUBLIC_URL: undefined };
+    expect(() => validateRuntimeConfiguration(app)).not.toThrow();
+    expect(() =>
+      validateRuntimeConfiguration({ ...app, API_PUBLIC_URL: "http://app.example.test/api" }),
+    ).toThrow(/API_PUBLIC_URL must use https in production/);
+    expect(() =>
+      validateRuntimeConfiguration({ ...app, MIKE_NC_APP: "true" }),
+    ).toThrow(/FRONTEND_URL is required in production/);
+  });
+
   // MIKE-BACKEND-2: the backend image defaults NODE_ENV=production, so a bare
   // `docker run` with no public URLs dies here. The message must name the
   // variables AND the switch a local run actually needs.
