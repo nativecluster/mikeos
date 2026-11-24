@@ -6,7 +6,12 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import { requireAuth, requireMfaIfEnrolled } from "../../middleware/auth";
 import { asyncRoute } from "../../middleware/asyncRoute";
 import { isNcAppMode, ncAppOrigin, ncPersonContext } from "../../lib/mcp/ncApp";
-import { completeMcpPaste, pollMcpDevice } from "./user.mcpApp";
+import {
+    completeGooglePaste,
+    completeMcpPaste,
+    GOOGLE_PASTE_PROVIDERS,
+    pollMcpDevice,
+} from "./user.mcpApp";
 
 // Outside app mode the router steps aside: none of its routes exist.
 function appModeOnly(_req: Request, _res: Response, next: NextFunction) {
@@ -58,3 +63,25 @@ mcpAppRouter.post(
         res.json({ connector: result.connector });
     }),
 );
+
+// POST /user/integrations/{google-drive,gmail,google-calendar}/oauth/complete
+// — { address }: the address the person's browser landed on after approving
+// at Google. The page then reads the connector's status as before.
+for (const provider of GOOGLE_PASTE_PROVIDERS) {
+    mcpAppRouter.post(
+        `/integrations/${provider}/oauth/complete`,
+        requireAuth,
+        requireMfaIfEnrolled,
+        asyncRoute(async (req, res) => {
+            res.set("Cache-Control", "no-store");
+            const result = await completeGooglePaste(
+                res.locals.userId as string,
+                provider,
+                req.body?.address,
+                ncAppOrigin(req),
+            );
+            if (!result.ok) return void res.status(400).json({ code: result.code, detail: result.detail });
+            res.status(204).end();
+        }),
+    );
+}

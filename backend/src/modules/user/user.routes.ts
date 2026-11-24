@@ -12,6 +12,7 @@ import { reportError, setOperation } from "../../lib/observability/sentry";
 import {
     cancelGoogleDriveOAuth,
     completeGoogleDriveOAuth,
+    browseGoogleDriveFiles,
     createGoogleDrivePickerSession,
     disconnectGoogleDrive,
     GoogleDrivePickerUnavailableError,
@@ -103,7 +104,7 @@ import {
 import { isWorkspaceExportType } from "../../application/exports/exportContracts";
 import { getApiKeyStatus, saveApiKey, setApiKeyEnabled } from "./user.service";
 import { log } from "../../lib/log";
-import { ncAppCallbackPage } from "./user.mcpApp";
+import { ncAppCallbackPage, ncAppPastePage } from "./user.mcpApp";
 import { mcpAppRouter } from "./user.mcpApp.routes";
 import {
     isNcAppMode,
@@ -150,6 +151,14 @@ function backendPublicUrl(req: {
     protocol: string;
     get(name: string): string | undefined;
 }) {
+    // Mike's NativeCluster app: the backend is served under /api on the app's
+    // own origin, whose port differs per computer, so connector redirects are
+    // built from the request (its Host; never an Origin that differs).
+    if (isNcAppMode()) {
+        const origin = ncAppOrigin(req);
+        if (!origin) throw new NcAppOriginUnknownError();
+        return `${origin}/api`;
+    }
     const configured = configuredApiPublicUrl();
     if (configured) return configured;
     if (process.env.NODE_ENV === "production") {
@@ -955,6 +964,13 @@ userRouter.post(
 // completion there requires the same authenticated Mike user who started it.
 for (const provider of ["google-drive", "gmail", "google-calendar"]) {
     userRouter.get(`/integrations/${provider}/oauth/callback`, (req, res) => {
+        if (isNcAppMode()) {
+            // The person's own browser reached the app (rare: it must trust
+            // NativeCluster's CA and be signed in there). It carries no Mike
+            // session, so the app finishes from the pasted address instead.
+            const page = ncAppPastePage();
+            return void res.set(page.headers).type("html").send(page.html);
+        }
         const finish = new URL(
             frontendUrl(`/api/user/integrations/${provider}/oauth/finish`),
         );
@@ -1087,6 +1103,36 @@ userRouter.post(
                 res,
                 withKind(err, "google.api_failed", "Google Drive Picker session failed"),
             );
+        }
+    }),
+);
+
+// GET /user/integrations/google-drive/files?q=&pageToken= — Mike's
+// NativeCluster app only, in place of the Google Picker: the files the Drive
+// connection reaches, a page at a time. The token stays on the server.
+userRouter.get(
+    "/integrations/google-drive/files",
+    requireAuth,
+    asyncRoute(async (req, res) => {
+        if (!isNcAppMode()) return void res.status(404).json({ detail: "Not found." });
+        setOperation("google.drive");
+        res.set("Cache-Control", "no-store");
+        const owner = await connectorOwner(req, res);
+        if (!owner) return;
+        try {
+            res.json(
+                await browseGoogleDriveFiles(
+                    owner,
+                    { query: req.query.q, pageToken: req.query.pageToken },
+                    createServerSupabase(),
+                ),
+            );
+        } catch (err) {
+            if (err instanceof GoogleDriveUserError)
+                return void res
+                    .status(err instanceof GoogleDriveUnavailableError ? 404 : 409)
+                    .json({ ...(err.code ? { code: err.code } : {}), detail: err.message });
+            sendInternalError(res, withKind(err, "google.api_failed", "Google Drive files could not be listed"));
         }
     }),
 );
