@@ -257,6 +257,29 @@ describe("initSentry", () => {
     expect(Sentry.init).not.toHaveBeenCalled();
   });
 
+  // A NativeCluster app sets SENTRY_DISABLED=true: no Sentry client may start
+  // in any of its runtimes, whatever DSN a build or an env file carries.
+  it.each(["api", "worker", "worker-thread", "job"] as const)(
+    "stays off with SENTRY_DISABLED=true in the %s runtime, a DSN, a baked DSN and an install run notwithstanding",
+    (role) => {
+      const log = vi.spyOn(console, "log").mockImplementation(() => {});
+      const env = {
+        ...quietEnv,
+        NODE_ENV: "production",
+        SENTRY_DISABLED: "true",
+        SENTRY_DSN: "https://key@o1.ingest.sentry.io/1",
+        MIKE_BUILD_SENTRY_DSN: "https://baked@o1.ingest.sentry.io/2",
+        MIKE_BUILD_SENTRY_DISABLED: "false",
+        SENTRY_SOURCE_RUN_IS_INSTALL: "true",
+        SENTRY_LOGS: "on",
+      } as NodeJS.ProcessEnv;
+      expect(initSentry(role, env, false)).toBe(false);
+      expect(isSentryEnabled()).toBe(false);
+      expect(Sentry.init).not.toHaveBeenCalled();
+      expect(log).toHaveBeenCalledWith(`[sentry] disabled for ${role} (SENTRY_DISABLED=true)`);
+    },
+  );
+
   it("initialises once with PII off, body capture off, and the console bridge on", () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     const env = {

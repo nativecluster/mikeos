@@ -193,8 +193,13 @@ export function drainStdout(timeoutMs = 1_000): Promise<void> {
 /**
  * Exported for call sites that gate WORK (extra lookups, payload assembly)
  * behind dev mode, not just the log line itself.
+ *
+ * Off whenever the output is also kept in files (MIKE_LOG_DIR, a
+ * NativeCluster app): dev tracing prints request and response shapes, which
+ * must never be written to disk, whatever NODE_ENV says.
  */
-export const isDev = process.env.NODE_ENV !== "production";
+export const isDev =
+  process.env.NODE_ENV !== "production" && !process.env.MIKE_LOG_DIR?.trim();
 
 /**
  * Verbose tracing that is only useful while developing. Silent in production,
