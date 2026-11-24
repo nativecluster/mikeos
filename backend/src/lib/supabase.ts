@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { supabaseSocketFetch } from "./nc/supabaseSockets";
 
 /**
  * The server-side database handle every service function takes as its first
@@ -14,6 +15,7 @@ let cachedAdminClient:
   | {
       url: string;
       key: string;
+      sockets: string;
       client: SupabaseClient<any, "public", any>;
     }
   | undefined;
@@ -21,6 +23,10 @@ let cachedAdminClient:
 /**
  * Server-side Supabase client using the service role key.
  * Bypasses RLS — only use in API routes after verifying the user.
+ *
+ * Inside NativeCluster's sandbox (MIKE_REST_SOCKET / MIKE_AUTH_SOCKET) its
+ * requests reach PostgREST and GoTrue over their unix sockets
+ * (lib/nc/supabaseSockets.ts).
  */
 export function createServerSupabase(): Db {
   const url = process.env.SUPABASE_URL || "";
@@ -29,16 +35,23 @@ export function createServerSupabase(): Db {
     throw new Error("SUPABASE_URL and SUPABASE_SECRET_KEY must be set");
   }
 
-  if (cachedAdminClient?.url === url && cachedAdminClient.key === key) {
+  const sockets = `${process.env.MIKE_REST_SOCKET ?? ""}\n${process.env.MIKE_AUTH_SOCKET ?? ""}`;
+  if (
+    cachedAdminClient?.url === url &&
+    cachedAdminClient.key === key &&
+    cachedAdminClient.sockets === sockets
+  ) {
     return cachedAdminClient.client;
   }
 
+  const socketFetch = supabaseSocketFetch();
   const client = createClient(url, key, {
     auth: {
       persistSession: false,
       autoRefreshToken: false,
     },
+    ...(socketFetch ? { global: { fetch: socketFetch } } : {}),
   });
-  cachedAdminClient = { url, key, client };
+  cachedAdminClient = { url, key, sockets, client };
   return client;
 }

@@ -12,11 +12,13 @@ import {
   validateRuntimeConfiguration,
 } from "./lib/runtimeConfig";
 import {
+  runNativeClusterTick,
   startAllWorkers,
   stopAllWorkers,
   WORKER_ROLES,
   type WorkerRole,
 } from "./workerRuntime";
+import { ncAppMode, setNcTickHandler } from "./lib/nc/tick";
 import { reportError } from "./lib/observability/sentry";
 import { drainStdout } from "./lib/log";
 import { flushToolActivity } from "./lib/toolActivity";
@@ -25,9 +27,16 @@ import {
   createShutdown,
   failBoot,
   listenOrFail,
+  removeStaleSocket,
+  unixSocketPath,
 } from "./lib/processLifecycle";
 import { log, tpl } from "./lib/log";
 import { listNativeClusterModels } from "./lib/llm/nativecluster";
+import {
+  internalSecretFromStdinEnabled,
+  ncAppCredential,
+  readLaunchSecrets,
+} from "./lib/nc/launchSecrets";
 
 const PORT = process.env.PORT ?? 3001;
 const HOST = process.env.HOST?.trim() || undefined;
@@ -92,9 +101,12 @@ function spawnWorkerThread(role: WorkerRole): void {
   );
   // Compiled mode inherits the parent's flags, including --enable-source-maps.
   // Explicit process.execArgv would reject V8 flags such as --max-old-space-size.
+  // A NativeCluster app's credential for the host's socket reaches the
+  // thread in memory (workerData), never through its environment.
+  const credential = ncAppCredential();
   const workerThread = new ThreadWorker(entry, {
     ...(isTs ? { execArgv: ["--require", "tsx/cjs"] } : {}),
-    workerData: { role },
+    workerData: { role, ...(credential ? { ncAppCredential: credential } : {}) },
   });
   workerThreads.set(role, workerThread);
   workerThread.on("error", (err) => {
@@ -132,7 +144,31 @@ function spawnWorkerThread(role: WorkerRole): void {
 
 let server: Server | null = null;
 
+/**
+ * A NativeCluster app (MIKE_NC_APP=1): its sweeps run now, once, and then on
+ * the host's beat, which the launcher forwards to POST /nc/v1/tick. Each beat
+ * also reaches the worker threads, whose job runner reports its units.
+ */
+function startNativeClusterBeat(): void {
+  setNcTickHandler(async () => {
+    const ran = await runNativeClusterTick();
+    for (const thread of workerThreads.values()) thread.postMessage("nc-tick");
+    return ran;
+  });
+  void runNativeClusterTick();
+}
+
 async function main(): Promise<void> {
+  // A NativeCluster app's launcher hands its secrets over on stdin before
+  // anything else, and keeps stdin open: its end means the launcher is gone.
+  if (internalSecretFromStdinEnabled()) {
+    try {
+      await readLaunchSecrets(process.stdin, () => void shutdown("stdin closed"));
+    } catch (err) {
+      await failBoot(err, "launch-secrets");
+      return;
+    }
+  }
   await validateBootConfiguration();
   // Deploying this code against a database that has not run the
   // document-lifecycle migrations leaks storage silently and fails every
@@ -148,6 +184,13 @@ async function main(): Promise<void> {
   // NativeCluster is configured; it never delays or fails the boot.
   void listNativeClusterModels();
 
+  // PORT=<path>: a unix socket (NativeCluster's sandbox allows no TCP port).
+  // A socket a killed backend left behind is cleared first.
+  const socketPath = unixSocketPath(PORT);
+  if (socketPath && (await removeStaleSocket(socketPath)) === "removed") {
+    log.info("startup", "removed a stale socket before listening");
+  }
+
   server = listenOrFail(
     app,
     PORT,
@@ -162,6 +205,7 @@ async function main(): Promise<void> {
       }
       // WORKERS_MODE === "none": a standalone worker process owns background
       // work (node dist/worker.js).
+      if (ncAppMode()) startNativeClusterBeat();
     },
     undefined,
     HOST,

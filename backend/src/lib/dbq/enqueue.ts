@@ -4,6 +4,19 @@ import { deleteFile } from "../storage";
 import { enqueueAppJobDelivery } from "../queue/appJobsQueue";
 import { redisEnabled } from "./driver";
 import type { Db } from "./types";
+import { NC_JOB_ORIGIN_KEY, ncJobOriginNow, ncTaskForJobKind } from "../nc/context";
+import { hostTransportEnabled } from "../nc/hostSocket";
+
+/**
+ * A NativeCluster app's long model work keeps who queued it (`_nc`: the
+ * ticket's person and request), so its calls wait in the host's line as a
+ * job of that person's request. Nothing changes outside the app.
+ */
+function payloadFor(input: EnqueueDbJobInput): Record<string, unknown> {
+    if (!hostTransportEnabled() || !ncTaskForJobKind(input.kind)) return input.payload;
+    const origin = ncJobOriginNow();
+    return origin ? { ...input.payload, [NC_JOB_ORIGIN_KEY]: origin } : input.payload;
+}
 
 export interface EnqueueDbJobInput {
     kind: string;
@@ -64,7 +77,7 @@ export async function enqueueDbJob(
         .from("db_jobs")
         .insert({
             kind: input.kind,
-            payload: input.payload,
+            payload: payloadFor(input),
             dedupe_key: input.dedupeKey ?? null,
             ...(input.maxAttempts != null
                 ? { max_attempts: input.maxAttempts }

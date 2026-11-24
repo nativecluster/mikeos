@@ -21,6 +21,10 @@ import {
     MCP_TOKEN_REFRESH_WINDOW_MS,
 } from "./jobs/registry";
 import { enqueueDbJob } from "./lib/dbq/enqueue";
+import {
+    DB_JOB_RETENTION_SWEEP_EVERY_MS,
+    runDbJobRetentionSweep,
+} from "./lib/dbq/runner";
 import { runStaleWorkSweep } from "./jobs/maintenance";
 import { startUploadProcessingWorkers } from "./modules/uploads/uploads.service";
 import { uploadProcessingConfiguration } from "./lib/runtimeConfig";
@@ -30,6 +34,8 @@ import { createPollFailureGate } from "./lib/observability/pollFailureGate";
 import { asReportableError } from "./lib/httpError";
 import { listNativeClusterModels } from "./lib/llm/nativecluster";
 import { log } from "./lib/log";
+import { ncAppMode } from "./lib/nc/tick";
+import { refreshNcUnits } from "./lib/nc/units";
 
 const SWEEP_INTERVAL_MS = (() => {
     const raw = Number(process.env.STALE_SWEEP_INTERVAL_MS);
@@ -42,7 +48,8 @@ const MCP_REFRESH_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 /**
  * How far past expiry the sweep still bothers. A connector nobody has used
  * for a day is not worth waking the authorization server for every 5 minutes
- * forever — the lazy refresh in oauthBearerToken picks it up the moment the
+ * forever — the lazy refresh (the MCP SDK's auth() on a 401, saving through
+ * DbMcpOAuthProvider in lib/mcp/oauth.ts) picks it up the moment the
  * user actually touches it. Without this floor, one abandoned connector with
  * a dead grant re-enqueues a doomed job for the rest of the deployment's life.
  */
@@ -95,6 +102,86 @@ async function runMcpTokenRefreshSweep(): Promise<void> {
         });
     }
 }
+/** One stale-work sweep, its failures contained and reported. */
+async function staleWorkSweep(): Promise<void> {
+    try {
+        const { documents, cells } = await runStaleWorkSweep();
+        if (documents || cells)
+            log.warn("stale-sweep", "flipped", { documents, cells });
+    } catch (err) {
+        reportError(err, { tags: { component: "stale-sweep" } });
+        console.error("[stale-sweep] failed", err);
+    }
+}
+
+/** One retention sweep (finished rows, expired exports), its failures contained. */
+async function retentionSweep(): Promise<void> {
+    try {
+        await runDbJobRetentionSweep(createServerSupabase());
+    } catch (err) {
+        reportError(err, { tags: { component: "dbq", stage: "retention" } });
+        console.error("[dbq] retention sweep failed", err);
+    }
+}
+
+type TickSweep = {
+    name: string;
+    everyMs: () => number;
+    run: () => Promise<void>;
+    lastRun: number | null;
+};
+
+const tickSweeps: TickSweep[] = [
+    { name: "stale-work", everyMs: () => SWEEP_INTERVAL_MS, run: staleWorkSweep, lastRun: null },
+    {
+        name: "retention",
+        everyMs: () => DB_JOB_RETENTION_SWEEP_EVERY_MS,
+        run: retentionSweep,
+        lastRun: null,
+    },
+];
+let tickInFlight: Promise<string[]> | null = null;
+
+/**
+ * The host's beat, for a NativeCluster app (MIKE_NC_APP=1), whose sweeps
+ * keep no timers: the stale-work sweep and the DB-job retention sweep (which
+ * expires export artifacts) each run when their own interval has passed
+ * since they last ran here, as their timers would have, and every one runs
+ * on the first beat (index.ts gives one at startup). The units report is
+ * refreshed on each beat. A beat that arrives while one runs joins it.
+ * Answers the names of the sweeps that ran.
+ *
+ * The launcher forwards the host's `POST /nc/v1/tick` to the backend's
+ * `POST /nc/v1/tick` (lib/nc/ingress.ts), which calls this.
+ */
+export function runNativeClusterTick(
+    options: { now?: () => number } = {},
+): Promise<string[]> {
+    if (tickInFlight) return tickInFlight;
+    const now = options.now ?? Date.now;
+    tickInFlight = (async () => {
+        const ran: string[] = [];
+        for (const sweep of tickSweeps) {
+            const at = now();
+            if (sweep.lastRun !== null && at - sweep.lastRun < sweep.everyMs()) continue;
+            sweep.lastRun = at;
+            await sweep.run();
+            ran.push(sweep.name);
+        }
+        await refreshNcUnits({ force: true });
+        return ran;
+    })().finally(() => {
+        tickInFlight = null;
+    });
+    return tickInFlight;
+}
+
+/** Test seam: forget when each sweep last ran. */
+export function resetNativeClusterTick(): void {
+    for (const sweep of tickSweeps) sweep.lastRun = null;
+    tickInFlight = null;
+}
+
 let started = false;
 
 /**
@@ -141,20 +228,18 @@ export function startAllWorkers(
     // up, poll-driven otherwise) — see lib/dbq/runner.ts.
     startDbJobRunner(DB_JOB_HANDLERS, DB_JOB_FAILURE_HOOKS);
 
+    // A NativeCluster app keeps no timers of its own for its sweeps: they
+    // run at startup and on the host's beat (runNativeClusterTick), and the
+    // MCP token refresh is left to the lazy one (on a 401 the MCP SDK's
+    // auth() refreshes with the stored refresh token and DbMcpOAuthProvider
+    // saves the new tokens).
+    if (ncAppMode()) return;
+
     // Stale-work reaper: a crash between "status = processing/generating"
     // and the finalizing write strands rows in a transient state forever —
     // nothing else owns them. Sweep shortly after boot (crash recovery) and
     // on an interval.
-    const runSweep = () =>
-        void runStaleWorkSweep()
-            .then(({ documents, cells }) => {
-                if (documents || cells)
-                    log.warn("stale-sweep", "flipped", { documents, cells });
-            })
-            .catch((err) => {
-                reportError(err, { tags: { component: "stale-sweep" } });
-                console.error("[stale-sweep] failed", err);
-            });
+    const runSweep = () => void staleWorkSweep();
     initialSweep = setTimeout(runSweep, 30_000);
     initialSweep.unref();
     sweepTimer = setInterval(runSweep, SWEEP_INTERVAL_MS);

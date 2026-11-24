@@ -417,9 +417,16 @@ export function validateRuntimeConfiguration(
 
   const errorsBeforeProductionChecks = errors.length;
   if (env.NODE_ENV === "production") {
+    // A NativeCluster app (MIKE_NC_APP=1) has no fixed public address: the
+    // host serves it on an origin of each computer's own
+    // (https://127.0.0.1:<port>), and the backend answers only its launcher on
+    // a unix socket. Neither URL is required there; one that is set is still
+    // checked. Features that need a fixed public URL (connector OAuth
+    // callbacks) say so where they are used.
+    const ncApp = env.MIKE_NC_APP?.trim() === "1";
     const frontend = env.FRONTEND_URL?.trim();
     if (!frontend) {
-      errors.push("FRONTEND_URL is required in production");
+      if (!ncApp) errors.push("FRONTEND_URL is required in production");
     } else {
       requireHttps(
         parsedUrl(frontend, "FRONTEND_URL", errors),
@@ -430,7 +437,7 @@ export function validateRuntimeConfiguration(
 
     const publicApi = configuredApiPublicUrl(env);
     if (!publicApi) {
-      errors.push("API_PUBLIC_URL is required in production");
+      if (!ncApp) errors.push("API_PUBLIC_URL is required in production");
     } else {
       requireHttps(
         parsedUrl(publicApi, "API_PUBLIC_URL", errors),

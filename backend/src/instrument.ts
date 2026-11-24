@@ -14,10 +14,17 @@ import path from "node:path";
 import { isMainThread } from "node:worker_threads";
 import { initSentry, type SentryRole } from "./lib/observability/sentry";
 import { installErrorLogRedaction } from "./lib/log";
+import { installSupabaseSocketFetch } from "./lib/nc/supabaseSockets";
+import { installLogFiles } from "./lib/nc/logFiles";
 
 // Before anything can log: provider errors carry the prompt and the
 // provider's response, and stdout goes to the host's log store.
 installErrorLogRedaction();
+
+// Inside NativeCluster's sandbox (MIKE_REST_SOCKET / MIKE_AUTH_SOCKET), every
+// Supabase client of this process or thread reaches PostgREST and GoTrue over
+// their unix sockets. A no-op otherwise.
+installSupabaseSocketFetch();
 
 function detectRole(): SentryRole {
   const override = process.env.SENTRY_ROLE;
@@ -34,6 +41,14 @@ function detectRole(): SentryRole {
   if (entry.startsWith("worker")) return "worker";
   if (entry.startsWith("syncWorkflows")) return "job";
   return "api";
+}
+
+// MIKE_LOG_DIR (a NativeCluster app, whose stderr is kept nowhere): what this
+// process prints also goes to rotating files there. Worker threads print
+// through the main thread, so only the main thread installs it.
+if (isMainThread) {
+  const role = detectRole();
+  installLogFiles(role === "api" ? "backend" : role);
 }
 
 initSentry(detectRole());

@@ -27,6 +27,10 @@ import {
   nativeClusterRequestBody,
 } from "./nativecluster";
 import { ProviderConfigurationError, providerFailureResponse, type ProviderKeySource } from "./providerErrors";
+import { runInNcCall, type NcTask } from "../nc/context";
+import { hostSocketPath, hostTransportEnabled } from "../nc/hostSocket";
+import { HOST_LINE_BASE_URL, hostLineFetch } from "../nc/hostLine";
+import { ncAppCredential } from "../nc/launchSecrets";
 import {
   ACCOUNT_MODEL_LABELS,
   accountModelPrefix,
@@ -668,6 +672,7 @@ function ollamaModelName(model: string): string {
 async function createNativeClusterAdapter(
   model: string,
 ): Promise<AiSdkAdapterConfig> {
+  if (hostTransportEnabled()) return createNativeClusterHostAdapter(model);
   const apiKey = await nativeClusterApiKey();
   if (!apiKey) {
     log.warn(
@@ -708,6 +713,87 @@ async function createNativeClusterAdapter(
     untimed: true,
     ...(maxOutputTokens ? { defaultMaxOutputTokens: () => maxOutputTokens } : {}),
   };
+}
+
+/**
+ * The same model inside a NativeCluster app (NATIVECLUSTER_TRANSPORT=host):
+ * no key and no address. Each call waits in the host's line on
+ * LB_HOST_SOCKET and runs on the grant it gets (lib/nc/hostLine.ts), under
+ * the app's credential from the launcher. The host names models, not
+ * capabilities; `think` is the engine's own field, safe for any model (one
+ * that cannot skip its deliberation ignores false, and true is its own way),
+ * so Mike's level "none" is sent as `think: false` and any other as true.
+ */
+async function createNativeClusterHostAdapter(
+  model: string,
+): Promise<AiSdkAdapterConfig> {
+  if (!hostSocketPath() || !ncAppCredential()) {
+    log.warn(
+      "llm",
+      "NativeCluster's host socket or the app's credential is missing (LB_HOST_SOCKET, MIKE_INTERNAL_SECRET_STDIN)",
+    );
+    throw new ProviderConfigurationError(
+      "This Mike cannot reach NativeCluster yet. Open it from NativeCluster again.",
+    );
+  }
+  const name = nativeClusterModelName(model);
+  const { createOpenAICompatible } = await import("@ai-sdk/openai-compatible");
+  const client = createOpenAICompatible({
+    name: "nativecluster",
+    baseURL: HOST_LINE_BASE_URL,
+    includeUsage: true,
+    transformRequestBody: (body: Record<string, unknown>) =>
+      nativeClusterRequestBody(body, { thinks: true }),
+    fetch: (input, init) => aiSdkFetch(input, init, hostLineFetch),
+  });
+  const { wrapLanguageModel } = await import("ai");
+  return {
+    provider: "nativecluster",
+    label: "NativeCluster",
+    model: wrapLanguageModel({
+      model: client(name),
+      middleware: localModelToleranceMiddleware({ streamToolTurns: true }),
+    }),
+    modelId: model,
+    keySource: "deployment",
+    supportsReasoning: true,
+    untimed: true,
+  };
+}
+
+/**
+ * The task a call site names for its call inside a NativeCluster app, when
+ * its own code says what kind of work it is: a chat's title (the functions
+ * that write one). Everything else takes its task from the request's route or
+ * the job's kind (lib/nc/context.ts).
+ */
+const TITLE_CALL_SITE = /\bgenerate(?:Assistant)?ChatTitle\b/;
+
+function callSiteTask(): NcTask | undefined {
+  if (!hostTransportEnabled()) return undefined;
+  const limit = Error.stackTraceLimit;
+  Error.stackTraceLimit = 25;
+  try {
+    return TITLE_CALL_SITE.test(new Error().stack ?? "") ? "titles" : undefined;
+  } finally {
+    Error.stackTraceLimit = limit;
+  }
+}
+
+/** Run a provider call with its facts in the NativeCluster scope (a no-op outside the app). */
+function asNcCall<T>(
+  call: { kind: "stream" | "complete"; task?: NcTask; conversation?: string | null },
+  fn: () => Promise<T>,
+): Promise<T> {
+  if (!hostTransportEnabled()) return fn();
+  return runInNcCall(
+    {
+      kind: call.kind,
+      ...(call.task ? { task: call.task } : {}),
+      ...(call.conversation ? { conversation: call.conversation } : {}),
+    },
+    fn,
+  );
 }
 
 export function ollamaAuthHeaders(): Record<string, string> {
@@ -876,6 +962,15 @@ async function buildProviderAdapter(
 export async function streamWithProvider(
   params: StreamChatParams,
 ): Promise<StreamChatResult> {
+  return asNcCall(
+    { kind: "stream", task: callSiteTask(), conversation: params.conversationId },
+    () => streamWithProviderInScope(params),
+  );
+}
+
+async function streamWithProviderInScope(
+  params: StreamChatParams,
+): Promise<StreamChatResult> {
   const normalizedParams = {
     ...params,
     reasoning: normalizeReasoningLevelForModel(
@@ -1008,8 +1103,10 @@ export function fallbackReasoningLevelFromProviderError(
 export async function completeWithProvider(
   params: CompleteProviderParams,
 ): Promise<string> {
-  return completeAiSdkText(
-    params,
-    await createProviderAdapter(params.model, params.apiKeys),
+  return asNcCall({ kind: "complete", task: callSiteTask() }, async () =>
+    completeAiSdkText(
+      params,
+      await createProviderAdapter(params.model, params.apiKeys),
+    ),
   );
 }

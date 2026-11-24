@@ -40,6 +40,7 @@ import { configuredAllowedOrigins } from "./lib/origins";
 import { envInt } from "./lib/runtimeConfig";
 import { stripApiPathPrefix } from "./middleware/apiPathPrefix";
 import { requestDiagnostics } from "./middleware/requestDiagnostics";
+import { ncIngress, ncIngressEnabled } from "./lib/nc/ingress";
 
 export const app = express();
 const isProduction = process.env.NODE_ENV === "production";
@@ -202,6 +203,7 @@ const authMfaLimiter = makeLimiter({
 
 app.disable("x-powered-by");
 app.set("trust proxy", envInt("TRUST_PROXY_HOPS", 1));
+if (ncIngressEnabled()) app.use(ncIngress());
 app.use(stripApiPathPrefix(process.env.API_PATH_PREFIX));
 app.use(requestDiagnostics);
 app.use(protectInternalErrorResponses);
