@@ -100,19 +100,50 @@ export function ncTaskForPath(path: string): NcTask {
   return "assistant";
 }
 
+/** The DB job kinds of long model work, by task: each is one of the app's units. */
+const NC_JOB_KIND_TASKS: Readonly<Record<string, NcTask>> = {
+  "extraction.extract": "tabular",
+  "playbook.review": "playbook",
+  "playbook.import": "playbook",
+  "memory.consolidate": "memory",
+};
+
+export const NC_JOB_KINDS: readonly string[] = Object.keys(NC_JOB_KIND_TASKS);
+
 /** A DB job kind's task, or undefined for a kind that makes no model call. */
 export function ncTaskForJobKind(kind: string): NcTask | undefined {
-  switch (kind) {
-    case "extraction.extract":
-      return "tabular";
-    case "playbook.review":
-    case "playbook.import":
-      return "playbook";
-    case "memory.consolidate":
-      return "memory";
-    default:
-      return undefined;
-  }
+  return Object.hasOwn(NC_JOB_KIND_TASKS, kind) ? NC_JOB_KIND_TASKS[kind] : undefined;
+}
+
+/** What a job's payload keeps of the request that queued it (`_nc`). */
+export type NcJobOrigin = { person?: string; request?: string; at?: number };
+
+export const NC_JOB_ORIGIN_KEY = "_nc";
+
+/** The `_nc` a job queued now keeps, or undefined outside a request or job. */
+export function ncJobOriginNow(scope: NcScope | undefined = storage.getStore()): NcJobOrigin | undefined {
+  if (scope?.job) return scope.job.person ? { person: scope.job.person } : undefined;
+  const request = scope?.request;
+  if (!request) return undefined;
+  return {
+    ...(request.person ? { person: request.person } : {}),
+    ...(request.request ? { request: request.request, at: request.at } : {}),
+  };
+}
+
+/** The job scope a claimed job runs in, from its kind and its payload's `_nc`. */
+export function ncJobFor(kind: string, payload: Record<string, unknown> | null | undefined): NcJob {
+  const raw = payload?.[NC_JOB_ORIGIN_KEY];
+  const kept = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const person = typeof kept.person === "string" ? kept.person : "";
+  const request = typeof kept.request === "string" && kept.request ? kept.request : undefined;
+  const at = typeof kept.at === "number" && Number.isFinite(kept.at) ? kept.at : undefined;
+  return {
+    task: ncTaskForJobKind(kind) ?? "assistant",
+    person,
+    ...(request ? { request } : {}),
+    ...(at !== undefined ? { at } : {}),
+  };
 }
 
 export function isNcTask(value: unknown): value is NcTask {

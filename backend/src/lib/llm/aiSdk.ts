@@ -32,12 +32,23 @@ import { createRawLlmStreamRecorder, logRawLlmStream } from "./rawStreamLog";
 
 installProviderWarningLogger();
 
+/**
+ * NativeCluster's line refusing a call in words for the person (this
+ * computer's switch is off, the cluster is out of reach, Members does not
+ * give them the app; lib/nc/hostLine.ts answers it as a 503 `nc_refused`):
+ * asking again at once gets the same words, so the SDK must not retry it.
+ */
+export function isNativeClusterRefusal(error: unknown): boolean {
+  const body = (error as { responseBody?: unknown } | null)?.responseBody;
+  return typeof body === "string" && /"code"\s*:\s*"nc_(?:refused|no_origin)"/.test(body);
+}
+
 /** Keep SDK retry backoff for throttling, but don't repeat a proven account refusal. */
 function quotaRefusalRetries(): LanguageModelMiddleware {
   const attempt = async <T>(call: () => PromiseLike<T>): Promise<T> => {
     try { return await call(); }
     catch (error) {
-      if (isDeterministicProviderQuota(error) && error instanceof Error) {
+      if ((isDeterministicProviderQuota(error) || isNativeClusterRefusal(error)) && error instanceof Error) {
         // APICallError exposes this flag to the SDK retry loop. Preserve the
         // actual exception, provider response, stack and cause for its owner.
         Object.defineProperty(error, "isRetryable", { value: false, configurable: true });

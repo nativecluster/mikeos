@@ -13,9 +13,17 @@
 // MIKE_INFERENCE_PROVIDER=nativecluster makes NativeCluster the only model
 // provider: every other provider is refused where models are chosen, listed
 // and called (see inferenceOnlyProvider).
+//
+// NATIVECLUSTER_TRANSPORT=host is Mike running as a NativeCluster app: no
+// local address and no key. Every call waits in the host's line on
+// LB_HOST_SOCKET (lib/nc/hostLine.ts), and the models are the ones the host
+// names for the assistant task, each with its window
+// (GET /host/v1/models?task=assistant&kind=chat).
 
 import { readFile } from "node:fs/promises";
 import { log, tpl } from "../log";
+import { hostSocketPath, hostTransportEnabled } from "../nc/hostSocket";
+import { hostTaskModels } from "../nc/hostLine";
 
 export const NATIVECLUSTER_MODEL_PREFIX = "nativecluster/";
 
@@ -67,6 +75,7 @@ export function nativeClusterEnabled(
 ): boolean {
   return (
     inferenceOnlyProvider(env) !== null ||
+    hostTransportEnabled(env) ||
     !!env.NATIVECLUSTER_BASE_URL?.trim() ||
     !!env.NATIVECLUSTER_API_KEY?.trim() ||
     !!env.NATIVECLUSTER_ENV_FILE?.trim()
@@ -221,11 +230,18 @@ export function resetNativeClusterModelCache(): void {
  * NativeCluster is off, unreachable or refuses the key, so Mike still opens
  * without it.
  */
+/** What a listing is kept under: the local address, or the host's socket. */
+function listingSource(): string {
+  return hostTransportEnabled()
+    ? `host:${hostSocketPath() ?? ""}`
+    : nativeClusterBaseUrl();
+}
+
 export async function listNativeClusterModels(
   options: { maxAgeMs?: number; fetchImpl?: typeof fetch } = {},
 ): Promise<NativeClusterModelInfo[]> {
   if (!nativeClusterEnabled()) return [];
-  const baseUrl = nativeClusterBaseUrl();
+  const baseUrl = listingSource();
   const maxAgeMs = options.maxAgeMs ?? MODEL_LIST_MAX_AGE_MS;
   if (
     modelList &&
@@ -235,7 +251,10 @@ export async function listNativeClusterModels(
     return modelList.models;
   }
   if (!modelListInflight) {
-    const request = fetchModelList(baseUrl, options.fetchImpl ?? fetch).finally(
+    const listing = hostTransportEnabled()
+      ? fetchHostModelList(baseUrl)
+      : fetchModelList(baseUrl, options.fetchImpl ?? fetch);
+    const request = listing.finally(
       () => {
         if (modelListInflight === request) modelListInflight = null;
       },
@@ -276,6 +295,30 @@ async function fetchModelList(
   }
 }
 
+/** The task Mike's model menu and windows are read for, inside the app. */
+export const NATIVECLUSTER_LISTING_TASK = "assistant";
+
+/**
+ * The host's models for the assistant task: chat models every computer that
+ * may seat a call on them gives `windows`' window. The host says nothing of
+ * tools or thinking, so neither is assumed (isNativeClusterChatModel offers
+ * a model listed without capabilities, and no `think` switch is sent).
+ */
+async function fetchHostModelList(source: string): Promise<NativeClusterModelInfo[]> {
+  try {
+    const answer = await hostTaskModels(NATIVECLUSTER_LISTING_TASK, { fresh: true });
+    const models = answer.models.flatMap((id) => {
+      const info = modelInfoFrom({ id, kind: "chat", context_length: answer.windows[id] });
+      return info ? [info] : [];
+    });
+    modelList = { baseUrl: source, at: Date.now(), models };
+    return models;
+  } catch {
+    log.warn("nativecluster", "the host's model listing could not be read");
+    return [];
+  }
+}
+
 /**
  * What the last listing said of a model (app-level or NativeCluster id),
  * without waiting. A missing or stale listing is refreshed in the
@@ -287,7 +330,7 @@ export function cachedNativeClusterModel(
   if (!nativeClusterEnabled()) return undefined;
   const fresh =
     modelList &&
-    modelList.baseUrl === nativeClusterBaseUrl() &&
+    modelList.baseUrl === listingSource() &&
     Date.now() - modelList.at <= MODEL_LIST_MAX_AGE_MS;
   if (!fresh) void listNativeClusterModels();
   const name = nativeClusterModelName(model);

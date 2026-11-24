@@ -38,6 +38,18 @@ import {
 } from "../observability/pollFailureGate";
 import { asReportableError, withResponseStatus } from "../httpError";
 import { log, tpl } from "../log";
+import { NC_JOB_KINDS, ncJobFor, ncTaskForJobKind, runInNcJob } from "../nc/context";
+import { hostTransportEnabled } from "../nc/hostSocket";
+import { ncAppCredential } from "../nc/launchSecrets";
+import { ncAppMode } from "../nc/tick";
+import {
+    asNcUnit,
+    createNcUnitsReporter,
+    postNcUnits,
+    refreshNcUnits,
+    setNcUnitsReporter,
+    type NcQueued,
+} from "../nc/units";
 
 /**
  * Poll cadence depends on the driver: with Redis configured, BullMQ delivers
@@ -151,7 +163,35 @@ export async function processClaimedJob(
     failureHooks: Readonly<Record<string, DbJobFailureHook>> = {},
 ): Promise<void> {
     // Dispatch failures need the same per-job scope as handler failures.
-    await runIsolated(() => dispatchClaimedJob(db, handlers, job, failureHooks));
+    const run = () => runIsolated(() => dispatchClaimedJob(db, handlers, job, failureHooks));
+    if (!hostTransportEnabled()) {
+        await run();
+        return;
+    }
+    // A NativeCluster app: the job's model calls wait in the host's line as
+    // a job (lib/nc/context.ts), and long model work counts as one of the
+    // app's units while it runs (lib/nc/units.ts).
+    const scoped = () => runInNcJob(ncJobFor(job.kind, job.payload), run);
+    await (ncTaskForJobKind(job.kind) ? asNcUnit(scoped) : scoped());
+}
+
+/**
+ * Whether long model work waits in the queue: a job due now, or the
+ * earliest pending one's run_at when it lies ahead (a retry's backoff).
+ */
+export async function queuedNcJobs(db: Db, now = Date.now()): Promise<NcQueued> {
+    const { data, error } = await db
+        .from("db_jobs")
+        .select("run_at")
+        .eq("status", "pending")
+        .in("kind", [...NC_JOB_KINDS])
+        .order("run_at", { ascending: true })
+        .limit(1);
+    if (error) throw asReportableError(error, queuedNcJobs);
+    const first = (data as { run_at?: string }[] | null)?.[0]?.run_at;
+    const at = first ? Date.parse(first) : Number.NaN;
+    if (!Number.isFinite(at)) return { due: false };
+    return at <= now ? { due: true } : { due: false, pauseEnds: new Date(at).toISOString() };
 }
 
 async function dispatchClaimedJob(
@@ -604,6 +644,13 @@ export function startDbJobRunner(handlers: DbJobHandlers, failureHooks: Readonly
 
     const jobPool = createDbJobPool(db, handlers, failureHooks);
     pool = jobPool;
+    // A NativeCluster app tells its host what long model work waits or runs.
+    if (hostTransportEnabled() && ncAppCredential()) {
+        setNcUnitsReporter(
+            createNcUnitsReporter({ post: postNcUnits, queued: () => queuedNcJobs(db) }),
+        );
+        void refreshNcUnits({ force: true });
+    }
     // While claims keep failing, fill() skips until the backed-off retry
     // time instead of hitting the broken dependency every interval.
     const tick = () => void jobPool.fill();
@@ -613,14 +660,18 @@ export function startDbJobRunner(handlers: DbJobHandlers, failureHooks: Readonly
     // without waiting a full interval.
     setTimeout(tick, 1_000).unref();
 
-    const sweep = () =>
-        void runDbJobRetentionSweep(db).catch((err) => {
-            reportError(err, { tags: { component: "dbq", stage: "retention" } });
-            console.error("[dbq] retention sweep failed", err);
-        });
-    sweepTimer = setInterval(sweep, SWEEP_EVERY_MS);
-    sweepTimer.unref();
-    setTimeout(sweep, 60_000).unref();
+    // A NativeCluster app runs the retention sweep on the host's beat
+    // (runNativeClusterTick), not on a timer of its own.
+    if (!ncAppMode()) {
+        const sweep = () =>
+            void runDbJobRetentionSweep(db).catch((err) => {
+                reportError(err, { tags: { component: "dbq", stage: "retention" } });
+                console.error("[dbq] retention sweep failed", err);
+            });
+        sweepTimer = setInterval(sweep, SWEEP_EVERY_MS);
+        sweepTimer.unref();
+        setTimeout(sweep, 60_000).unref();
+    }
 
     log.info(tpl`[dbq] runner started (poll ${pollMs()}ms, driver ${redisEnabled() ? "redis" : "postgres"})`,
     );
@@ -635,4 +686,10 @@ export async function stopDbJobRunner(): Promise<void> {
     const draining = pool;
     pool = null;
     if (draining) await draining.drain();
+    // On the way out: what still waits, so the host starts the app for it.
+    await refreshNcUnits({ force: true });
+    setNcUnitsReporter(null);
 }
+
+/** How often the retention sweep runs (the host's beat runs it no more often). */
+export const DB_JOB_RETENTION_SWEEP_EVERY_MS = SWEEP_EVERY_MS;
