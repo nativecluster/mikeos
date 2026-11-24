@@ -186,11 +186,24 @@ worker.
 
 | Project | What |
 |---|---|
-| `upstream` | Mike's own specs, **unchanged**, copied by `stage.ts` into `.upstream/` beside the harness's stand-ins for `fixtures.ts`, `users.ts` and `onboarding.ts` (`shim/`). Included: project-management, tabular-reviews, workflows-settings, settings-search, accessibility, critical-path. The tests of Mike's own login page are left out by name, and auth-flows is not staged. |
+| `upstream` | Mike's own specs, copied by `stage.ts` into `.upstream/` beside the harness's stand-ins for `fixtures.ts`, `users.ts` and `onboarding.ts` (`shim/`), **unchanged** but for one step: where `helpers.ts` (`createProject`), tabular-reviews (`createReview`) and workflows-settings walk Details → Access, they go past Access only where the page shows it (`lib/wizard.ts`), since the app skips it (accounts are per computer). Staging fails if any of the three no longer matches exactly once. Included: project-management, tabular-reviews, workflows-settings, settings-search, accessibility, critical-path. auth-flows is not staged. |
 | `upstream-synthetic` | upstream's browser-mocked specs, unchanged |
 | `harness` | `people` (separate projects and documents for two people; nobody's 403 in words; data kept across a restart), `chat-fake` (an answer streams; `read_document` shows and answers; lane P; one release per grant), `tabular-fake` (the cells fill; lane B jobs), `door` |
 | `real` | `HARNESS_REAL_MODELS=1` only: one short chat and one tiny tabular review |
 | `probe` | for the Node probe package: its page, Next in-process, client fetches through the door, and the door's refusals |
+
+**Set aside.** Upstream tests of what the app does not have are not run
+(`stage.ts` `SET_ASIDE`, each with its reason, printed at the start of a
+run; their files are kept and staged): Mike's login page and its redirect,
+Password, MFA, Delete account and email change (NativeCluster is the only
+login), Bring Your Own Keys and its Saved Providers (models come from
+NativeCluster alone), and the OAuth popup (the app's window opens none; it
+links by the device grant or a pasted address). Ten tests, in
+accessibility, critical-path, settings-search, workflows-settings,
+settings-search-latency and legal-data-hunter.
+
+The harness's own specs create projects and reviews with `lib/projects.ts`
+and `lib/tabular.ts`, past Access the same way.
 
 ## Status (2026-11-24)
 

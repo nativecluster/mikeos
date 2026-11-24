@@ -21,7 +21,7 @@
 import fs from "fs";
 import path from "path";
 import { defineConfig, devices, type PlaywrightTestConfig } from "@playwright/test";
-import { stageUpstream, UPSTREAM_DIR, UPSTREAM_SPECS, SYNTHETIC_SPECS, NOT_IN_THE_APP } from "./stage";
+import { stageUpstream, UPSTREAM_DIR, UPSTREAM_SPECS, SYNTHETIC_SPECS, NOT_IN_THE_APP, SET_ASIDE } from "./stage";
 
 const HERE = __dirname;
 const TEST_DIR = path.resolve(HERE, "..");
@@ -34,7 +34,13 @@ if (!pkg && !process.env.HARNESS_APP) throw new Error("set HARNESS_PKG to the pa
 const manifest = pkg ? JSON.parse(fs.readFileSync(path.join(pkg, "nc-app.json"), "utf8")) : { id: process.env.HARNESS_APP, name: process.env.HARNESS_APP };
 const app = manifest.id === "node-probe" ? "probe" : /mike/i.test(`${manifest.id} ${manifest.name}`) ? "mike" : "other";
 const isMain = process.env.TEST_WORKER_INDEX === undefined;
-if (app === "mike" && isMain) stageUpstream();
+if (app === "mike" && isMain) {
+    stageUpstream();
+    // Upstream tests of what the app does not have (stage.ts SET_ASIDE): not
+    // run, each with its reason, said once at the start of a run.
+    console.log(`set aside, ${SET_ASIDE.length} upstream tests of what the app does not have:`);
+    for (const t of SET_ASIDE) console.log(`  - ${t.spec} › ${t.title}: ${t.why}`);
+}
 
 const runs = path.join(TEST_DIR, ".runs");
 const sandbox = process.env.HARNESS_SANDBOX === "1";
@@ -49,7 +55,7 @@ const projects: PlaywrightTestConfig["projects"] =
         ? [{ name: "probe", testDir: path.join(HERE, "specs"), testMatch: [/probe\.spec\.ts/, /door\.spec\.ts/], use: chrome }]
         : [
               { name: "upstream", testDir: UPSTREAM_DIR, testMatch: UPSTREAM_SPECS, grepInvert: NOT_IN_THE_APP, use: chrome },
-              { name: "upstream-synthetic", testDir: UPSTREAM_DIR, testMatch: SYNTHETIC_SPECS, fullyParallel: false, use: chrome },
+              { name: "upstream-synthetic", testDir: UPSTREAM_DIR, testMatch: SYNTHETIC_SPECS, grepInvert: NOT_IN_THE_APP, fullyParallel: false, use: chrome },
               {
                   name: "harness",
                   testDir: path.join(HERE, "specs"),

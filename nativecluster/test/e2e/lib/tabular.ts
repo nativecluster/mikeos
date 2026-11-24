@@ -5,8 +5,9 @@
 import { expect, type Page } from "@playwright/test";
 import { PDF_FIXTURE } from "../../../../e2e/helpers";
 import { chooseModel } from "./door";
+import { nextPastAccess } from "./wizard";
 
-/** Creates a review through the modal (as upstream's tabular spec does), the harness's model chosen. */
+/** Creates a review through the modal (as upstream's tabular spec does), the harness's model chosen, past an Access step only where there is one. */
 export async function createReview(page: Page, label: string, prefer?: RegExp): Promise<string> {
     await page.goto("/tabular-reviews");
     await expect(page.getByRole("heading", { name: "Tabular Reviews" })).toBeVisible();
@@ -16,9 +17,7 @@ export async function createReview(page: Page, label: string, prefer?: RegExp): 
     await expect(title).toBeVisible();
     await title.fill(name);
     await chooseModel(page, prefer);
-    await page.getByRole("button", { name: "Next", exact: true }).click();
-    await expect(page.getByRole("dialog", { name: "Access" })).toBeVisible();
-    await page.getByRole("button", { name: "Next", exact: true }).click();
+    await nextPastAccess(page);
     await expect(page.getByRole("dialog", { name: "Add Documents" })).toBeVisible();
     const created = page.waitForResponse((r) => /\/tabular-review\/?$/.test(new URL(r.url()).pathname) && r.request().method() === "POST");
     await page.locator('button[name="modalAction"][value="create-review"]').click();
@@ -43,7 +42,7 @@ export async function addDocumentAndColumn(page: Page, column: string, prompt: s
     await page.getByRole("button", { name: /Add Columns/ }).first().click();
     await page.getByPlaceholder("Column name").first().fill(column);
     await page.getByPlaceholder(/Write the analysis prompt/).first().fill(prompt);
-    await page.getByRole("button", { name: "Add columns" }).click();
+    await page.getByRole("button", { name: "Add columns", exact: true }).click();
     await expect(page.getByText(column, { exact: true }).first()).toBeVisible();
 }
 

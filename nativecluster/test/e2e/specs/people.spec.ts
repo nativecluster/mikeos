@@ -9,7 +9,8 @@
  * Mike accounts whatever ran before.
  */
 import { test, expect, type Browser } from "@playwright/test";
-import { createProject, PDF_FIXTURE } from "../../../../e2e/helpers";
+import { PDF_FIXTURE } from "../../../../e2e/helpers";
+import { createProject } from "../lib/projects";
 import { completeOnboardingIfRequired } from "../shim/onboarding";
 import { door, personHeaders, nobodyHeaders } from "../lib/door";
 

@@ -6,7 +6,8 @@
  */
 import { randomUUID } from "node:crypto";
 import { test, expect } from "../shim/fixtures";
-import { createProject, PDF_FIXTURE, expectSavedAnswer } from "../../../../e2e/helpers";
+import { PDF_FIXTURE, expectSavedAnswer } from "../../../../e2e/helpers";
+import { createProject } from "../lib/projects";
 import { chooseModel, door, expectLineSettled } from "../lib/door";
 
 test.beforeAll(async () => {
