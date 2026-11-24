@@ -1,5 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
-import { requestOriginIsTrusted } from "../lib/origins";
+import { requestOriginIsAllowed } from "../lib/origins";
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
@@ -14,7 +14,7 @@ export function requireTrustedOrigin(
   }
 
   const origin = req.get("origin");
-  if (!requestOriginIsTrusted(origin)) {
+  if (!requestOriginIsAllowed(origin, req.get("host"))) {
     res.status(403).json({
       code: "untrusted_origin",
       detail: "The request origin is not allowed.",

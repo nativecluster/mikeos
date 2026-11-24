@@ -8,6 +8,8 @@ import { noteUpstreamReachable } from "../lib/upstreamOutage";
 import { clearRequestAuthCookies, createRequestSupabase } from "../lib/authSession";
 import { reportSchemaOutOfDateOnce } from "../lib/schemaOutOfDate";
 import { requestOriginIsTrusted } from "../lib/origins";
+import { appAccessToken, ncAppMode, ncPersonOf } from "../lib/authApp";
+import { claimAccountForPerson } from "../lib/authPersonBinding";
 import { devLog, isDev } from "../lib/log";
 import { AppError } from "../lib/appError";
 import {
@@ -185,8 +187,18 @@ export async function requireAuth(
     null;
   // auth-js returns, rather than throws, the error behind a missing user.
   let lookupError: unknown = null;
+  // The NativeCluster app (lib/authApp.ts) has no cookies: its pages present
+  // the access token they keep in localStorage, and nothing else counts.
+  const appMode = ncAppMode();
 
-  if (auth.startsWith("Bearer ")) {
+  if (appMode) {
+    token = appAccessToken(req);
+    if (token) {
+      const result = await admin.auth.getUser(token);
+      user = result.data.user;
+      lookupError = result.error;
+    }
+  } else if (auth.startsWith("Bearer ")) {
     // Temporary compatibility path for older Word add-ins, load tests, and
     // API clients. Updated browser clients authenticate with HttpOnly cookies.
     token = auth.slice(7).trim();
@@ -253,7 +265,7 @@ export async function requireAuth(
       // a JWT for a session that no longer exists): the visitor must sign in
       // again, which is a 401 the client already handles. Clear the dead
       // cookies so the next request does not present them again.
-      if (!auth.startsWith("Bearer ")) clearRequestAuthCookies(req, res);
+      if (!appMode && !auth.startsWith("Bearer ")) clearRequestAuthCookies(req, res);
       res.status(401).json({ code: "session_expired", detail: "Invalid or expired session" });
       return;
     }
@@ -294,6 +306,27 @@ export async function requireAuth(
   if (deletionProfile?.account_deletion_requested_at) {
     res.status(401).json({ code: "account_deletion_pending", detail: "This account is being deleted." });
     return;
+  }
+
+  if (appMode) {
+    // The second key: this account must belong to the NativeCluster person
+    // signed in to the window (lib/authPersonBinding.ts).
+    const person = await claimAccountForPerson(admin, user.id, ncPersonOf(req));
+    if (!person.ok) {
+      if (person.reason === "lookup_failed") {
+        sendInternalError(
+          res,
+          new AppError("db.query_failed", "NativeCluster account binding lookup failed", {
+            cause: person.error,
+          }),
+        );
+        return;
+      }
+      res.status(person.status).json({ code: person.code, detail: person.detail });
+      return;
+    }
+    res.locals.authSource = "app";
+    res.locals.authUser = user;
   }
 
   res.locals.userId = user.id;
