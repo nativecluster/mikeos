@@ -22,7 +22,7 @@ import {
     stateHash,
     validateRemoteMcpUrl,
 } from "./client";
-import { ConnectorSetupError } from "./errors";
+import { ConnectorLinkUnsupportedError, ConnectorSetupError } from "./errors";
 import {
     MCP_TOKEN_FIELDS,
     releaseHostColumns,
@@ -831,6 +831,97 @@ export class DbMcpOAuthProvider implements OAuthClientProvider {
     }
 }
 
+type RegistrationRefusal = { status: number; error: string | null; description: string };
+
+/**
+ * Wraps the SDK's fetch to keep what a dynamic client registration (RFC
+ * 7591: a POST of client metadata naming `redirect_uris`) was refused with.
+ * The SDK folds an `invalid_redirect_uri` answer into a generic server error,
+ * so this is the one place the reason is still known.
+ */
+export function watchRegistration(fetchFn: typeof guardedFetch): {
+    fetch: typeof guardedFetch;
+    readonly refused: RegistrationRefusal | null;
+} {
+    let refused: RegistrationRefusal | null = null;
+    const watched: typeof guardedFetch = async (input, init, options) => {
+        const response = await fetchFn(input, init, options);
+        const body = init?.body;
+        if (
+            !response.ok &&
+            (init?.method ?? "GET").toUpperCase() === "POST" &&
+            typeof body === "string" &&
+            body.includes('"redirect_uris"')
+        ) {
+            const answer = (await response
+                .clone()
+                .json()
+                .catch(() => null)) as Record<string, unknown> | null;
+            refused = {
+                status: response.status,
+                error: typeof answer?.error === "string" ? answer.error : null,
+                description:
+                    typeof answer?.error_description === "string"
+                        ? answer.error_description
+                        : "",
+            };
+        }
+        return response;
+    };
+    return {
+        fetch: watched,
+        get refused() {
+            return refused;
+        },
+    };
+}
+
+/** The SDK's words for a server with no registration endpoint and no client. */
+const NO_REGISTRATION_RE = /does not support dynamic client registration/i;
+
+/**
+ * Mike's NativeCluster app: the plain answer when the server's sign-in can
+ * never finish from this computer, or null when the failure is another.
+ */
+export function linkUnsupported(
+    err: unknown,
+    refused: RegistrationRefusal | null,
+    serverUrl: string,
+    redirectUri: string,
+): ConnectorLinkUnsupportedError | null {
+    let host = "This server";
+    try {
+        host = new URL(serverUrl).host;
+    } catch {
+        // The words stay general.
+    }
+    const tokenHint = `If ${host} gives you an API token, add it as a custom connector with that token instead.`;
+    if (
+        refused &&
+        (refused.error === "invalid_redirect_uri" ||
+            (refused.error === "invalid_client_metadata" && /redirect/i.test(refused.description)))
+    ) {
+        let origin = "";
+        try {
+            origin = new URL(redirectUri).origin;
+        } catch {
+            // No address to name.
+        }
+        return new ConnectorLinkUnsupportedError(
+            "connector_redirect_rejected",
+            `${host} won't send you back to Mike after you sign in: it refuses Mike's address on this computer` +
+                `${origin ? ` (${origin})` : ""}, so it can't be linked from Mike's NativeCluster app by signing in. ${tokenHint}`,
+        );
+    }
+    if (err instanceof Error && NO_REGISTRATION_RE.test(err.message))
+        return new ConnectorLinkUnsupportedError(
+            "connector_registration_unsupported",
+            `${host} can't be linked from Mike's NativeCluster app by signing in: it lets only apps ` +
+                `registered with it in advance sign in, and none is set up for this Mike. ${tokenHint}`,
+        );
+    return null;
+}
+
 export async function startUserMcpConnectorOAuth(
     userId: string,
     connectorId: string,
@@ -880,12 +971,24 @@ export async function startUserMcpConnectorOAuth(
     const resourceMetadataUrl = await seedResourceMetadataUrl(
         connector.server_url,
     );
-    const result = await runMcpOAuth(provider, {
-        serverUrl: connector.server_url,
-        ...(env.scope ? { scope: env.scope } : {}),
-        ...(resourceMetadataUrl ? { resourceMetadataUrl } : {}),
-        fetchFn: guardedFetch,
-    });
+    // Mike's NativeCluster app watches the registration, so a server whose
+    // sign-in can never finish from this computer is answered in words.
+    const registration = watchRegistration(guardedFetch);
+    let result: Awaited<ReturnType<typeof runMcpOAuth>>;
+    try {
+        result = await runMcpOAuth(provider, {
+            serverUrl: connector.server_url,
+            ...(env.scope ? { scope: env.scope } : {}),
+            ...(resourceMetadataUrl ? { resourceMetadataUrl } : {}),
+            fetchFn: isNcAppMode() ? registration.fetch : guardedFetch,
+        });
+    } catch (err) {
+        if (isNcAppMode()) {
+            const unsupported = linkUnsupported(err, registration.refused, connector.server_url, redirectUri);
+            if (unsupported) throw unsupported;
+        }
+        throw err;
+    }
     if (result === "AUTHORIZED") {
         return { authorizationUrl: null, alreadyAuthorized: true };
     }

@@ -24,6 +24,7 @@ import { reportError } from "../../lib/observability/sentry";
 import { type Db } from "./user.shared";
 import { log } from "../../lib/log";
 import { isNcAppMode } from "../../lib/mcp/ncApp";
+import { ConnectorLinkUnsupportedError } from "../../lib/mcp/errors";
 import { loadConnector } from "../../lib/mcp/client";
 import { loadOAuthToken } from "../../lib/mcp/oauth";
 import {
@@ -278,7 +279,8 @@ export async function startMcpConnectorOAuth(
         );
         return { ok: true, result };
     } catch (err) {
-        if (err instanceof ConnectorSetupError) {
+        // Both carry words this repo authors: what the person can do next.
+        if (err instanceof ConnectorSetupError || err instanceof ConnectorLinkUnsupportedError) {
             return { ok: false, kind: "setup", code: err.code, detail: err.message };
         }
         const failure = reportMcpFailure(

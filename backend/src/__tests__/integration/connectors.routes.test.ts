@@ -87,7 +87,7 @@ vi.mock("../../lib/integrations/googleDrive", async (importOriginal) => {
 });
 
 import { app } from "../../app";
-import { ConnectorSetupError } from "../../lib/mcp/errors";
+import { ConnectorLinkUnsupportedError, ConnectorSetupError } from "../../lib/mcp/errors";
 import { McpOAuthRequiredError } from "../../lib/mcp/oauth";
 import { GoogleDriveUnavailableError } from "../../lib/integrations/googleDrive";
 
@@ -223,6 +223,23 @@ describe("POST /user/mcp-connectors/:id/oauth/start", () => {
         expect(res.body.code).toBe("connector_setup_required");
         expect(res.body.detail).toContain("administrator setup");
         expect(res.body.detail).not.toContain("localhost");
+    });
+
+    it("says in words when the server's sign-in can never finish from this computer", async () => {
+        startUserMcpConnectorOAuth.mockImplementation(async () => {
+            throw new ConnectorLinkUnsupportedError(
+                "connector_redirect_rejected",
+                "mcp.example.test won't send you back to Mike after you sign in.",
+            );
+        });
+
+        const res = await request(app).post("/user/mcp-connectors/c1/oauth/start");
+
+        expect(res.status).toBe(400);
+        expect(res.body).toEqual({
+            code: "connector_redirect_rejected",
+            detail: "mcp.example.test won't send you back to Mike after you sign in.",
+        });
     });
 
     it("keeps every other failure sanitized", async () => {

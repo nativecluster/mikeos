@@ -247,3 +247,20 @@ export class ConnectorSetupError extends AppError {
         super("mcp.setup_failed", message);
     }
 }
+
+/**
+ * Mike's NativeCluster app: the server's sign-in can never finish from this
+ * computer, because it registers no client for Mike (no dynamic client
+ * registration) or refuses Mike's address here (`https://127.0.0.1:<port>`)
+ * as the place to come back to. Like ConnectorSetupError, the message is
+ * static text this repository authors with only the server's host and the
+ * app's origin interpolated, so routes may return it verbatim.
+ */
+export class ConnectorLinkUnsupportedError extends AppError {
+    constructor(
+        readonly code: "connector_registration_unsupported" | "connector_redirect_rejected",
+        message: string,
+    ) {
+        super("mcp.setup_failed", message);
+    }
+}

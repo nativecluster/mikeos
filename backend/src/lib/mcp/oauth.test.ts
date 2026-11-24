@@ -651,6 +651,64 @@ describe("startUserMcpConnectorOAuth", () => {
     });
 });
 
+describe("startUserMcpConnectorOAuth in Mike's NativeCluster app", () => {
+    const REDIRECT = "https://127.0.0.1:8494/api/user/mcp-connectors/oauth/callback";
+    const emptyDb = {
+        from() {
+            return {
+                select() {
+                    return {
+                        eq() {
+                            return {
+                                maybeSingle: () => Promise.resolve({ data: null, error: null }),
+                            };
+                        },
+                    };
+                },
+            };
+        },
+    } as unknown as Db;
+
+    beforeEach(() => {
+        vi.clearAllMocks();
+        // The SDK registers a client (RFC 7591) and the server refuses the
+        // app's address as a redirect; the SDK then throws its generic error.
+        guardedFetchMock.mockImplementation(async (input) =>
+            String(input).endsWith("/register")
+                ? Response.json({ error: "invalid_redirect_uri" }, { status: 400 })
+                : new Response("{}", { status: 404 }),
+        );
+        authMock.mockImplementation(async (_provider: unknown, options: { fetchFn: typeof fetch }) => {
+            await options.fetchFn("https://mcp.example.test/register", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ client_name: "Mike", redirect_uris: [REDIRECT] }),
+            });
+            throw new Error("HTTP 400: Invalid OAuth error response");
+        });
+        loadConnectorMock.mockResolvedValue(makeConnector("https://mcp.example.test/mcp"));
+    });
+    afterEach(() => {
+        vi.unstubAllEnvs();
+        guardedFetchMock.mockImplementation(async () => new Response("{}", { status: 404 }));
+    });
+
+    it("says in words that a server refusing the app's address can't be linked by signing in", async () => {
+        vi.stubEnv("MIKE_NC_APP", "1");
+        await expect(startUserMcpConnectorOAuth("user-1", "c1", REDIRECT, emptyDb)).rejects.toMatchObject({
+            name: "ConnectorLinkUnsupportedError",
+            code: "connector_redirect_rejected",
+            message: expect.stringContaining("(https://127.0.0.1:8494)"),
+        });
+    });
+
+    it("leaves a deployment's failure as it was outside the app", async () => {
+        await expect(startUserMcpConnectorOAuth("user-1", "c1", REDIRECT, emptyDb)).rejects.toThrow(
+            "HTTP 400: Invalid OAuth error response",
+        );
+    });
+});
+
 describe("OAuth approval grant identity", () => {
     afterEach(() => vi.unstubAllEnvs());
 
