@@ -12,6 +12,7 @@ import { reportError, setOperation } from "../../lib/observability/sentry";
 import {
     cancelGoogleDriveOAuth,
     completeGoogleDriveOAuth,
+    browseGoogleDriveFiles,
     createGoogleDrivePickerSession,
     disconnectGoogleDrive,
     GoogleDrivePickerUnavailableError,
@@ -103,8 +104,20 @@ import {
 import { isWorkspaceExportType } from "../../application/exports/exportContracts";
 import { getApiKeyStatus, saveApiKey, setApiKeyEnabled } from "./user.service";
 import { log } from "../../lib/log";
+import { ncAppCallbackPage, ncAppPastePage } from "./user.mcpApp";
+import { mcpAppRouter } from "./user.mcpApp.routes";
+import {
+    isNcAppMode,
+    ncAppOrigin,
+    ncAppRedirectUri,
+    NcAppOriginUnknownError,
+    ncPersonContext,
+} from "../../lib/mcp/ncApp";
 
 export const userRouter = Router();
+// Mike's NativeCluster app links connectors from inside its window
+// (MIKE_NC_APP=1 only; nothing here exists otherwise).
+userRouter.use(mcpAppRouter);
 
 // Connectors are per workspace. `?workspace=` names the one a connector
 // request reads or changes — "personal", or a team organization the caller
@@ -138,6 +151,14 @@ function backendPublicUrl(req: {
     protocol: string;
     get(name: string): string | undefined;
 }) {
+    // Mike's NativeCluster app: the backend is served under /api on the app's
+    // own origin, whose port differs per computer, so connector redirects are
+    // built from the request (its Host; never an Origin that differs).
+    if (isNcAppMode()) {
+        const origin = ncAppOrigin(req);
+        if (!origin) throw new NcAppOriginUnknownError();
+        return `${origin}/api`;
+    }
     const configured = configuredApiPublicUrl();
     if (configured) return configured;
     if (process.env.NODE_ENV === "production") {
@@ -746,11 +767,23 @@ userRouter.post(
     "/mcp-connectors/:connectorId/oauth/start",
     requireAuth,
     requireMfaIfEnrolled,
+    ncPersonContext,
     asyncRoute(async (req, res) => {
         setOperation("mcp.connect");
         const userId = res.locals.userId as string;
         const db = createServerSupabase();
-        const redirectUri = `${backendPublicUrl(req)}/user/mcp-connectors/oauth/callback`;
+        // App mode: the provider sends the person back to the app's own page
+        // on this computer (the port differs per computer).
+        let redirectUri: string;
+        try {
+            redirectUri = isNcAppMode()
+                ? ncAppRedirectUri(req, "/user/mcp-connectors/oauth/callback")
+                : `${backendPublicUrl(req)}/user/mcp-connectors/oauth/callback`;
+        } catch (err) {
+            if (err instanceof NcAppOriginUnknownError)
+                return void res.status(400).json({ code: err.code, detail: err.message });
+            throw err;
+        }
         const result = await startMcpConnectorOAuth(
             db,
             userId,
@@ -774,7 +807,7 @@ userRouter.post(
 );
 
 // GET /user/mcp-connectors/oauth/callback
-userRouter.get("/mcp-connectors/oauth/callback", asyncRoute(async (req, res) => {
+userRouter.get("/mcp-connectors/oauth/callback", ncPersonContext, asyncRoute(async (req, res) => {
     setOperation("mcp.connect");
     const nonce = crypto.randomBytes(16).toString("base64");
     const state = typeof req.query.state === "string" ? req.query.state : "";
@@ -786,7 +819,15 @@ userRouter.get("/mcp-connectors/oauth/callback", asyncRoute(async (req, res) => 
         if (error) throw new Error(error);
         if (!state || !code)
             throw new Error("OAuth callback is missing state or code.");
-        const result = await completeUserMcpConnectorOAuth(state, code, db);
+        const result = await completeUserMcpConnectorOAuth(state, code, db, {
+            origin: isNcAppMode() ? ncAppOrigin(req) : null,
+        });
+        if (isNcAppMode()) {
+            // The person's own browser reached the app (rare: see
+            // lib/mcp/appLinking.ts). The app's window polls for the result.
+            const page = ncAppCallbackPage(true);
+            return void res.set(page.headers).type("html").send(page.html);
+        }
         res.set(mcpOAuthPopupHeaders(nonce))
             .type("html")
             .send(
@@ -825,6 +866,10 @@ userRouter.get("/mcp-connectors/oauth/callback", asyncRoute(async (req, res) => 
                     ? req.query.scope
                     : undefined,
         });
+        if (isNcAppMode()) {
+            const page = ncAppCallbackPage(false);
+            return void res.status(400).set(page.headers).type("html").send(page.html);
+        }
         res.status(400)
             .set(mcpOAuthPopupHeaders(nonce))
             .type("html")
@@ -919,6 +964,13 @@ userRouter.post(
 // completion there requires the same authenticated Mike user who started it.
 for (const provider of ["google-drive", "gmail", "google-calendar"]) {
     userRouter.get(`/integrations/${provider}/oauth/callback`, (req, res) => {
+        if (isNcAppMode()) {
+            // The person's own browser reached the app (rare: it must trust
+            // NativeCluster's CA and be signed in there). It carries no Mike
+            // session, so the app finishes from the pasted address instead.
+            const page = ncAppPastePage();
+            return void res.set(page.headers).type("html").send(page.html);
+        }
         const finish = new URL(
             frontendUrl(`/api/user/integrations/${provider}/oauth/finish`),
         );
@@ -1051,6 +1103,36 @@ userRouter.post(
                 res,
                 withKind(err, "google.api_failed", "Google Drive Picker session failed"),
             );
+        }
+    }),
+);
+
+// GET /user/integrations/google-drive/files?q=&pageToken= — Mike's
+// NativeCluster app only, in place of the Google Picker: the files the Drive
+// connection reaches, a page at a time. The token stays on the server.
+userRouter.get(
+    "/integrations/google-drive/files",
+    requireAuth,
+    asyncRoute(async (req, res) => {
+        if (!isNcAppMode()) return void res.status(404).json({ detail: "Not found." });
+        setOperation("google.drive");
+        res.set("Cache-Control", "no-store");
+        const owner = await connectorOwner(req, res);
+        if (!owner) return;
+        try {
+            res.json(
+                await browseGoogleDriveFiles(
+                    owner,
+                    { query: req.query.q, pageToken: req.query.pageToken },
+                    createServerSupabase(),
+                ),
+            );
+        } catch (err) {
+            if (err instanceof GoogleDriveUserError)
+                return void res
+                    .status(err instanceof GoogleDriveUnavailableError ? 404 : 409)
+                    .json({ ...(err.code ? { code: err.code } : {}), detail: err.message });
+            sendInternalError(res, withKind(err, "google.api_failed", "Google Drive files could not be listed"));
         }
     }),
 );

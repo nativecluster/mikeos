@@ -62,8 +62,72 @@ import {
 } from "./googleDriveHttp";
 import {
     googleServiceUnavailableMessage,
-    isGoogleServiceAvailable,
+    isGoogleServiceAvailable as isGoogleServiceSwitchedOn,
 } from "./googleAvailability";
+import { currentNcPerson, isNcAppMode } from "../mcp/ncApp";
+import {
+    GOOGLE_TOKEN_FIELDS,
+    releaseHostColumns,
+    resolveHostColumns,
+    sealHostColumns,
+} from "../mcp/hostSecretColumns";
+
+/**
+ * Whether Drive is offered here. In Mike's NativeCluster app (MIKE_NC_APP=1)
+ * it is not, by default (Pablo, 2026-11-24, for the first version: "not
+ * having google drive yet or its connectors for now"): no card, and every
+ * route refuses it in words. MIKE_NC_GOOGLE_CONNECTORS=1 offers it again,
+ * and only with a Google OAuth client, which Mike does not ship: a company
+ * must register one with Google.
+ */
+function isGoogleServiceAvailable(service: "google-drive"): boolean {
+    if (!isGoogleServiceSwitchedOn(service)) return false;
+    if (!isNcAppMode()) return true;
+    if (process.env.MIKE_NC_GOOGLE_CONNECTORS !== "1") return false;
+    const env = googleDriveOAuthEnv();
+    return !!(env.clientId && env.clientSecret);
+}
+
+/** App mode: Drive tokens live in NativeCluster's store under this key. */
+function driveSecretRow(owner: ConnectorOwner): string {
+    return `${owner.userId}:${owner.orgId ?? "personal"}`;
+}
+
+/**
+ * tokenPatch, with the token kept in NativeCluster's secrets store in app
+ * mode (the row keeps references only).
+ */
+async function sealedTokenPatch(
+    owner: ConnectorOwner,
+    token: Record<string, unknown>,
+    existing?: TokenRow | null,
+) {
+    const patch = tokenPatch(token, existing ?? undefined);
+    if (!isNcAppMode()) return patch;
+    const where = {
+        kind: "gdrive" as const,
+        rowKey: driveSecretRow(owner),
+        previous: existing as unknown as Record<string, unknown> | null,
+    };
+    return {
+        ...patch,
+        ...(await sealHostColumns("access_token", String(token.access_token), where)),
+        ...(typeof token.refresh_token === "string" && token.refresh_token
+            ? await sealHostColumns("refresh_token", token.refresh_token, where)
+            : {}),
+    };
+}
+
+/**
+ * App mode: Drive's scopes. MIKE_NC_GOOGLE_DRIVE_READONLY=1 adds
+ * drive.readonly, so Mike reads the whole Drive: the Google Picker, which is
+ * what grants drive.file access to an existing file, cannot load in the
+ * app's window. Off by default; drive.readonly is a restricted scope.
+ */
+function requestedDriveScopes(): string {
+    const readonly = isNcAppMode() && process.env.MIKE_NC_GOOGLE_DRIVE_READONLY === "1";
+    return `openid email ${GOOGLE_DRIVE_SCOPE}${readonly ? ` ${GOOGLE_DRIVE_READONLY_SCOPE}` : ""}`;
+}
 
 const GOOGLE_AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
@@ -210,7 +274,13 @@ export function googleDriveOAuthEnv(): {
 // OAuth flow (PKCE + offline access)
 // ---------------------------------------------------------------------------
 
-type StateConfig = { codeVerifier: string; redirectUri: string };
+type StateConfig = {
+    codeVerifier: string;
+    redirectUri: string;
+    /** App mode: the NativeCluster person and the app origin that started it. */
+    person?: string;
+    origin?: string;
+};
 
 /**
  * Operator-facing setup steps, with this deployment's real redirect URI
@@ -259,8 +329,14 @@ export async function startGoogleDriveOAuth(
         crypto.createHash("sha256").update(codeVerifier).digest(),
     );
     const stateToken = base64Url(crypto.randomBytes(24));
+    const person = isNcAppMode() ? currentNcPerson() : null;
     const encrypted = encryptString(
-        JSON.stringify({ codeVerifier, redirectUri } satisfies StateConfig),
+        JSON.stringify({
+            codeVerifier,
+            redirectUri,
+            ...(person ? { person } : {}),
+            ...(isNcAppMode() ? { origin: new URL(redirectUri).origin } : {}),
+        } satisfies StateConfig),
     );
     const { error } = await db.from(OAUTH_STATES_TABLE).insert({
         user_id: owner.userId,
@@ -279,7 +355,7 @@ export async function startGoogleDriveOAuth(
     url.searchParams.set("redirect_uri", redirectUri);
     url.searchParams.set("response_type", "code");
     // OpenID/email only identifies the chosen account for the Manage dialog.
-    url.searchParams.set("scope", `openid email ${GOOGLE_DRIVE_SCOPE}`);
+    url.searchParams.set("scope", requestedDriveScopes());
     url.searchParams.set("state", stateToken);
     url.searchParams.set("code_challenge", codeChallenge);
     url.searchParams.set("code_challenge_method", "S256");
@@ -296,6 +372,8 @@ export async function completeGoogleDriveOAuth(
     state: string,
     code: string,
     db: Db = createServerSupabase(),
+    /** App mode: the app origin the finishing request came to. */
+    options: { origin?: string | null } = {},
 ): Promise<{ userId: string }> {
     const { data, error } = await db
         .from(OAUTH_STATES_TABLE)
@@ -315,6 +393,12 @@ export async function completeGoogleDriveOAuth(
     );
     if (!decrypted) throw new Error("OAuth state could not be decrypted.");
     const config = JSON.parse(decrypted) as StateConfig;
+    // App mode: only the NativeCluster person who started it, on the app
+    // origin it started on, finishes it.
+    if (config.person && currentNcPerson() !== config.person)
+        throw new Error("OAuth state belongs to another person.");
+    if (config.origin && options.origin !== config.origin)
+        throw new Error("OAuth state was started on another origin.");
     const env = googleDriveOAuthEnv();
     if (!env.clientId || !env.clientSecret) {
         throw new Error("Google Drive OAuth client is not configured.");
@@ -353,8 +437,12 @@ export async function completeGoogleDriveOAuth(
             "Google Drive read access and offline access are required. Please reconnect and grant access.",
         );
     }
+    const owner: ConnectorOwner = {
+        userId,
+        orgId: typeof data.org_id === "string" ? data.org_id : null,
+    };
     const patch = {
-        ...tokenPatch(token),
+        ...(await sealedTokenPatch(owner, token, isNcAppMode() ? await loadTokenRow(owner, db) : null)),
         account_email: await googleDriveAccountEmail(token.access_token),
     };
     const { data: completed, error: saveError } = await db.rpc(
@@ -478,6 +566,8 @@ async function loadTokenRow(owner: ConnectorOwner, db: Db): Promise<TokenRow | n
         .filter(...workspaceFilter(owner))
         .maybeSingle();
     if (error) throw error;
+    if (isNcAppMode())
+        await resolveHostColumns(data as Record<string, unknown> | null, GOOGLE_TOKEN_FIELDS);
     return (data as TokenRow | null) ?? null;
 }
 
@@ -605,11 +695,14 @@ export async function disconnectGoogleDrive(
     // Calendar, and other clients sharing this project's grant. Remove this
     // service's local credentials and pending states atomically instead.
     // Users can revoke the whole app from their Google Account settings.
+    const kept = isNcAppMode() ? await loadTokenRow(owner, db) : null;
     const { error } = await db.rpc("disconnect_google_drive", {
         p_user_id: owner.userId,
         p_org_id: owner.orgId,
     });
     if (error) throw error;
+    // App mode: what NativeCluster keeps for the connection goes with it.
+    await releaseHostColumns(kept as unknown as Record<string, unknown> | null, GOOGLE_TOKEN_FIELDS);
 }
 
 export async function cancelGoogleDriveOAuth(
@@ -698,6 +791,8 @@ async function getFreshAccessToken(
         .filter(...workspaceFilter(owner))
                 .eq("encrypted_refresh_token", row.encrypted_refresh_token);
             if (error) throw error;
+            if (isNcAppMode())
+                await releaseHostColumns(row as unknown as Record<string, unknown>, GOOGLE_TOKEN_FIELDS);
             throw new GoogleDriveAuthRequiredError(
                 "Google Drive access was revoked. Reconnect Google Drive.",
             );
@@ -710,7 +805,7 @@ async function getFreshAccessToken(
     }
     // Compare-and-set: refresh must not recreate a disconnected connection or
     // overwrite a new grant from another tab / another Google account.
-    const patch = tokenPatch(token, row);
+    const patch = await sealedTokenPatch(owner, token, row);
     const { data: updated, error } = await db
         .from("user_google_drive_tokens")
         .update(patch)
@@ -791,6 +886,10 @@ function googleDrivePickerConfigured(): boolean {
  * and its token is never handed to the browser.
  */
 function googleDrivePickerAvailable(row: TokenRow | null): boolean {
+    // Mike's NativeCluster app: the Picker cannot load in the app's window
+    // (it trusts only this Mac's own certificate and lets no frame of another
+    // site in), so Drive offers a list served by Mike instead (browse below).
+    if (isNcAppMode()) return false;
     return (
         googleDrivePickerConfigured() &&
         (!row?.encrypted_access_token || driveScopeGrants(row.scope, "picker"))
@@ -811,7 +910,7 @@ export async function createGoogleDrivePickerSession(
 ): Promise<GoogleDrivePickerSession> {
     assertGoogleDriveAvailable();
     const { developerKey, appId } = googleDrivePickerEnv();
-    if (!developerKey || !appId) throw new GoogleDrivePickerUnavailableError();
+    if (!developerKey || !appId || isNcAppMode()) throw new GoogleDrivePickerUnavailableError();
     const row = await loadTokenRow(owner, db);
     if (!row?.encrypted_access_token) throw new GoogleDriveAuthRequiredError();
     if (row.enabled === false)
@@ -909,6 +1008,62 @@ async function listRecentFiles(
     if (!response.ok) throw googleDriveHttpError(response.status);
     const body = (await response.json()) as { files?: DriveFile[] };
     return body.files ?? [];
+}
+
+export type GoogleDriveBrowseFile = {
+    id: string;
+    name: string;
+    mimeType: string;
+    modifiedTime: string | null;
+    webViewLink: string | null;
+};
+
+/**
+ * Mike's NativeCluster app, in place of the Google Picker: the files Mike's
+ * Drive connection reaches, newest first or matching `query`, a page at a
+ * time. With drive.file alone that is only the files Mike made or that were
+ * picked before; with drive.readonly (MIKE_NC_GOOGLE_DRIVE_READONLY=1) the
+ * whole Drive. The token stays on the server.
+ */
+export async function browseGoogleDriveFiles(
+    owner: ConnectorOwner,
+    options: { query?: unknown; pageToken?: unknown },
+    db: Db = createServerSupabase(),
+): Promise<{ files: GoogleDriveBrowseFile[]; nextPageToken: string | null }> {
+    assertGoogleDriveAvailable();
+    const row = await loadTokenRow(owner, db);
+    if (!row?.encrypted_access_token) throw new GoogleDriveAuthRequiredError();
+    if (row.enabled === false)
+        throw new GoogleDriveUserError("Google Drive is turned off in Settings → Connectors.");
+    const token = await getAccessToken(owner, db, row.grant_id);
+    const query = typeof options.query === "string" ? options.query.trim().slice(0, 200) : "";
+    const params: Record<string, string> = {
+        q: query
+            ? `name contains '${escapeQuery(query)}' and trashed = false and mimeType != 'application/vnd.google-apps.folder'`
+            : "trashed = false and mimeType != 'application/vnd.google-apps.folder'",
+        pageSize: String(MAX_PAGE_SIZE),
+        fields: "nextPageToken,files(id,name,mimeType,modifiedTime,webViewLink)",
+        includeItemsFromAllDrives: "true",
+        supportsAllDrives: "true",
+    };
+    if (!query) params.orderBy = "modifiedTime desc";
+    if (typeof options.pageToken === "string" && /^[\w\-.~]{1,512}$/.test(options.pageToken))
+        params.pageToken = options.pageToken;
+    const response = await driveFetch(token, "/files", params);
+    if (!response.ok) throw googleDriveHttpError(response.status);
+    const body = (await response.json()) as { files?: DriveFile[]; nextPageToken?: string };
+    return {
+        files: (body.files ?? [])
+            .filter((f): f is DriveFile & { id: string } => typeof f.id === "string")
+            .map((f) => ({
+                id: f.id,
+                name: f.name ?? "Untitled",
+                mimeType: f.mimeType ?? "application/octet-stream",
+                modifiedTime: f.modifiedTime ?? null,
+                webViewLink: typeof f.webViewLink === "string" && f.webViewLink.startsWith("https://") ? f.webViewLink : null,
+            })),
+        nextPageToken: typeof body.nextPageToken === "string" ? body.nextPageToken : null,
+    };
 }
 
 /** Google-native types export to text; everything else downloads raw. */

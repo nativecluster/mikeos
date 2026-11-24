@@ -12,6 +12,14 @@ import { reportError } from "../observability/sentry";
 import { isBlockedIp } from "../privateIp";
 import { configuredApiPublicUrl } from "../runtimeConfig";
 import {
+    MCP_AUTH_FIELDS,
+    cachedHostSecret,
+    isHostSecretRef,
+    resolveHostColumns,
+    sealHostColumns,
+} from "./hostSecretColumns";
+import { isNcAppMode } from "./ncApp";
+import {
     HEADER_NAME_RE,
     MAX_CUSTOM_HEADER_VALUE_LENGTH,
     MAX_CUSTOM_HEADERS,
@@ -26,8 +34,19 @@ import {
     type ToolCacheRow,
 } from "./types";
 
+// In app mode (MIKE_NC_APP=1) the key comes from NativeCluster's secrets
+// store at startup (ncAppStartup.ts), never from the environment or a file:
+// what Mike's tables still hold encrypted is then unreadable without it.
+let encryptionSecretOverride: string | null = null;
+
+/** App mode only: the key the host keeps for Mike's connector columns. */
+export function setConnectorEncryptionSecret(secret: string | null): void {
+    encryptionSecretOverride = secret;
+}
+
 function encryptionSecret(): string {
     const secret =
+        encryptionSecretOverride ||
         process.env.MCP_CONNECTORS_ENCRYPTION_SECRET ||
         process.env.USER_API_KEYS_ENCRYPTION_SECRET;
     if (!secret) {
@@ -53,6 +72,11 @@ function encryptionKey(): Buffer {
 }
 
 export function mcpOAuthCallbackUrl() {
+    // App mode: the address differs per computer and is taken from the
+    // request that starts a link (ncAppRedirectUri). This one is only the
+    // MCP SDK's placeholder while a connector is used, when no redirect
+    // ever happens (DbMcpOAuthProvider "use" mode refuses one).
+    if (isNcAppMode()) return "https://127.0.0.1/api/user/mcp-connectors/oauth/callback";
     const configured = configuredApiPublicUrl();
     if (!configured && process.env.NODE_ENV === "production") {
         throw new Error("API_PUBLIC_URL is required for connector OAuth");
@@ -103,6 +127,9 @@ export function decryptString(
     iv: string | null | undefined,
     tag: string | null | undefined,
 ): string | null {
+    // App mode: the column holds a reference to the host's store, resolved
+    // by the row's loader (hostSecretColumns.ts).
+    if (isHostSecretRef(encrypted, iv)) return cachedHostSecret(encrypted);
     if (!encrypted || !iv || !tag) return null;
     try {
         const decipher = crypto.createDecipheriv(
@@ -135,6 +162,17 @@ export function decryptString(
 }
 
 export function decryptAuthConfig(row: ConnectorRow): McpConnectorAuthConfig {
+    if (isHostSecretRef(row.encrypted_auth_config, row.auth_config_iv)) {
+        const value = cachedHostSecret(row.encrypted_auth_config);
+        try {
+            const parsed: unknown = value ? JSON.parse(value) : {};
+            return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+                ? (parsed as McpConnectorAuthConfig)
+                : {};
+        } catch {
+            return {};
+        }
+    }
     if (
         !row.encrypted_auth_config ||
         !row.auth_config_iv ||
@@ -424,6 +462,42 @@ export function authConfigPatch(config: McpConnectorAuthConfig): Record<string, 
     });
 }
 
+/**
+ * authConfigPatch, kept in NativeCluster's secrets store in app mode (under
+ * the connector's id) instead of Mike's columns. `previous` is the row as it
+ * was, when there was one.
+ */
+export async function sealAuthConfig(
+    connectorId: string,
+    config: McpConnectorAuthConfig,
+    previous?: ConnectorRow | null,
+): Promise<Record<string, unknown>> {
+    if (!isNcAppMode()) return authConfigPatch(config);
+    const hasBearer = !!config.bearerToken?.trim();
+    const hasHeaders = Object.keys(config.headers ?? {}).length > 0;
+    const value =
+        hasBearer || hasHeaders
+            ? JSON.stringify({
+                  ...(hasBearer ? { bearerToken: config.bearerToken?.trim() } : {}),
+                  ...(hasHeaders ? { headers: config.headers } : {}),
+              })
+            : null;
+    return sealHostColumns("auth_config", value, {
+        kind: "mcp-auth",
+        rowKey: connectorId,
+        previous: previous as Record<string, unknown> | null | undefined,
+    });
+}
+
+/** App mode: makes a connector row's references readable (no-op otherwise). */
+export async function resolveConnectorSecrets(
+    rows: ConnectorRow | readonly ConnectorRow[] | null | undefined,
+): Promise<void> {
+    if (!isNcAppMode() || !rows) return;
+    for (const row of Array.isArray(rows) ? rows : [rows as ConnectorRow])
+        await resolveHostColumns(row as unknown as Record<string, unknown>, MCP_AUTH_FIELDS);
+}
+
 // A shared undici dispatcher whose DNS lookup runs the private-IP guard at the
 // moment a socket is opened and returns ONLY validated addresses. Because
 // undici connects to exactly what this lookup yields, the address we validate is
@@ -637,5 +711,6 @@ export async function loadConnector(
         .eq("id", connectorId)
         .single();
     if (error) throw error;
+    await resolveConnectorSecrets(data as ConnectorRow);
     return data as ConnectorRow;
 }

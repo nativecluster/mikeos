@@ -43,6 +43,16 @@ import {
 } from "@/app/components/settings/useGoogleConnector";
 import { useGoogleDrivePicker } from "@/app/components/settings/useGoogleDrivePicker";
 import {
+  AppLinkCancelledError,
+  ConnectorAppLinkDialog,
+  linkInApp,
+} from "@/app/components/settings/ConnectorAppLink";
+import {
+  isNcAppMode,
+  type McpDeviceAuthorization,
+} from "@/app/components/settings/ConnectorAppApi";
+import { ConnectorDriveBrowser } from "@/app/components/settings/ConnectorDriveBrowser";
+import {
   MfaVerificationPopup,
   needsMfaVerification,
 } from "@/app/components/popups/MfaVerificationPopup";
@@ -748,9 +758,57 @@ function WorkspaceConnectors({
     setShowAddToken(false);
   };
 
+  // Mike's NativeCluster app: no popup (its window opens none, and sends a
+  // link to another site to the person's browser). The linking dialog shows
+  // the device code, or the sign-in link and a box for the address the
+  // browser lands on (ConnectorAppLink.tsx).
+  const connectConnectorInApp = async (
+    connectorId: string,
+  ): Promise<McpConnectorSummary | null> => {
+    const started = (await startMcpConnectorOAuth(connectorId)) as Awaited<
+      ReturnType<typeof startMcpConnectorOAuth>
+    > & { device?: McpDeviceAuthorization | null };
+    if (started.alreadyAuthorized) {
+      const refreshed = await refreshMcpConnectorTools(connectorId);
+      replaceConnector(refreshed);
+      return refreshed;
+    }
+    if (!started.authorizationUrl && !started.device)
+      throw new Error("OAuth authorization URL was not returned.");
+    const abortController = new AbortController();
+    oauthAbortRef.current?.abort();
+    oauthAbortRef.current = abortController;
+    try {
+      await linkInApp(
+        {
+          kind: "mcp",
+          connectorId,
+          name:
+            connectors.find((connector) => connector.id === connectorId)?.name ??
+            "connector",
+          authorizationUrl: started.authorizationUrl,
+          device: started.device ?? null,
+        },
+        {
+          signal: abortController.signal,
+          isLinked: async () => (await getMcpConnector(connectorId)).oauthConnected,
+        },
+      );
+    } catch (err) {
+      if (err instanceof AppLinkCancelledError) throw new McpOAuthCancelledError();
+      throw err;
+    } finally {
+      if (oauthAbortRef.current === abortController) oauthAbortRef.current = null;
+    }
+    const refreshed = await refreshMcpConnectorTools(connectorId);
+    replaceConnector(refreshed);
+    return refreshed;
+  };
+
   const connectConnectorOAuth = async (
     connectorId: string,
   ): Promise<McpConnectorSummary | null> => {
+    if (isNcAppMode()) return connectConnectorInApp(connectorId);
     const popup = window.open(
       "about:blank",
       "mike_mcp_oauth",
@@ -962,7 +1020,9 @@ function WorkspaceConnectors({
         if (needsAuthorization) {
           if (surface === "modal") {
             setAddAuthMessage(
-              "Complete authorization in the popup to finish connecting this MCP server.",
+              isNcAppMode()
+                ? "Finish connecting this MCP server in the window that opened."
+                : "Complete authorization in the popup to finish connecting this MCP server.",
             );
             setAddStep("auth");
           }
@@ -1567,6 +1627,7 @@ function WorkspaceConnectors({
         organizationName={organizationName}
       />
 
+      {isNcAppMode() ? <ConnectorAppLinkDialog /> : null}
       <NewCustomMcpModal
         open={addOpen}
         draft={addDraft}
@@ -1664,6 +1725,10 @@ function WorkspaceConnectors({
         toolsLoading={false}
         actions={
           selectedGoogle?.provider === "google-drive" &&
+          selectedGoogle.status?.connected &&
+          isNcAppMode() ? (
+            <ConnectorDriveBrowser workspace={workspace} />
+          ) : selectedGoogle?.provider === "google-drive" &&
           selectedGoogle.status?.connected &&
           selectedGoogle.status.pickerAvailable ? (
             <div className="flex flex-col items-start gap-1.5">

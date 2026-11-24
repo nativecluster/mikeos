@@ -7,7 +7,6 @@ import { AppError } from "../appError";
 import { reportError } from "../observability/sentry";
 import { createServerSupabase } from "../supabase";
 import {
-    authConfigPatch,
     decryptAuthConfig,
     guardedFetch,
     headersForAuth,
@@ -19,9 +18,18 @@ import {
     isMcpWriteTool,
     mcpToolRequiresWriteAccess,
     mcpConnectionFingerprint,
+    resolveConnectorSecrets,
+    sealAuthConfig,
     validateCustomHeaders,
     validateRemoteMcpUrl,
 } from "./client";
+import crypto from "node:crypto";
+import {
+    MCP_AUTH_FIELDS,
+    MCP_TOKEN_FIELDS,
+    releaseHostColumns,
+} from "./hostSecretColumns";
+import { isNcAppMode } from "./ncApp";
 import {
     completeMcpConnectorOAuthAuthorization,
     DbMcpOAuthProvider,
@@ -60,6 +68,7 @@ async function withMcpClient<T>(
     db: Db = createServerSupabase(),
 ): Promise<T> {
     await validateRemoteMcpUrl(connector.server_url);
+    await resolveConnectorSecrets(connector);
     const authConfig = decryptAuthConfig(connector);
     const authProvider =
         connector.auth_type === "oauth"
@@ -124,6 +133,7 @@ export async function listUserMcpConnectors(
     if (error) throw error;
     const rows = (connectors ?? []) as ConnectorRow[];
     if (!rows.length) return [];
+    await resolveConnectorSecrets(rows);
     if (options.includeTools === false) {
         const connectorIds = rows.map((row) => row.id);
         const { data: toolRows, error: toolCountError } = await db
@@ -231,7 +241,10 @@ export async function createUserMcpConnector(
     if (!name) throw new Error("Connector name is required.");
     const serverUrl = await validateRemoteMcpUrl(input.serverUrl.trim());
     const headers = validateCustomHeaders(input.headers);
-    const auth = authConfigPatch({
+    // In app mode the row's id is chosen here, so the pasted key can be kept
+    // in NativeCluster's store under it before the row exists.
+    const id = isNcAppMode() ? crypto.randomUUID() : undefined;
+    const auth = await sealAuthConfig(id ?? "", {
         ...(input.bearerToken?.trim()
             ? { bearerToken: input.bearerToken.trim() }
             : {}),
@@ -240,6 +253,7 @@ export async function createUserMcpConnector(
     const { data, error } = await db
         .from("user_mcp_connectors")
         .insert({
+            ...(id ? { id } : {}),
             user_id: owner.userId,
             org_id: owner.orgId,
             name,
@@ -305,7 +319,7 @@ export async function updateUserMcpConnector(
         if ("headers" in input) {
             nextConfig.headers = validateCustomHeaders(input.headers);
         }
-        Object.assign(update, authConfigPatch(nextConfig));
+        Object.assign(update, await sealAuthConfig(connectorId, nextConfig, current));
         if (nextConfig.bearerToken?.trim()) update.auth_type = "bearer";
         else if (current?.auth_type !== "oauth") update.auth_type = "none";
     }
@@ -327,6 +341,7 @@ export async function completeUserMcpConnectorOAuth(
     state: string,
     code: string,
     db: Db = createServerSupabase(),
+    options: { origin?: string | null } = {},
 ): Promise<{
     userId: string;
     connectorId: string;
@@ -336,6 +351,7 @@ export async function completeUserMcpConnectorOAuth(
         state,
         code,
         db,
+        options,
     );
     const refreshed = await refreshUserMcpConnectorTools(
         completed.userId,
@@ -350,12 +366,22 @@ export async function deleteUserMcpConnector(
     connectorId: string,
     db: Db = createServerSupabase(),
 ): Promise<void> {
+    // App mode: what NativeCluster keeps for the connector goes with it. The
+    // row is loaded first so only the caller's own connector is touched.
+    const kept = isNcAppMode()
+        ? await loadConnector(userId, connectorId, db).catch(() => null)
+        : null;
+    const token = kept ? await loadOAuthToken(connectorId, db).catch(() => null) : null;
     const { error } = await db
         .from("user_mcp_connectors")
         .delete()
         .eq("user_id", userId)
         .eq("id", connectorId);
     if (error) throw error;
+    if (kept) {
+        await releaseHostColumns(kept as unknown as Record<string, unknown>, MCP_AUTH_FIELDS);
+        await releaseHostColumns(token as unknown as Record<string, unknown> | null, MCP_TOKEN_FIELDS);
+    }
 }
 
 export async function refreshUserMcpConnectorTools(
@@ -738,6 +764,7 @@ async function connectionFingerprint(
             ? await loadOAuthToken(connector.id, db)
             : null;
     if (connector.auth_type === "oauth" && !token?.grant_id) return null;
+    await resolveConnectorSecrets(connector);
     return mcpConnectionFingerprint(connector, token?.grant_id ?? null);
 }
 

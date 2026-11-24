@@ -101,6 +101,13 @@ export type OAuthTokenRow = {
 export type OAuthStateConfig = {
     codeVerifier: string;
     redirectUri: string;
+    /** App mode: the NativeCluster person who started the authorization. */
+    person?: string;
+    /** App mode: the app's origin the redirect returns to; the finish must come from it. */
+    origin?: string;
+    /** App mode, the device grant (RFC 8628): what polling needs. */
+    deviceCode?: string;
+    interval?: number;
     authorizationServer?: string;
     tokenEndpoint?: string;
     clientId?: string;

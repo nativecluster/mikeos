@@ -12,6 +12,13 @@ import {
   stateHash,
 } from "../mcp/client";
 import { googleDriveOAuthEnv } from "./googleDrive";
+import { currentNcPerson, isNcAppMode } from "../mcp/ncApp";
+import {
+  GOOGLE_TOKEN_FIELDS,
+  releaseHostColumns,
+  resolveHostColumns,
+  sealHostColumns,
+} from "../mcp/hostSecretColumns";
 import {
   googleServiceUnavailableMessage,
   isGoogleServiceAvailable,
@@ -59,7 +66,39 @@ export class GoogleWorkspaceError extends AppError {
 export class GoogleWorkspaceUnavailableError extends GoogleWorkspaceError {}
 /** See GOOGLE_WORKSPACE_DISABLED_PROVIDERS in ./googleAvailability. */
 export function isWorkspaceProviderAvailable(provider: GoogleProvider): boolean {
-  return isGoogleServiceAvailable(provider);
+  if (!isGoogleServiceAvailable(provider)) return false;
+  // Mike's NativeCluster app: not offered by default (the first version has
+  // no Google connectors), and with MIKE_NC_GOOGLE_CONNECTORS=1 only with a
+  // Google OAuth client, which Mike does not ship. No card offers a button
+  // that can only fail.
+  if (!isNcAppMode()) return true;
+  if (process.env.MIKE_NC_GOOGLE_CONNECTORS !== "1") return false;
+  const env = googleWorkspaceEnv();
+  return !!(env.clientId && env.clientSecret);
+}
+
+/** App mode: a grant's tokens live in NativeCluster's store under this key. */
+function workspaceSecretRow(owner: ConnectorOwner, provider: GoogleProvider): string {
+  return `${owner.userId}:${owner.orgId ?? "personal"}:${provider}`;
+}
+
+/** tokenPatch, kept in NativeCluster's secrets store in app mode. */
+async function sealedTokenPatch(
+  owner: ConnectorOwner,
+  token: Record<string, unknown>,
+  provider: GoogleProvider,
+  existing?: Record<string, unknown> | null,
+) {
+  const patch = tokenPatch(token, provider, existing ?? undefined);
+  if (!isNcAppMode()) return patch;
+  const where = { kind: "gws" as const, rowKey: workspaceSecretRow(owner, provider), previous: existing ?? null };
+  return {
+    ...patch,
+    ...(await sealHostColumns("access_token", String(token.access_token), where)),
+    ...(typeof token.refresh_token === "string" && token.refresh_token
+      ? await sealHostColumns("refresh_token", token.refresh_token, where)
+      : {}),
+  };
 }
 export function assertWorkspaceProviderAvailable(provider: GoogleProvider): void {
   if (!isWorkspaceProviderAvailable(provider))
@@ -171,6 +210,8 @@ export async function loadWorkspaceGrant(
     .eq("provider", provider)
     .maybeSingle();
   if (error) throw error;
+  if (isNcAppMode())
+    await resolveHostColumns(data as Record<string, unknown> | null, GOOGLE_TOKEN_FIELDS);
   return data as Record<string, unknown> | null;
 }
 export async function workspaceStatus(
@@ -294,7 +335,16 @@ export async function startWorkspaceOAuth(
     org_id: owner.orgId,
     provider,
     state_hash: stateHash(state),
-    ...encryptFields("state_config", JSON.stringify({ verifier, redirectUri })),
+    ...encryptFields(
+      "state_config",
+      JSON.stringify({
+        verifier,
+        redirectUri,
+        // App mode: the NativeCluster person and the app origin that started it.
+        ...(isNcAppMode() && currentNcPerson() ? { person: currentNcPerson() } : {}),
+        ...(isNcAppMode() ? { origin: new URL(redirectUri).origin } : {}),
+      }),
+    ),
     expires_at: new Date(Date.now() + 600_000).toISOString(),
   });
   if (error) throw error;
@@ -351,6 +401,8 @@ export async function completeWorkspaceOAuth(
   provider: GoogleProvider,
   state: string,
   code: string,
+  /** App mode: the app origin the finishing request came to. */
+  options: { origin?: string | null } = {},
 ) {
   const { data, error } = await db
     .from("google_workspace_oauth_states")
@@ -369,7 +421,17 @@ export async function completeWorkspaceOAuth(
   const config = JSON.parse(decryptFields(data, "state_config")) as {
     verifier: string;
     redirectUri: string;
+    person?: string;
+    origin?: string;
   };
+  if (
+    (config.person && currentNcPerson() !== config.person) ||
+    (config.origin && options.origin !== config.origin)
+  )
+    throw new GoogleWorkspaceError(
+      "Authorization expired or was cancelled. Connect again.",
+      { kind: "google.user_error" },
+    );
   const env = googleWorkspaceEnv();
   if (!env.clientId || !env.clientSecret)
     throw new Error("Google OAuth not configured");
@@ -397,7 +459,16 @@ export async function completeWorkspaceOAuth(
       "Google authorization did not provide offline access. Reconnect.",
       { kind: response.status >= 500 ? "google.api_failed" : "google.auth_failed", cause: { status: response.status } },
     );
-  const patch = tokenPatch(token, provider);
+  const owner: ConnectorOwner = {
+    userId: completingUserId,
+    orgId: typeof data.org_id === "string" ? data.org_id : null,
+  };
+  const patch = await sealedTokenPatch(
+    owner,
+    token,
+    provider,
+    isNcAppMode() ? await loadWorkspaceGrant(db, owner, provider) : null,
+  );
   const identityResponse = await workspaceRequest(
     "https://openidconnect.googleapis.com/v1/userinfo",
     { headers: { Authorization: `Bearer ${token.access_token}` } },
@@ -454,12 +525,15 @@ export async function disconnectWorkspace(
 ) {
   // Google revocation affects other grants for the same OAuth client. Remove
   // this local connection only; users can revoke all access in Google settings.
+  const kept = isNcAppMode() ? await loadWorkspaceGrant(db, owner, provider) : null;
   const { error } = await db.rpc("disconnect_google_workspace", {
     p_user_id: owner.userId,
     p_provider: provider,
     p_org_id: owner.orgId,
   });
   if (error) throw error;
+  // App mode: what NativeCluster keeps for the grant goes with it.
+  await releaseHostColumns(kept, GOOGLE_TOKEN_FIELDS);
 }
 export async function workspaceAccessToken(
   db: Db,
@@ -502,6 +576,7 @@ export async function workspaceAccessToken(
         .eq("provider", provider)
         .eq("grant_id", row.grant_id);
       if (error) throw error;
+      if (isNcAppMode()) await releaseHostColumns(row, GOOGLE_TOKEN_FIELDS);
     }
     throw new GoogleWorkspaceError(
       "Google access could not be refreshed. Reconnect this integration.",
@@ -510,7 +585,7 @@ export async function workspaceAccessToken(
   }
   const { data: saved, error } = await db
     .from("user_google_workspace_tokens")
-    .update(tokenPatch(token, provider, row))
+    .update(await sealedTokenPatch(owner, token, provider, row))
     .eq("user_id", owner.userId)
     .filter(...workspaceFilter(owner))
     .eq("provider", provider)
