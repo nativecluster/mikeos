@@ -7,9 +7,9 @@
   "program": "mike",
   "icon": "assets/icon.png",
   "tasks": [
-    { "id": "assistant", "name": "the assistant: chats, drafting and research", "ability": "tools" },
+    { "id": "assistant", "name": "the assistant: chats, drafting and research", "ability": "tools", "min_window": 32768 },
     { "id": "tabular", "name": "filling tabular reviews" },
-    { "id": "playbook", "name": "reviewing documents against playbooks", "ability": "tools" },
+    { "id": "playbook", "name": "reviewing documents against playbooks", "ability": "tools", "min_window": 32768 },
     { "id": "titles", "name": "naming chats" },
     { "id": "memory", "name": "keeping the assistant's memory" }
   ],
