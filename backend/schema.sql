@@ -386,6 +386,19 @@ create index if not exists idx_auth_handoff_tickets_expires
 
 alter table public.auth_handoff_tickets enable row level security;
 
+-- The NativeCluster app's second key (MIKE_NC_APP=1): each Mike account
+-- belongs to the NativeCluster person who first signed in with it, and a
+-- Mike session presented under any other person is refused
+-- (backend/src/lib/authPersonBinding.ts). Written once per account, never
+-- changed, and gone with the account. Other deployments never write it.
+create table if not exists public.nativecluster_account_people (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  nc_person text not null check (length(nc_person) between 3 and 130),
+  created_at timestamptz not null default now()
+);
+
+alter table public.nativecluster_account_people enable row level security;
+
 -- ---------------------------------------------------------------------------
 -- Organizations / RBAC (multi-tenant)
 -- Defined before projects/documents/workflows/tabular_reviews because those
@@ -6930,6 +6943,8 @@ revoke all on public.tabular_review_chat_messages from anon, authenticated;
 revoke all on public.user_api_keys from anon, authenticated;
 revoke all on public.org_api_keys from anon, authenticated;
 revoke all on public.auth_handoff_tickets from anon, authenticated;
+revoke all on public.nativecluster_account_people from anon, authenticated;
+grant all on public.nativecluster_account_people to service_role;
 revoke all on public.user_router_models from anon, authenticated;
 revoke all on public.org_router_models from anon, authenticated;
 revoke all on public.org_logos from anon, authenticated;
@@ -12578,5 +12593,6 @@ insert into public.schema_migrations (filename) values
   ('20261107_01_playbook_review_publication.sql'),
   ('20261116_01_tabular_cache_revisions.sql'),
   ('20261118_01_connector_write_approval_default.sql'),
-  ('20261123_01_org_workspace_preferences.sql')
+  ('20261123_01_org_workspace_preferences.sql'),
+  ('20261124_01_nativecluster_account_people.sql')
 on conflict (filename) do nothing;
