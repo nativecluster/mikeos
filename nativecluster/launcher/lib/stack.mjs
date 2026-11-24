@@ -10,6 +10,8 @@
 // as a service: NativeCluster is Mike's only sign-in), Mike's schema.sql or
 // its new migrations with their ledger, and the bundled workflows
 // (desktop/src/local's schema.js and workflows.js, staged in launcher/local).
+// That step has a PGlite process of its own, which leaves once it is done
+// (for its memory: start()); a second one serves Mike.
 //
 // Every child leaves by itself when the launcher goes, since the sandbox
 // lets an app signal no process but itself: the backend and PGlite when
@@ -64,6 +66,27 @@ function baseEnv() {
     LANG: process.env.LANG || "en_US.UTF-8",
     ...(process.env.TZ ? { TZ: process.env.TZ } : {}),
   };
+}
+
+// PGlite's child, on the package's Node: its flags and its environment, for
+// its memory (measured on Node 24, 2026-11-24; pglite-server.mjs has
+// Postgres's own settings):
+// - MallocLargeCache=0 (libmalloc's, read as the process starts; not in
+//   malloc(3)). V8's optimizing compiler takes about 600 MB at once for one
+//   of Postgres's largest functions (one of 107 KB, compiled in 80 ms), and
+//   frees it. macOS's allocator kept the freed blocks resident in its large
+//   cache: 547 MB of a restarted PGlite's 906 MB footprint, there until
+//   later allocations evicted them (seconds to minutes, or never while
+//   idle). Off, they go back at once; the compile still peaks, for those
+//   80 ms. (Compiling with Liftoff alone avoids the peak, but Mike's reads
+//   then took 21-24 ms in place of 14-15.)
+// - --max-semi-space-size=2 (MB). Under a burst of Mike's work (200 writes,
+//   uploads) V8's young generation grew this process's JS heap from 57 MB
+//   to 157 MB and kept it; at 2 MB it stays near 34 MB, at the same speed.
+export const PGLITE_NODE_FLAGS = ["--max-semi-space-size=2"];
+
+export function pgliteEnv() {
+  return { ...baseEnv(), MallocLargeCache: "0" };
 }
 
 /**
@@ -161,7 +184,7 @@ export function createStack({ pkgDir, dataDir, socketsDir, hostSocket, credentia
     });
     proc.on("exit", (code, signal) => {
       c.exit = { code, signal };
-      if (!stopping && !(oneShot && code === 0)) log.warn(`${name} exited (code ${code}${signal ? `, signal ${signal}` : ""})`);
+      if (!stopping && !((oneShot || c.retired) && code === 0)) log.warn(`${name} exited (code ${code}${signal ? `, signal ${signal}` : ""})`);
       onExit?.(code, signal);
     });
     if (proc.stdin) proc.stdin.on("error", () => {}); // a child gone mid-write
@@ -398,22 +421,53 @@ export function createStack({ pkgDir, dataDir, socketsDir, hostSocket, credentia
     if (wasReady) onFatal?.(state.error);
   }
 
+  async function openPglite() {
+    const c = startChild("pglite", paths.node, [...PGLITE_NODE_FLAGS, paths.pgliteServer, paths.pgliteDir, paths.pgSocket], {
+      cwd: paths.launcherDir,
+      env: pgliteEnv(),
+      stdin: "pipe",
+      onExit: () => {
+        if (!stopping && !c.retired) fail(new Error("Mike's database stopped (logs/pglite.log)"));
+      },
+    });
+    await waitFor("Mike's database", c, async () => existsSync(paths.pgSocket) && (await withPg((pc) => pc.query("select 1"))), 180000);
+    return c;
+  }
+
+  // A PGlite process ends as stopAll ends it: its stdin closed, it closes the
+  // database and leaves. Another may open the folder only once it has left.
+  async function retirePglite(c, timeoutMs = 60000) {
+    c.retired = true;
+    try {
+      c.proc.stdin?.end();
+    } catch {}
+    const deadline = Date.now() + timeoutMs;
+    while (!c.exit && Date.now() < deadline) await sleep(50);
+    if (!c.exit) throw new Error(`Mike's database did not close in ${timeoutMs / 1000} s (logs/pglite.log)`);
+    if (c.exit.code !== 0) log.warn(`stack: the database closed with code ${c.exit.code} after the schema step (logs/pglite.log)`);
+  }
+
   async function start() {
     const t0 = performance.now();
     try {
       mkdirSync(paths.storage, { recursive: true, mode: 0o700 });
       step("Opening Mike's database");
       const fresh = !existsSync(path.join(paths.pgliteDir, "PG_VERSION"));
-      const db = startChild("pglite", paths.node, [paths.pgliteServer, paths.pgliteDir, paths.pgSocket], {
-        cwd: paths.launcherDir,
-        env: baseEnv(),
-        stdin: "pipe",
-        onExit: () => {
-          if (!stopping) fail(new Error("Mike's database stopped (logs/pglite.log)"));
-        },
-      });
-      await timed("pglite_open", () => waitFor("Mike's database", db, async () => existsSync(paths.pgSocket) && (await withPg((c) => c.query("select 1"))), 180000));
-      await schemaStep(fresh);
+      const db = await timed("pglite_open", () => openPglite());
+      // Creating the database and loading the schema grow PGlite's process
+      // once and for good (its WebAssembly memory never shrinks, and the
+      // code compiled for the schema's statements stays). Measured: a
+      // 158 MB footprint for the rest of its life, where a restarted one
+      // holds 138 MB, and a 1.0 GB peak against 0.67 GB. So that process
+      // leaves once the step is done and a fresh one serves Mike, as after
+      // any restart (about 0.2 s more, on a first start or a new schema).
+      if (await schemaStep(fresh)) {
+        step("Opening Mike's database");
+        await timed("pglite_reopen", async () => {
+          await retirePglite(db);
+          await openPglite();
+        });
+      }
 
       step("Starting Mike's data service");
       await timed("postgrest", () => waitForPostgrest(startPostgrest()));
