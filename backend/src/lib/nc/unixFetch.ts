@@ -10,18 +10,21 @@ import { Agent, fetch as undiciFetch } from "undici";
 
 const agents = new Map<string, Agent>();
 
-/** One connection pool per socket path, for the life of the process. */
-export function unixSocketAgent(socketPath: string): Agent {
-  let agent = agents.get(socketPath);
+/**
+ * One connection pool per socket path, for the life of the process.
+ * `untimed` (the host's socket): calls wait in NativeCluster's line and
+ * answers stream for minutes, so no idle timeout may cut either; the
+ * caller's signal ends a call. Any other socket keeps undici's timeouts.
+ */
+export function unixSocketAgent(socketPath: string, options: { untimed?: boolean } = {}): Agent {
+  const key = `${options.untimed ? "untimed" : "timed"}\n${socketPath}`;
+  let agent = agents.get(key);
   if (!agent) {
     agent = new Agent({
       connect: { socketPath },
-      // Calls wait in NativeCluster's line, and answers stream for minutes:
-      // no idle timeout may cut either. The caller's signal ends a call.
-      headersTimeout: 0,
-      bodyTimeout: 0,
+      ...(options.untimed ? { headersTimeout: 0, bodyTimeout: 0 } : {}),
     });
-    agents.set(socketPath, agent);
+    agents.set(key, agent);
   }
   return agent;
 }
@@ -46,6 +49,7 @@ export async function fetchOverSocket(
   socketPath: string,
   url: string | URL,
   init: RequestInit = {},
+  options: { untimed?: boolean } = {},
 ): Promise<Response> {
   const body = init.body ?? null;
   const streamed =
@@ -55,7 +59,7 @@ export async function fetchOverSocket(
   const response = await undiciFetch(String(url), {
     ...(init as Record<string, unknown>),
     ...(streamed ? { duplex: "half" } : {}),
-    dispatcher: unixSocketAgent(socketPath),
+    dispatcher: unixSocketAgent(socketPath, options),
   } as Parameters<typeof undiciFetch>[1]);
   const headers = new Headers();
   response.headers.forEach((value, name) => {

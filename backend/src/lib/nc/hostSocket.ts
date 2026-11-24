@@ -36,7 +36,7 @@ export async function hostFetch(path: string, init: RequestInit = {}): Promise<R
   const headers = new Headers(init.headers);
   headers.delete("content-length");
   headers.set("authorization", `Bearer ${credential}`);
-  return fetchOverSocket(socketPath, `${HOST_ORIGIN}${path}`, { ...init, headers });
+  return fetchOverSocket(socketPath, `${HOST_ORIGIN}${path}`, { ...init, headers }, { untimed: true });
 }
 
 export class HostCallError extends Error {
