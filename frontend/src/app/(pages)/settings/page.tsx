@@ -17,6 +17,7 @@ import {
 } from "@/app/components/popups/MfaVerificationPopup";
 import { WarningPopup } from "@/app/components/popups/WarningPopup";
 import { deleteAccount, isMfaRequiredError } from "@/app/lib/mikeApi";
+import { isNcApp } from "@/app/lib/ncApp";
 import { authMessages } from "@/app/lib/authMessages";
 import {
   describeError,
@@ -59,6 +60,8 @@ const EMAIL_RATE_LIMIT_CODES = new Set([
 export default function SettingsPage() {
   const router = useRouter();
   const { user, signOut, updateEmail } = useAuth();
+  // In the NativeCluster app NativeCluster owns the account (lib/ncApp.ts).
+  const ncApp = isNcApp();
   const { profile, updateDisplayName } = useUserProfile();
   const [displayName, setDisplayName] = useState("");
   const [isSavingName, setIsSavingName] = useState(false);
@@ -261,7 +264,8 @@ export default function SettingsPage() {
         </GlassCardUI>
       </section>
 
-      {/* Email */}
+      {/* Email: NativeCluster's in its app, like the rest of the account. */}
+      {!ncApp && (
       <section className="space-y-3">
         <SettingsHeading id="email">Email</SettingsHeading>
         <GlassCardUI>
@@ -319,6 +323,7 @@ export default function SettingsPage() {
           </SettingsRow>
         </GlassCardUI>
       </section>
+      )}
 
       {/* Plan */}
       <section className="space-y-3">
@@ -332,7 +337,8 @@ export default function SettingsPage() {
         </GlassCardUI>
       </section>
 
-      {/* Danger Zone */}
+      {/* Danger Zone: removing a person is NativeCluster's in its app. */}
+      {!ncApp && (
       <section className="space-y-3">
         <SettingsHeading id="danger-zone" tone="danger">Danger Zone</SettingsHeading>
         <GlassCardUI>
@@ -357,6 +363,7 @@ export default function SettingsPage() {
           </SettingsRow>
         </GlassCardUI>
       </section>
+      )}
       <ConfirmPopup
         open={deleteConfirm}
         title="Delete account?"
