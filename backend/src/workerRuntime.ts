@@ -28,6 +28,7 @@ import { createServerSupabase } from "./lib/supabase";
 import { reportError } from "./lib/observability/sentry";
 import { createPollFailureGate } from "./lib/observability/pollFailureGate";
 import { asReportableError } from "./lib/httpError";
+import { listNativeClusterModels } from "./lib/llm/nativecluster";
 import { log } from "./lib/log";
 
 const SWEEP_INTERVAL_MS = (() => {
@@ -112,6 +113,10 @@ export function startAllWorkers(
 ): void {
     if (started) return;
     started = true;
+    // Read NativeCluster's model list now, so the first job in this thread
+    // knows its model's window (contextWindowFor) before it builds a prompt.
+    // A no-op unless NativeCluster is configured.
+    void listNativeClusterModels();
 
     if (roles.includes("uploads")) {
         // Lease-based claims over Postgres, so any number of runtimes can

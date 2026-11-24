@@ -235,4 +235,35 @@ describe("runWebToolCall", () => {
     expect(readWebPage).toHaveBeenCalledOnce();
     expect(webRemaining(ctx.state, "reads")).toBe(11);
   });
+
+  // A model whose context window is known reads parts sized to the turn's
+  // budget instead of 20,000 characters (lib/llm/contextBudget.ts).
+  it("sizes a part to the turn's page tokens when the window is known", async () => {
+    readWebPage.mockResolvedValue({
+      url: "https://law.test/act",
+      title: null,
+      text: "word ".repeat(10_000),
+    });
+    const ctx = { ...context("Read https://law.test/act"), pageTokens: 1_000 };
+
+    const first = await runWebToolCall(read("https://law.test/act"), ctx);
+
+    const [, end] = first.content.match(/Characters 0-(\d+) of 50000\. next_offset: (\d+)/)!.slice(1);
+    expect(Number(end)).toBeGreaterThan(2_500);
+    expect(Number(end)).toBeLessThanOrEqual(3_000);
+  });
+
+  it("reads nothing more once the turn has no room left", async () => {
+    readWebPage.mockResolvedValue({
+      url: "https://law.test/act",
+      title: null,
+      text: "word ".repeat(10_000),
+    });
+    const ctx = { ...context("Read https://law.test/act"), pageTokens: 0 };
+
+    const result = await runWebToolCall(read("https://law.test/act"), ctx);
+
+    expect(result.content).toContain("no room left");
+    expect(result.content).not.toContain("word word");
+  });
 });

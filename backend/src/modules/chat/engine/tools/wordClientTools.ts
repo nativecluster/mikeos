@@ -19,7 +19,16 @@ import { randomUUID } from "node:crypto";
 import type { NormalizedToolCall, OpenAIToolSchema } from "../../../../lib/llm";
 import { MAX_DOCUMENT_CONTEXT_CHARS, spotlight } from "../contextBuilders";
 import { WORD_EDIT_FORMATS } from "../wordDocumentEdits";
-import { ACTIVE_WORD_DOCUMENT_LIVE_FILENAME } from "../wordPrompt";
+import {
+  ACTIVE_WORD_DOCUMENT_ID,
+  ACTIVE_WORD_DOCUMENT_LIVE_FILENAME,
+} from "../wordPrompt";
+import {
+  contextFullResult,
+  documentPage,
+  partFooting,
+  partHeading,
+} from "./documentPages";
 import { isAbortError } from "../streaming";
 import type { AssistantEvent, ClientToolsAdapter } from "../streaming";
 
@@ -800,6 +809,8 @@ export function createWordClientToolsAdapter(params: {
 
   const executeReadActiveDocument = async (
     call: NormalizedToolCall,
+    /** Set when the model's window is known: the tokens this read may return. */
+    pageTokens?: number,
   ): Promise<{ content: string; events: AssistantEvent[] }> => {
     if (liveReadsUsed >= MAX_LIVE_READS_PER_TURN) {
       return {
@@ -869,6 +880,22 @@ export function createWordClientToolsAdapter(params: {
     // The live body is untrusted document text, exactly like a stored
     // document's body returned by read_document — same spotlight fence.
     params.onCitationText?.(documentText);
+    if (pageTokens !== undefined) {
+      // A model with a known window gets what this turn has room for; the
+      // text just read is now the active document's, so read_document reads
+      // on from the offset given.
+      const page = documentPage(documentText, 0, pageTokens);
+      if (page.kind === "full" || page.kind === "past_end") {
+        return { content: contextFullResult(ACTIVE_WORD_DOCUMENT_ID), events: [readEvent] };
+      }
+      if (page.kind === "part") {
+        const part = nonce ? spotlight(page.text, nonce) : page.text;
+        return {
+          content: `${partHeading(page)}\n\n${part}\n\n${partFooting(ACTIVE_WORD_DOCUMENT_ID, page)}`,
+          events: [readEvent],
+        };
+      }
+    }
     const body = nonce ? spotlight(documentText, nonce) : documentText;
     return {
       content: truncated
@@ -881,7 +908,7 @@ export function createWordClientToolsAdapter(params: {
   return {
     schemas: WORD_CLIENT_TOOLS,
     owns: isWordClientToolName,
-    execute: async (call) => {
+    execute: async (call, context) => {
       // A pane that stopped answering will not start again mid-turn; keep
       // forwarding and the turn burns iterations x deadline while holding the
       // SSE socket and paying for model calls that go nowhere.
@@ -913,7 +940,7 @@ export function createWordClientToolsAdapter(params: {
         return executeApplyEdits(call);
       }
       if (call.name === READ_ACTIVE_DOCUMENT_TOOL_NAME) {
-        return executeReadActiveDocument(call);
+        return executeReadActiveDocument(call, context?.pageTokens);
       }
       return {
         content: JSON.stringify({

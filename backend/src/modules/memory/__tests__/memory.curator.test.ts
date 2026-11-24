@@ -1,9 +1,10 @@
 import { inspect } from "node:util";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { diagnosticErrorTags } from "../../../lib/observability/sentryPrivacy";
 import { NonRetryableJobError } from "../../../lib/dbq/runner";
 import { toProviderStreamError } from "../../../lib/llm/providerErrors";
 import type { StreamChatParams } from "../../../lib/llm";
+import { estimateTokens } from "../../../lib/llm/contextBudget";
 import {
   buildMemoryCuratorTranscript,
   loadEligibleMemoryMessages,
@@ -1002,5 +1003,66 @@ describe("memory.consolidate deferral cost", () => {
     // No set_memory_consolidation_status claim, and no memory_files writes.
     expect(rpc).not.toHaveBeenCalled();
     expect(tables).not.toContain("memory_files");
+  });
+});
+
+describe("the curator transcript and the model's context window", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  // Ten exchanges of about 6,000 characters each.
+  const long = Array.from({ length: 10 }, (_, i) => [
+    row(`u${i}`, "user", `Question ${i} ${"q".repeat(3_000)}`, "current-user"),
+    row(
+      `a${i}`,
+      "assistant",
+      [{ type: "content", text: `Answer ${i} ${"a".repeat(3_000)}` }],
+      "current-user",
+      { inputId: `u${i}`, eligibleAt: `2026-09-05T00:00:${String(10 + i)}.000Z` },
+    ),
+  ]).flat();
+
+  it("keeps the newest lines within a token budget", () => {
+    const transcript = buildMemoryCuratorTranscript(long, "current-user", "user", {
+      limitTokens: 3_000,
+    });
+    expect(estimateTokens(transcript)).toBeLessThanOrEqual(3_000 + 10);
+    expect(transcript).toContain("Answer 9");
+    expect(transcript).not.toContain("Question 0");
+  });
+
+  it("keeps the character cap without a budget", () => {
+    const transcript = buildMemoryCuratorTranscript(long, "current-user", "user");
+    expect(transcript.length).toBeLessThanOrEqual(48_000 + 20 * 2);
+    expect(transcript.length).toBeGreaterThan(40_000);
+    expect(transcript).toContain("Answer 9");
+    expect(transcript).not.toContain("Question 0");
+  });
+
+  it("asks for the transcript within what a known window leaves", async () => {
+    vi.stubEnv("MIKE_CONTEXT_WINDOW_TOKENS", "16384");
+    const svc = services();
+    const transcriptFor = vi.fn((limit: number) => `User: within ${limit}`);
+
+    await runMemoryCuratorScope({ ...args(), transcriptFor }, svc);
+
+    expect(transcriptFor).toHaveBeenCalledTimes(1);
+    const [limit] = transcriptFor.mock.calls[0];
+    expect(limit).toBeGreaterThan(0);
+    // The window less the answer's quarter, the margin, prompt and memory.
+    expect(limit).toBeLessThan(16_384 - 4_096 - 820);
+    const prompt = svc.stream.mock.calls[0]![0] as StreamChatParams;
+    expect(JSON.stringify(prompt.messages)).toContain(`User: within ${limit}`);
+  });
+
+  it("uses the transcript as built when the window is unknown", async () => {
+    vi.stubEnv("MIKE_CONTEXT_WINDOW_TOKENS", "");
+    const svc = services();
+    const transcriptFor = vi.fn(() => "never");
+
+    await runMemoryCuratorScope({ ...args(), transcriptFor }, svc);
+
+    expect(transcriptFor).not.toHaveBeenCalled();
+    const prompt = svc.stream.mock.calls[0]![0] as StreamChatParams;
+    expect(JSON.stringify(prompt.messages)).toContain("Keep responses concise");
   });
 });

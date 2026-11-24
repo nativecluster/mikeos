@@ -883,6 +883,7 @@ export async function prepareWordChatStream(
           db,
           "word_chat_messages",
           history,
+          selectedModel,
         )
       : messages;
     const timeZone = resolveRequestTimeZone(args.requestedTimeZone);

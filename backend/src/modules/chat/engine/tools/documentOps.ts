@@ -1167,11 +1167,29 @@ export async function getTurnReadIdentity(params: {
   };
 }
 
-export function duplicateReadDocumentResult(identity: {
-  docLabel: string;
-  documentId?: string;
-  versionId?: string | null;
-}) {
+export function duplicateReadDocumentResult(
+  identity: {
+    docLabel: string;
+    documentId?: string;
+    versionId?: string | null;
+  },
+  /** Set when the document is read in parts: the part that was asked for again. */
+  part?: { offset: number },
+) {
+  if (part) {
+    return JSON.stringify({
+      ok: true,
+      already_read: true,
+      doc_id: identity.docLabel,
+      document_id: identity.documentId,
+      version_id: identity.versionId ?? null,
+      offset: part.offset,
+      status: "part_already_returned",
+      explanation: `The part of this document starting at offset ${part.offset} was already returned earlier in this response. The text is withheld here only to avoid re-sending it. This is not an error, and the document is not empty.`,
+      next_required_action:
+        "Use that earlier result. To read further, call read_document with the offset the last part you read says the document continues at; find_in_document locates a passage.",
+    });
+  }
   return JSON.stringify({
     ok: true,
     already_read: true,

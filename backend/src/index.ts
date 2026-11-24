@@ -27,6 +27,7 @@ import {
   listenOrFail,
 } from "./lib/processLifecycle";
 import { log, tpl } from "./lib/log";
+import { listNativeClusterModels } from "./lib/llm/nativecluster";
 
 const PORT = process.env.PORT ?? 3001;
 const HOST = process.env.HOST?.trim() || undefined;
@@ -142,6 +143,10 @@ async function main(): Promise<void> {
   // provably absent and only warns when the answer is unavailable, so the
   // cost of gating is one round trip of boot latency, never a crash loop.
   await enforceDocumentLifecycleMigration();
+  // Read NativeCluster's model list before the first request, so a chat
+  // turn knows its model's window (contextWindowFor). A no-op unless
+  // NativeCluster is configured; it never delays or fails the boot.
+  void listNativeClusterModels();
 
   server = listenOrFail(
     app,

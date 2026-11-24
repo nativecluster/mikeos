@@ -36,6 +36,8 @@ import {
 import { ACTIVE_WORD_DOCUMENT_LIVE_FILENAME } from "./wordPrompt";
 import type { AssistantEvent } from "@mike/contracts";
 import { queryFailureCause } from "../../../lib/batchedQuery";
+import { contextWindowFor } from "../../../lib/llm/contextWindow";
+import { tailWithinTokens, tokenCost } from "../../../lib/llm/contextBudget";
 import { activeAssistantPrompts, catalogWorkflowId, ensureDefaultWorkflows } from "../../../lib/workflowCatalog";
 
 // ---------------------------------------------------------------------------
@@ -285,6 +287,39 @@ export const MAX_REPLAYED_REASONING_TOTAL_CHARS = 36_000;
 
 const MAX_REPLAYED_BRIEF_CHARS = 4_000;
 
+/**
+ * With a known context window the two caps above become shares of it,
+ * counted in estimated tokens: a turn's replayed reasoning at most 4% of the
+ * window, all of it together at most 12%.
+ */
+const REPLAYED_REASONING_TURN_SHARE = 0.04;
+const REPLAYED_REASONING_TOTAL_SHARE = 0.12;
+
+/** How replayed reasoning is cut and counted for `model`. */
+function replayedReasoningLimits(model: string | undefined): {
+  cut: (reasoning: string) => string;
+  cost: (reasoning: string) => number;
+  total: number;
+} {
+  const windowTokens = model ? contextWindowFor(model) : undefined;
+  if (windowTokens === undefined) {
+    return {
+      cut: (reasoning) =>
+        reasoning.length > MAX_REPLAYED_REASONING_CHARS
+          ? reasoning.slice(-MAX_REPLAYED_REASONING_CHARS)
+          : reasoning,
+      cost: (reasoning) => reasoning.length,
+      total: MAX_REPLAYED_REASONING_TOTAL_CHARS,
+    };
+  }
+  const perTurn = Math.floor(windowTokens * REPLAYED_REASONING_TURN_SHARE);
+  return {
+    cut: (reasoning) => tailWithinTokens(reasoning, perTurn),
+    cost: tokenCost,
+    total: Math.floor(windowTokens * REPLAYED_REASONING_TOTAL_SHARE),
+  };
+}
+
 /** One lazy history read shared by the context builders for a single turn. */
 export function createAssistantHistoryLoader(db: Db, chatId: string | null | undefined, messageTable = "chat_messages") {
   let pending: Promise<{ data: { content?: unknown }[] | null; error: unknown }> | undefined;
@@ -311,10 +346,13 @@ export async function attachPriorReasoning(
   db: Db,
   messageTable = "chat_messages",
   history?: AssistantHistoryLoader,
+  /** The model the history is replayed to; its context window sets the caps. */
+  model?: string,
 ): Promise<ChatMessage[]> {
   if (!chatId || !messages.some((m) => m.role === "assistant")) {
     return messages;
   }
+  const limits = replayedReasoningLimits(model);
   const { data: rows, error } = await (history ? history() : db
     .from(messageTable)
     .select("content")
@@ -336,10 +374,7 @@ export async function attachPriorReasoning(
     const reasoning = textOf("reasoning").join("\n\n").trim();
     return {
       text: textOf("content").join("").trim(),
-      reasoning:
-        reasoning.length > MAX_REPLAYED_REASONING_CHARS
-          ? reasoning.slice(-MAX_REPLAYED_REASONING_CHARS)
-          : reasoning,
+      reasoning: limits.cut(reasoning),
     };
   });
 
@@ -370,15 +405,16 @@ export async function attachPriorReasoning(
     return turns[stored[occurrence]].reasoning || undefined;
   });
 
-  let remaining = MAX_REPLAYED_REASONING_TOTAL_CHARS;
+  let remaining = limits.total;
   for (let i = matched.length - 1; i >= 0; i--) {
     const reasoning = matched[i];
     if (reasoning === undefined) continue;
-    if (reasoning.length > remaining) {
+    const cost = limits.cost(reasoning);
+    if (cost > remaining) {
       remaining = 0;
       matched[i] = undefined;
     } else {
-      remaining -= reasoning.length;
+      remaining -= cost;
     }
   }
 
@@ -763,7 +799,12 @@ export async function enrichWithPriorEvents(
 // Word add-in document context (`document_context` on POST /word-chat)
 // ---------------------------------------------------------------------------
 
-/** Cap so an oversized document body can't blow the model's context window. */
+/**
+ * Cap so an oversized document body can't blow the model's context window.
+ * For a model whose window is known it is only a size bound on what the pane
+ * sends: what reaches the model goes by the turn's budget, read_document and
+ * read_active_document returning the document a part at a time.
+ */
 export const MAX_DOCUMENT_CONTEXT_CHARS = 200_000;
 
 /**

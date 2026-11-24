@@ -311,6 +311,12 @@ export type CellResult = {
     summary: string;
     flag: "green" | "grey" | "yellow" | "red";
     reasoning: string;
+    /**
+     * How many parts the source was read in, when it was longer than the
+     * model's context window (tabular.parts.ts). Absent when it was read
+     * whole.
+     */
+    parts?: number;
 };
 export type Column = {
     index: number;

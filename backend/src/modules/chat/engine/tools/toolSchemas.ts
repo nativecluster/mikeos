@@ -589,3 +589,78 @@ export const TOOLS = [
     },
   },
 ];
+
+/**
+ * read_document and fetch_documents as a model with a known context window
+ * sees them (documentPages.ts): a document longer than the turn has room for
+ * comes back a part at a time, and read_document takes the offset to read on
+ * from. Without a known window the tools above are sent unchanged.
+ */
+const PAGED_READ_TOOLS: ReadonlyMap<string, unknown> = new Map([
+  [
+    "read_document",
+    {
+      type: "function",
+      function: {
+        name: "read_document",
+        description:
+          "Read the text of an available document. Always call this before answering questions about, summarising, citing from, or editing a document. A document longer than this model's context window allows comes back one part at a time: the result says which characters it holds and, when there is more, the offset the document continues at. Call read_document again with that offset to read on, as far as the question needs; find_in_document locates a passage without reading everything. Reading the next part is not reading the document again, but do not ask for a part already returned in this response.",
+        parameters: {
+          type: "object",
+          properties: {
+            doc_id: {
+              type: "string",
+              description:
+                "The document ID to read (e.g. 'doc-0', 'doc-1', or 'active-word-document')",
+            },
+            offset: {
+              type: "integer",
+              minimum: 0,
+              description:
+                "Where to start reading, in characters: the offset a previous part said the document continues at. Defaults to 0, the start.",
+            },
+          },
+          required: ["doc_id"],
+        },
+      },
+    },
+  ],
+  [
+    "fetch_documents",
+    {
+      type: "function",
+      function: {
+        name: "fetch_documents",
+        description:
+          "Read the text of several documents in a single call. Use this instead of calling read_document repeatedly when you need to read several documents at once. Each document gets a share of this model's context window; one longer than its share comes back as its first part, with the offset to read on from using read_document. In one response, fetch each document/version at most once.",
+        parameters: {
+          type: "object",
+          properties: {
+            doc_ids: {
+              type: "array",
+              items: { type: "string" },
+              description:
+                "Array of document IDs to read (e.g. ['doc-0', 'doc-2'])",
+            },
+          },
+          required: ["doc_ids"],
+        },
+      },
+    },
+  ],
+]);
+
+/** The tool list with the document readers that read in parts. */
+export function withPagedDocumentReads<T>(tools: T[]): T[] {
+  return tools.map((tool) => {
+    const paged = PAGED_READ_TOOLS.get(toolName(tool) ?? "");
+    return paged === undefined ? tool : (paged as T);
+  });
+}
+
+/**
+ * What the system prompt adds when documents are read in parts. Its document
+ * rules say to read each document once per response; reading on is not that.
+ */
+export const PAGED_READS_SYSTEM_PROMPT = `READING LONG DOCUMENTS:
+This model's context window is limited, so read_document returns a long document in parts, and each part says where the document continues. Reading the next part is not reading the document again: read on, part by part, as far as the question needs. When you have not read all of a document, say which part your answer rests on.`;

@@ -9,7 +9,17 @@ import {
     type UserApiKeys,
 } from "../../lib/llm";
 import { AppError } from "../../lib/appError";
+import { answerRoomTokens } from "../../lib/llm/contextBudget";
+import { contextWindowFor } from "../../lib/llm/contextWindow";
 import { reportModelFailure } from "../../lib/llm/providerFailureReport";
+import {
+    answerCellInParts,
+    combinePartAnswers,
+    partLabel,
+    PART_NOTE,
+    planSourceParts,
+    type SourcePart,
+} from "./tabular.parts";
 import { formatPromptSuffix } from "./tabular.prompt";
 import { type CellResult, type Column } from "./tabular.shared";
 
@@ -17,50 +27,26 @@ import { type CellResult, type Column } from "./tabular.shared";
 // LLM extraction helpers
 // ---------------------------------------------------------------------------
 
-export async function queryTabularCell(
-    model: string,
-    filename: string,
-    documentText: string,
-    columnPrompt: string,
-    format?: string,
-    tags?: string[],
-    apiKeys?: UserApiKeys,
-): Promise<CellResult | null> {
-    const suffix = formatPromptSuffix(format as never, tags);
-    const fullPrompt = `${columnPrompt}${suffix} If not found, state "Not Found". Leave all reasoning and explanation in the "reasoning" field only.`;
-
-    const EXTRACTION_SYSTEM = `You are a legal document analyst. Return ONLY valid JSON:
+const EXTRACTION_SYSTEM = `You are a legal document analyst. Return ONLY valid JSON:
 {"summary": string, "flag": "green"|"grey"|"yellow"|"red", "reasoning": string}
 
 The "summary" and "reasoning" field values may use markdown formatting (bullets, bold, italics, etc.) — the values are still plain JSON strings (escape newlines as \\n), but the text inside will be rendered as markdown in the UI.
 
 The "summary" field must contain only the extracted value with inline citations — no explanation or reasoning. Every factual claim in "summary" must be followed immediately by a citation in the format [[document:SOURCE_DOCUMENT_ID||page:N||quote:exact quoted text]], using the exact source document ID shown before the supporting document. For spreadsheets, use [[document:SOURCE_DOCUMENT_ID||sheet:SHEET_NAME||cell:A1||quote:exact cell text]]. The quote must be a short verbatim excerpt (≤ 25 words) narrowly scoped to the specific claim. Do not have multiple claims share the same long quote; if two different statements need different evidence, give each its own short, precise quote. All reasoning and explanation belongs in "reasoning" only, which may also contain citations.`;
 
-    let raw: string;
-    try {
-        raw = await completeText({
-            model,
-            systemPrompt: EXTRACTION_SYSTEM,
-            user: `Document: ${filename}\n\n${documentText}\n\n---\nInstruction: ${fullPrompt}`,
-            maxTokens: 2048,
-            apiKeys,
-        });
-    } catch (err) {
-        // Reported once, here, under the kind that names the failure; the
-        // provider's own error is the cause, so its class and HTTP status
-        // reach Sentry as provider_error / dependency_status. The caller
-        // answers its existing 500 and must not report again. Logging the
-        // reported object (not the raw one) keeps the console bridge from
-        // filing a second event.
-        const failure = new AppError(
-            "tabular.generation_failed",
-            "Tabular cell completion failed",
-            { cause: err },
-        );
-        // This cell has no account-remedy UI; keep its failure visible.
-        reportModelFailure(failure, {}, "[queryTabularCell] completion failed");
-        return null;
-    }
+/** A cell's output cap. */
+const CELL_MAX_TOKENS = 2048;
+
+function cellUserMessage(
+    documentLabel: string,
+    documentText: string,
+    instruction: string,
+): string {
+    return `Document: ${documentLabel}\n\n${documentText}\n\n---\nInstruction: ${instruction}`;
+}
+
+/** A cell's answer from the model's raw text, or null when it said nothing. */
+function parseCellResult(raw: string): CellResult | null {
     try {
         const parsed = JSON.parse(
             raw
@@ -95,6 +81,68 @@ The "summary" field must contain only the extracted value with inline citations 
     }
 }
 
+export async function queryTabularCell(
+    model: string,
+    filename: string,
+    documentText: string,
+    columnPrompt: string,
+    format?: string,
+    tags?: string[],
+    apiKeys?: UserApiKeys,
+): Promise<CellResult | null> {
+    const suffix = formatPromptSuffix(format as never, tags);
+    const fullPrompt = `${columnPrompt}${suffix} If not found, state "Not Found". Leave all reasoning and explanation in the "reasoning" field only.`;
+
+    let raw: string;
+    try {
+        // A source longer than the model's window is read in parts; with no
+        // window known this is null and the cell is the one call below.
+        const parts = planSourceParts({
+            model,
+            documentText,
+            systemPrompt: `${EXTRACTION_SYSTEM}\n\n${PART_NOTE}`,
+            fixedText: cellUserMessage(filename, "", fullPrompt),
+            answerTokens: CELL_MAX_TOKENS,
+        });
+        if (parts) {
+            return await answerCellInParts({
+                model,
+                filename,
+                parts,
+                systemPrompt: EXTRACTION_SYSTEM,
+                instruction: fullPrompt,
+                userFor: (label, text) => cellUserMessage(label, text, fullPrompt),
+                maxTokens: CELL_MAX_TOKENS,
+                apiKeys,
+                parse: parseCellResult,
+            });
+        }
+        raw = await completeText({
+            model,
+            systemPrompt: EXTRACTION_SYSTEM,
+            user: cellUserMessage(filename, documentText, fullPrompt),
+            maxTokens: CELL_MAX_TOKENS,
+            apiKeys,
+        });
+    } catch (err) {
+        // Reported once, here, under the kind that names the failure; the
+        // provider's own error is the cause, so its class and HTTP status
+        // reach Sentry as provider_error / dependency_status. The caller
+        // answers its existing 500 and must not report again. Logging the
+        // reported object (not the raw one) keeps the console bridge from
+        // filing a second event.
+        const failure = new AppError(
+            "tabular.generation_failed",
+            "Tabular cell completion failed",
+            { cause: err },
+        );
+        // This cell has no account-remedy UI; keep its failure visible.
+        reportModelFailure(failure, {}, "[queryTabularCell] completion failed");
+        return null;
+    }
+    return parseCellResult(raw);
+}
+
 export async function generateChatTitle(
     model: string,
     firstUserMessage: string,
@@ -123,26 +171,7 @@ export async function generateChatTitle(
     }
 }
 
-export async function queryTabularAllColumns(
-    model: string,
-    filename: string,
-    documentText: string,
-    columns: Column[],
-    onResult: (columnIndex: number, result: CellResult) => Promise<void>,
-    apiKeys?: UserApiKeys,
-    abortSignal?: AbortSignal,
-    onActivity?: () => void,
-    reportFailure: boolean | ((error: unknown) => boolean) = true,
-): Promise<void> {
-    const columnsDesc = columns
-        .map((col) => {
-            const suffix = formatPromptSuffix(col.format as never, col.tags);
-            const fullPrompt = `${col.prompt}${suffix} If not found, state "Not Found".`;
-            return `Column ${col.index} — "${col.name}": ${fullPrompt}`;
-        })
-        .join("\n");
-
-    const SYSTEM = `You are a legal document analyst. Extract information for each column listed below.
+const ROW_SYSTEM = `You are a legal document analyst. Extract information for each column listed below.
 
 For each column, output exactly one minified JSON object on its own line (no line breaks inside the JSON), then a newline. Process columns in order and output each result as soon as you finish it.
 
@@ -156,26 +185,25 @@ Rules:
 - The "summary" and "reasoning" string VALUES may use markdown (bullets, bold, italics, etc.) — escape newlines as \\n inside the JSON string. This markdown is rendered in the UI.
 - Output ONLY the JSON lines themselves. Do NOT wrap the response in markdown code fences (e.g. \`\`\`json), and do not add any preamble or summary.`;
 
-    const sourcePrefix = `Document: ${filename}\n\n${documentText}`;
-    const USER = `${sourcePrefix}\n\n---\nColumns to extract:\n${columnsDesc}`;
-
-    let contentBuffer = "";
-    const pending: Promise<unknown>[] = [];
-
-    const processLine = async (line: string) => {
-        const trimmed = line.trim();
-        if (!trimmed) return;
-        try {
-            const parsed = JSON.parse(trimmed) as {
-                column_index?: unknown;
-                summary?: unknown;
-                flag?: unknown;
-                reasoning?: unknown;
-            };
-            if (typeof parsed.column_index !== "number") return;
-            const col = columns.find((c) => c.index === parsed.column_index);
-            if (!col) return;
-            await onResult(parsed.column_index, {
+/** One column's result from a line of the row's answer, or null for any other line. */
+function parseColumnLine(
+    line: string,
+    columns: Column[],
+): { columnIndex: number; result: CellResult } | null {
+    const trimmed = line.trim();
+    if (!trimmed) return null;
+    try {
+        const parsed = JSON.parse(trimmed) as {
+            column_index?: unknown;
+            summary?: unknown;
+            flag?: unknown;
+            reasoning?: unknown;
+        };
+        if (typeof parsed.column_index !== "number") return null;
+        if (!columns.some((c) => c.index === parsed.column_index)) return null;
+        return {
+            columnIndex: parsed.column_index,
+            result: {
                 summary: String(parsed.summary ?? "").trim() || "Not addressed",
                 flag: (["green", "grey", "yellow", "red"] as const).includes(
                     parsed.flag as "green",
@@ -183,10 +211,140 @@ Rules:
                     ? (parsed.flag as CellResult["flag"])
                     : "grey",
                 reasoning: String(parsed.reasoning ?? ""),
-            });
-        } catch {
-            // malformed line — skip
-        }
+            },
+        };
+    } catch {
+        // malformed line — skip
+        return null;
+    }
+}
+
+/** What one column asks for, as the row prompt and the combining call both say it. */
+function columnInstruction(col: Column): string {
+    const suffix = formatPromptSuffix(col.format as never, col.tags);
+    return `${col.prompt}${suffix} If not found, state "Not Found".`;
+}
+
+/** Streams the row answer for `user`, handing each completed line to `onLine`. */
+async function streamRowLines(args: {
+    model: string;
+    systemPrompt: string;
+    user: string;
+    sourcePrefixLength: number;
+    apiKeys?: UserApiKeys;
+    abortSignal?: AbortSignal;
+    onActivity?: () => void;
+    onLine: (line: string) => void;
+}): Promise<void> {
+    let contentBuffer = "";
+    try {
+        await streamChatWithTools({
+            model: args.model,
+            systemPrompt: args.systemPrompt,
+            messages: [{ role: "user", content: args.user }],
+            sourcePrefixLength: args.sourcePrefixLength,
+            tools: [],
+            apiKeys: args.apiKeys,
+            abortSignal: args.abortSignal,
+            callbacks: {
+                onActivity: args.onActivity,
+                onContentDelta: (delta) => {
+                    contentBuffer += delta;
+                    let newlineIdx: number;
+                    while ((newlineIdx = contentBuffer.indexOf("\n")) !== -1) {
+                        args.onLine(contentBuffer.slice(0, newlineIdx));
+                        contentBuffer = contentBuffer.slice(newlineIdx + 1);
+                    }
+                },
+            },
+        });
+    } finally {
+        // Partial lines count even when the stream failed.
+        if (contentBuffer.trim()) args.onLine(contentBuffer);
+    }
+}
+
+function reportRowFailure(
+    err: unknown,
+    abortSignal: AbortSignal | undefined,
+    reportFailure: boolean | ((error: unknown) => boolean),
+): void {
+    if (
+        abortSignal?.aborted ||
+        !(typeof reportFailure === "function" ? reportFailure(err) : reportFailure)
+    ) {
+        return;
+    }
+    // Inline callers report here (a run says whether the failure is
+    // new to it); queue callers let the runner own retries and severity. Reported once, here, under the kind that names the failure, with
+    // the provider's error as the cause (provider_error and
+    // dependency_status come from it). The raw error is still what is
+    // rethrown: the row orchestrator classifies it for the grid, and
+    // its own log of it is a warning, not a second event.
+    const failure = new AppError(
+        "tabular.generation_failed",
+        "Tabular row completion stream failed",
+        { cause: err },
+    );
+    reportModelFailure(
+        failure,
+        {},
+        "[queryTabularAllColumns] stream failed",
+    );
+}
+
+/** Room the row's answer needs: every column's line. */
+function rowAnswerTokens(model: string, columnCount: number): number {
+    const windowTokens = contextWindowFor(model);
+    if (windowTokens === undefined) return 0;
+    return Math.max(answerRoomTokens(windowTokens), 600 * columnCount);
+}
+
+export async function queryTabularAllColumns(
+    model: string,
+    filename: string,
+    documentText: string,
+    columns: Column[],
+    onResult: (columnIndex: number, result: CellResult) => Promise<void>,
+    apiKeys?: UserApiKeys,
+    abortSignal?: AbortSignal,
+    onActivity?: () => void,
+    reportFailure: boolean | ((error: unknown) => boolean) = true,
+): Promise<void> {
+    const columnsDesc = columns
+        .map((col) => `Column ${col.index} — "${col.name}": ${columnInstruction(col)}`)
+        .join("\n");
+    const columnsBlock = `\n\n---\nColumns to extract:\n${columnsDesc}`;
+
+    // A source longer than the model's window is read in parts; with no
+    // window known this is null and the row is the one call below.
+    let parts: SourcePart[] | null;
+    try {
+        parts = planSourceParts({
+            model,
+            documentText,
+            systemPrompt: `${ROW_SYSTEM}\n\n${PART_NOTE}`,
+            fixedText: `Document: ${filename}\n\n${columnsBlock}`,
+            answerTokens: rowAnswerTokens(model, columns.length),
+        });
+    } catch (err) {
+        reportRowFailure(err, abortSignal, reportFailure);
+        throw err;
+    }
+    if (parts) {
+        return queryColumnsInParts({
+            model, filename, parts, columns, columnsBlock, onResult,
+            apiKeys, abortSignal, onActivity, reportFailure,
+        });
+    }
+
+    const sourcePrefix = `Document: ${filename}\n\n${documentText}`;
+    const USER = `${sourcePrefix}${columnsBlock}`;
+
+    const pending: Promise<unknown>[] = [];
+    const processLine = async (line: string) => {
+        const parsed = parseColumnLine(line, columns);
+        if (parsed) await onResult(parsed.columnIndex, parsed.result);
     };
 
     // Preserve any partial lines before re-throwing the stream failure. An abort
@@ -195,58 +353,105 @@ Rules:
     // actionable error such as a rejected API key.
     let streamError: unknown;
     try {
-        await streamChatWithTools({
+        await streamRowLines({
             model,
-            systemPrompt: SYSTEM,
-            messages: [{ role: "user", content: USER }],
+            systemPrompt: ROW_SYSTEM,
+            user: USER,
             sourcePrefixLength: sourcePrefix.length,
-            tools: [],
             apiKeys,
             abortSignal,
-            callbacks: {
-                onActivity,
-                onContentDelta: (delta) => {
-                    contentBuffer += delta;
-                    let newlineIdx: number;
-                    while ((newlineIdx = contentBuffer.indexOf("\n")) !== -1) {
-                        const completedLine = contentBuffer.slice(
-                            0,
-                            newlineIdx,
-                        );
-                        contentBuffer = contentBuffer.slice(newlineIdx + 1);
-                        pending.push(processLine(completedLine));
-                    }
-                },
-            },
+            onActivity,
+            onLine: (line) => pending.push(processLine(line)),
         });
     } catch (err) {
         streamError = err;
-        if (
-            !abortSignal?.aborted &&
-            (typeof reportFailure === "function" ? reportFailure(err) : reportFailure)
-        ) {
-            // Inline callers report here (a run says whether the failure is
-            // new to it); queue callers let the runner own retries and severity. Reported once, here, under the kind that names the failure, with
-            // the provider's error as the cause (provider_error and
-            // dependency_status come from it). The raw error is still what is
-            // rethrown: the row orchestrator classifies it for the grid, and
-            // its own log of it is a warning, not a second event.
-            const failure = new AppError(
-                "tabular.generation_failed",
-                "Tabular row completion stream failed",
-                { cause: err },
-            );
-            reportModelFailure(
-                failure,
-                {},
-                "[queryTabularAllColumns] stream failed",
-            );
-        }
+        reportRowFailure(err, abortSignal, reportFailure);
     }
 
-    if (contentBuffer.trim()) pending.push(processLine(contentBuffer));
     await Promise.all(pending);
     if (streamError) throw streamError;
+}
+
+/**
+ * A row whose source is longer than the model's window: every column asked of
+ * each part in turn, one streamed call per part, then one combining call per
+ * column. A column gets its result only once every part has answered it and
+ * the answers are combined; a column some part left out is not answered at
+ * all, so the caller's policy for a missing column applies.
+ */
+async function queryColumnsInParts(args: {
+    model: string;
+    filename: string;
+    parts: SourcePart[];
+    columns: Column[];
+    columnsBlock: string;
+    onResult: (columnIndex: number, result: CellResult) => Promise<void>;
+    apiKeys?: UserApiKeys;
+    abortSignal?: AbortSignal;
+    onActivity?: () => void;
+    reportFailure: boolean | ((error: unknown) => boolean);
+}): Promise<void> {
+    const { model, parts, columns, abortSignal } = args;
+    // byColumn.get(column)[part - 1]: what that part answered for it.
+    const byColumn = new Map<number, CellResult[]>();
+    try {
+        for (const part of parts) {
+            abortSignal?.throwIfAborted();
+            const sourcePrefix = `Document: ${partLabel(args.filename, part)}\n\n${part.text}`;
+            await streamRowLines({
+                model,
+                systemPrompt: `${ROW_SYSTEM}\n\n${PART_NOTE}`,
+                user: `${sourcePrefix}${args.columnsBlock}`,
+                sourcePrefixLength: sourcePrefix.length,
+                apiKeys: args.apiKeys,
+                abortSignal,
+                onActivity: args.onActivity,
+                onLine: (line) => {
+                    const parsed = parseColumnLine(line, columns);
+                    if (!parsed) return;
+                    const answers = byColumn.get(parsed.columnIndex) ?? [];
+                    answers[part.index - 1] ??= parsed.result;
+                    byColumn.set(parsed.columnIndex, answers);
+                },
+            });
+        }
+    } catch (err) {
+        reportRowFailure(err, abortSignal, args.reportFailure);
+        throw err;
+    }
+
+    let combineError: unknown;
+    for (const col of columns) {
+        abortSignal?.throwIfAborted();
+        const answers = byColumn.get(col.index) ?? [];
+        const complete =
+            answers.length === parts.length &&
+            parts.every((_, i) => answers[i] !== undefined);
+        if (!complete) continue;
+        let combined: CellResult;
+        try {
+            combined = await combinePartAnswers({
+                model,
+                filename: args.filename,
+                instruction: columnInstruction(col),
+                results: answers,
+                maxTokens: CELL_MAX_TOKENS,
+                apiKeys: args.apiKeys,
+                abortSignal,
+                parse: parseCellResult,
+            });
+        } catch (err) {
+            if (abortSignal?.aborted) throw err;
+            if (combineError === undefined) {
+                combineError = err;
+                reportRowFailure(err, abortSignal, args.reportFailure);
+            }
+            continue;
+        }
+        args.onActivity?.();
+        await args.onResult(col.index, combined);
+    }
+    if (combineError !== undefined) throw combineError;
 }
 
 // ---------------------------------------------------------------------------
