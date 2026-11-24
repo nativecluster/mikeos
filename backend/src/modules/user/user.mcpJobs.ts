@@ -2,6 +2,7 @@
 import { McpOAuthRequiredError, loadOAuthToken, refreshOAuthAccessToken } from "../../lib/mcp/oauth";
 import { type Db, type DbJob } from "../../lib/dbq/types";
 import { log } from "../../lib/log";
+import { isNetPlaneOff } from "../../lib/nc/netPlanes";
 
 /**
  * Refresh an MCP OAuth access token that is about to expire.
@@ -18,6 +19,9 @@ export async function handleMcpRefreshToken(
 ): Promise<void> {
     const connectorId = job.payload.connectorId as string | undefined;
     if (!connectorId) return; // malformed payload — nothing to retry into
+    // NativeCluster turned MCP off for everyone: nothing goes to the server,
+    // and a retry would find it off again. The lazy refresh does it later.
+    if (isNetPlaneOff("mcp")) return;
 
     const token = await loadOAuthToken(connectorId, db);
     // The connector was disconnected (rows cascade-delete) or never held an

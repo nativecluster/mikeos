@@ -362,6 +362,26 @@ describe("getUserModelSettings CourtListener connector", () => {
             false,
         );
     });
+
+    it("is off for everyone while NativeCluster has its plane off", async () => {
+        vi.stubEnv("COURTLISTENER_BULK_DATA_ENABLED", "true");
+        vi.stubEnv("LB_MIKE_COURTLISTENER", "0");
+        expect((await settingsWith("saved-token")).legal_research_us).toBe(false);
+    });
+});
+
+describe("getUserModelSettings web search under NativeCluster's off switch", () => {
+    afterEach(() => vi.unstubAllEnvs());
+    const db = () => profileDb({ web_search: { enabled: true, other: "brave" } });
+
+    it("keeps the person's choices but turns search off while its plane is off", async () => {
+        expect((await getUserModelSettings("user-1", db())).web_search.enabled).toBe(true);
+        vi.stubEnv("LB_MIKE_WEBSEARCH", "0");
+        expect((await getUserModelSettings("user-1", db())).web_search).toMatchObject({
+            enabled: false,
+            other: "brave",
+        });
+    });
 });
 
 describe("getUserModelSettings in an organization's workspace", () => {

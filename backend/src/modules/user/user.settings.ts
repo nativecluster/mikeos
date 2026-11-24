@@ -6,6 +6,7 @@ import {
     loadCourtListenerConnection,
 } from "../../lib/providerCredentials/index";
 import { courtlistenerBulkDataEnabled } from "../../lib/courtlistener";
+import { isNetPlaneOff } from "../../lib/nc/netPlanes";
 import { loadCustomInstructions } from "./user.customInstructions";
 import {
     DEFAULT_RESPONSE_STYLE,
@@ -279,10 +280,15 @@ export async function getUserModelSettings(
         last_selected_reasoning_level: normalizeReasoningLevel(
             data?.last_selected_reasoning_level,
         ),
+        // A plane NativeCluster turned off for everyone (lib/nc/netPlanes.ts)
+        // is off whatever the person's or the organization's settings say.
         legal_research_us:
+            !isNetPlaneOff("courtlistener") &&
             courtListener.enabled &&
             (!!api_keys.courtlistener || courtlistenerBulkDataEnabled()),
-        web_search: governing.web_search,
+        web_search: isNetPlaneOff("websearch")
+            ? { ...governing.web_search, enabled: false }
+            : governing.web_search,
         personalisation: {
             displayName:
                 typeof data?.display_name === "string"

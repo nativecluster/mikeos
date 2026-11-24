@@ -108,6 +108,7 @@ import {
 } from "./citeSources";
 import { buildMemoryTurn } from "../../../lib/memory/prompt";
 import { contextWindowFor } from "../../../lib/llm/contextWindow";
+import { isNetPlaneOff, offNetPlaneToolResult } from "../../../lib/nc/netPlanes";
 import {
   answerRoomTokens,
   fitHistory,
@@ -461,8 +462,8 @@ export async function runLLMStream(params: {
     db,
     write: unsafeWrite,
     extraTools,
-    includeResearchTools = true,
-    webSearch = null,
+    includeResearchTools: researchRequested = true,
+    webSearch: webSearchRequested = null,
     includeAskInputs = true,
     connectorApprovals = false,
     allowDocumentMutation = true,
@@ -490,6 +491,11 @@ export async function runLLMStream(params: {
       ? unsafeWrite(sanitizeAssistantSseChunk(chunk), opts)
       : unsafeWrite(sanitizeAssistantSseChunk(chunk));
   const isSubagent = subagentRun !== undefined;
+  // A plane NativeCluster turned off for everyone (lib/nc/netPlanes.ts) gives
+  // the turn none of its tools, whatever the caller asked for.
+  const includeResearchTools =
+    researchRequested && !isNetPlaneOff("courtlistener");
+  const webSearch = isNetPlaneOff("websearch") ? null : webSearchRequested;
   const researchTools = includeResearchTools ? COURTLISTENER_TOOLS : [];
   // The person's own connections for the workspace this conversation is in.
   const connectorTools =
@@ -497,7 +503,7 @@ export async function runLLMStream(params: {
     (await (async () => {
       const owner = { userId, orgId: await teamOrgIdOf(db, orgId) };
       return [
-        ...(await buildUserMcpTools(owner, db)),
+        ...(isNetPlaneOff("mcp") ? [] : await buildUserMcpTools(owner, db)),
         ...(await buildGoogleDriveTools(owner, db)),
         ...(await buildGoogleWorkspaceTools(owner, db)),
       ];
@@ -1097,8 +1103,15 @@ export async function runLLMStream(params: {
         // "Tool 'x' is not available." answer below, which every tool_use
         // without a result already gets, so the model is told plainly rather
         // than left waiting on a call that silently did nothing.
+        // A call on a plane NativeCluster turned off for everyone is answered
+        // in words and never runs: a model can name a tool from memory.
+        for (const c of calls) {
+          const off = offNetPlaneToolResult(c.name);
+          if (off) clientResultByCallId.set(c.id, off);
+        }
         const permittedCalls = calls.filter(
           (c) =>
+            !clientResultByCallId.has(c.id) &&
             (allowDocumentMutation || !isDocumentMutatingTool(c.name)) &&
             (!isSubagent || !SUBAGENT_EXCLUDED_TOOL_NAMES.has(c.name)),
         );

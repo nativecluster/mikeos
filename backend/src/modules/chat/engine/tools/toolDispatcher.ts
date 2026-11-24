@@ -25,6 +25,7 @@ import {
   searchCourtlistenerCaseLaw,
   verifyCourtlistenerCitations,
 } from "../../../../lib/courtlistener";
+import { offNetPlaneToolResult } from "../../../../lib/nc/netPlanes";
 import { normalizeCaseDocument } from "../../../../lib/sourceDocuments";
 import {
   COURTLISTENER_TOOL_NAMES,
@@ -592,6 +593,13 @@ export async function runToolCalls(
   let connectorOwner: ConnectorOwner | undefined;
   for (const tc of toolCalls) {
     if (stopped()) break;
+    // A plane NativeCluster turned off for everyone runs nothing, and the
+    // model is told why (lib/nc/netPlanes.ts).
+    const offPlane = offNetPlaneToolResult(tc.function.name);
+    if (offPlane) {
+      toolResults.push({ role: "tool", tool_call_id: tc.id, content: offPlane });
+      continue;
+    }
     let args: Record<string, unknown> = {};
     try {
       args = JSON.parse(tc.function.arguments || "{}");

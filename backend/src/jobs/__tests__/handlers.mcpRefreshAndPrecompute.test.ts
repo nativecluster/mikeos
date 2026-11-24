@@ -121,6 +121,21 @@ describe("registry", () => {
 });
 
 describe("handleMcpRefreshToken", () => {
+    it("sends nothing while NativeCluster has MCP off for everyone", async () => {
+        vi.stubEnv("LB_MIKE_MCP", "0");
+        try {
+            loadOAuthToken.mockResolvedValue(tokenRow());
+            await handleMcpRefreshToken(
+                DB,
+                JOB("mcp.refresh_token", { connectorId: "c1" }),
+            );
+            expect(loadOAuthToken).not.toHaveBeenCalled();
+            expect(refreshOAuthAccessToken).not.toHaveBeenCalled();
+        } finally {
+            vi.unstubAllEnvs();
+        }
+    });
+
     it("no-ops on a token that is not near expiry (idempotent re-run)", async () => {
         loadOAuthToken.mockResolvedValue(
             tokenRow({
