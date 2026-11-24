@@ -11,17 +11,24 @@ import type {
 import { AppError } from "../appError";
 import { createServerSupabase } from "../supabase";
 import {
-    authConfigPatch,
     base64Url,
     decryptAuthConfig,
     decryptString,
     encryptString,
     guardedFetch,
     loadConnector,
+    sealAuthConfig,
     stateHash,
     validateRemoteMcpUrl,
 } from "./client";
 import { ConnectorSetupError } from "./errors";
+import {
+    MCP_TOKEN_FIELDS,
+    releaseHostColumns,
+    resolveHostColumns,
+    sealHostColumns,
+} from "./hostSecretColumns";
+import { currentNcPerson, isNcAppMode } from "./ncApp";
 import { mcpOAuthProviderFor } from "./providers";
 import {
     CLIENT_INFO,
@@ -65,7 +72,7 @@ function parseWwwAuthenticate(value: string | null): string | null {
     return match?.[1] ?? match?.[2] ?? null;
 }
 
-async function fetchJson(url: string, init?: RequestInit) {
+export async function fetchJson(url: string, init?: RequestInit) {
     // Route through the shared guarded egress helper so this call gets the same
     // HTTPS-only / private-IP / connect-time-pinned / no-redirect protections as
     // the connector transport (closes the raw-fetch SSRF gap in OAuth discovery).
@@ -80,7 +87,7 @@ async function fetchJson(url: string, init?: RequestInit) {
     return parsed as Record<string, unknown>;
 }
 
-async function discoverProtectedResourceMetadataUrl(serverUrl: string) {
+export async function discoverProtectedResourceMetadataUrl(serverUrl: string) {
     // The MCP server URL is attacker-influenced, so both discovery probes go
     // through the shared guarded egress helper rather than raw fetch (previously
     // an unvalidated SSRF sink).
@@ -160,7 +167,7 @@ async function seedResourceMetadataUrl(
     }
 }
 
-async function fetchAuthorizationServerMetadata(
+export async function fetchAuthorizationServerMetadata(
     authorizationServer: string,
 ): Promise<Record<string, unknown>> {
     const trimmed = authorizationServer.replace(/\/+$/, "");
@@ -235,7 +242,7 @@ export function providerAuthorizationParams(
     return mcpOAuthProviderFor(serverUrl)?.authorizationParams ?? {};
 }
 
-function oauthClientEnvFor(serverUrl: string) {
+export function oauthClientEnvFor(serverUrl: string) {
     const provider = mcpOAuthProviderFor(serverUrl);
     const prefix = provider?.envPrefix;
     return {
@@ -282,7 +289,30 @@ export async function loadOAuthToken(connectorId: string, db: Db) {
         .eq("connector_id", connectorId)
         .maybeSingle();
     if (error) throw error;
+    // App mode: the row's secrets are references to NativeCluster's store;
+    // make them readable before anyone decrypts them.
+    if (isNcAppMode())
+        await resolveHostColumns(data as Record<string, unknown> | null, MCP_TOKEN_FIELDS);
     return (data as OAuthTokenRow | null) ?? null;
+}
+
+/**
+ * One secret field of a connector's token row: encrypted in Mike's columns,
+ * or, in app mode, kept in NativeCluster's secrets store under the
+ * NativeCluster person and the connector (hostSecretColumns.ts).
+ */
+async function sealTokenField(
+    connectorId: string,
+    prefix: (typeof MCP_TOKEN_FIELDS)[number],
+    value: string | null | undefined,
+    existing: OAuthTokenRow | null,
+): Promise<Record<string, string | null>> {
+    if (!isNcAppMode()) return tokenSecretPatch(prefix, value);
+    return sealHostColumns(prefix, value, {
+        kind: "mcp",
+        rowKey: connectorId,
+        previous: existing as unknown as Record<string, unknown> | null,
+    });
 }
 
 function tokenSecretPatch(prefix: string, value?: string | null) {
@@ -301,11 +331,13 @@ function tokenSecretPatch(prefix: string, value?: string | null) {
     };
 }
 
-async function storeOAuthToken(
+export async function storeOAuthToken(
     connectorId: string,
     config: Omit<OAuthStateConfig, "codeVerifier" | "redirectUri">,
     token: Record<string, unknown>,
     db: Db,
+    /** A new interactive grant (the device grant's), not a refresh. */
+    options: { newGrant?: boolean } = {},
 ) {
     const expiresIn =
         typeof token.expires_in === "number" ? token.expires_in : null;
@@ -325,8 +357,9 @@ async function storeOAuthToken(
     const clientSecret = config.clientSecret;
     const row = {
         connector_id: connectorId,
-        ...tokenSecretPatch("access_token", accessToken),
-        ...tokenSecretPatch("refresh_token", refreshToken ?? existingRefresh),
+        ...(options.newGrant ? { grant_id: crypto.randomUUID() } : {}),
+        ...(await sealTokenField(connectorId, "access_token", accessToken, existing)),
+        ...(await sealTokenField(connectorId, "refresh_token", refreshToken ?? existingRefresh, existing)),
         token_type:
             typeof token.token_type === "string" ? token.token_type : "Bearer",
         scope: typeof token.scope === "string" ? token.scope : config.scope ?? null,
@@ -336,7 +369,7 @@ async function storeOAuthToken(
         authorization_server: config.authorizationServer,
         token_endpoint: config.tokenEndpoint,
         client_id: config.clientId,
-        ...tokenSecretPatch("client_secret", clientSecret),
+        ...(await sealTokenField(connectorId, "client_secret", clientSecret, existing)),
         resource: config.resource,
         updated_at: new Date().toISOString(),
     };
@@ -510,10 +543,13 @@ export class DbMcpOAuthProvider implements OAuthClientProvider {
             "client_secret" in info && typeof info.client_secret === "string"
                 ? info.client_secret
                 : undefined;
+        const existing = isNcAppMode()
+            ? await loadOAuthToken(this.connector.id, this.db)
+            : null;
         const row = {
             connector_id: this.connector.id,
             client_id: info.client_id,
-            ...tokenSecretPatch("client_secret", clientSecret),
+            ...(await sealTokenField(this.connector.id, "client_secret", clientSecret, existing)),
             updated_at: new Date().toISOString(),
         };
         const { error } = await this.db
@@ -565,24 +601,28 @@ export class DbMcpOAuthProvider implements OAuthClientProvider {
         const row = {
             connector_id: this.connector.id,
             ...(this.mode === "initiate" ? { grant_id: crypto.randomUUID() } : {}),
-            ...tokenSecretPatch("access_token", tokens.access_token),
-            ...tokenSecretPatch(
+            ...(await sealTokenField(this.connector.id, "access_token", tokens.access_token, existing)),
+            ...(await sealTokenField(
+                this.connector.id,
                 "refresh_token",
                 tokens.refresh_token ?? existingRefresh,
-            ),
+                existing,
+            )),
             token_type: tokens.token_type ?? "Bearer",
             scope: tokens.scope ?? env.scope ?? null,
             expires_at: expiresIn
                 ? new Date(Date.now() + expiresIn * 1000).toISOString()
                 : null,
             client_id: clientInfo?.client_id ?? null,
-            ...tokenSecretPatch(
+            ...(await sealTokenField(
+                this.connector.id,
                 "client_secret",
                 "client_secret" in (clientInfo ?? {}) &&
                     typeof clientInfo?.client_secret === "string"
                     ? clientInfo.client_secret
                     : undefined,
-            ),
+                existing,
+            )),
             resource: new URL(this.connector.server_url).toString(),
             updated_at: new Date().toISOString(),
         };
@@ -595,7 +635,11 @@ export class DbMcpOAuthProvider implements OAuthClientProvider {
             .from("user_mcp_connectors")
             .update({
                 auth_type: "oauth",
-                ...authConfigPatch({ headers: authConfig.headers }),
+                ...(await sealAuthConfig(
+                    this.connector.id,
+                    { headers: authConfig.headers },
+                    this.connector,
+                )),
                 updated_at: new Date().toISOString(),
             })
             .eq("id", this.connector.id)
@@ -619,10 +663,14 @@ export class DbMcpOAuthProvider implements OAuthClientProvider {
     }
 
     async saveCodeVerifier(codeVerifier: string) {
+        const person = isNcAppMode() ? currentNcPerson() : null;
+        const origin = isNcAppMode() ? new URL(this.redirectUri).origin : null;
         const encrypted = encryptString(
             JSON.stringify({
                 codeVerifier,
                 redirectUri: this.redirectUri,
+                ...(person ? { person } : {}),
+                ...(origin ? { origin } : {}),
             } satisfies OAuthStateConfig),
         );
         await this.db.from("user_mcp_oauth_states").delete().eq(
@@ -678,6 +726,11 @@ export class DbMcpOAuthProvider implements OAuthClientProvider {
             return;
         }
         if (scope === "all") {
+            if (isNcAppMode())
+                await releaseHostColumns(
+                    (await loadOAuthToken(this.connector.id, this.db)) as unknown as Record<string, unknown> | null,
+                    MCP_TOKEN_FIELDS,
+                );
             await this.db
                 .from("user_mcp_oauth_tokens")
                 .delete()
@@ -695,6 +748,11 @@ export class DbMcpOAuthProvider implements OAuthClientProvider {
             // the registered client — permanently breaking DCR-based servers.
             // `oauthConnected` only checks `encrypted_access_token`, so nulling
             // the token columns is exactly enough to keep it honest.
+            if (isNcAppMode())
+                await releaseHostColumns(
+                    (await loadOAuthToken(this.connector.id, this.db)) as unknown as Record<string, unknown> | null,
+                    ["access_token", "refresh_token"],
+                );
             await this.db
                 .from("user_mcp_oauth_tokens")
                 .update({
@@ -792,6 +850,8 @@ export async function completeMcpConnectorOAuthAuthorization(
     state: string,
     code: string,
     db: Db = createServerSupabase(),
+    /** App mode: the app's origin the finishing request came to (ncAppOrigin). */
+    options: { origin?: string | null } = {},
 ): Promise<{ userId: string; connectorId: string }> {
     const { data, error } = await db
         .from("user_mcp_oauth_states")
@@ -816,6 +876,14 @@ export async function completeMcpConnectorOAuthAuthorization(
     );
     if (!decrypted) throw new Error("OAuth state could not be decrypted.");
     const config = JSON.parse(decrypted) as OAuthStateConfig;
+    // App mode: the authorization finishes only for the NativeCluster person
+    // who started it (the ticket's), whichever way the code came back.
+    if (config.person && currentNcPerson() !== config.person)
+        throw new Error("OAuth state belongs to another person.");
+    // ...and only on the app's origin it was started on (the port differs
+    // per computer), so a code is never finished anywhere else.
+    if (config.origin && options.origin !== config.origin)
+        throw new Error("OAuth state was started on another origin.");
     const connector = await loadConnector(row.user_id, row.connector_id, db);
     const provider = new DbMcpOAuthProvider(
         db,

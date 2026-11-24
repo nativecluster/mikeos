@@ -23,6 +23,13 @@ import { withKind, type ErrorKind } from "../../lib/appError";
 import { reportError } from "../../lib/observability/sentry";
 import { type Db } from "./user.shared";
 import { log } from "../../lib/log";
+import { isNcAppMode } from "../../lib/mcp/ncApp";
+import { loadConnector } from "../../lib/mcp/client";
+import { loadOAuthToken } from "../../lib/mcp/oauth";
+import {
+    startMcpDeviceAuthorization,
+    type McpDeviceAuthorization,
+} from "../../lib/mcp/appLinking";
 
 /**
  * The failure as Sentry should see it: `mcp.setup_failed` for managing a
@@ -231,7 +238,10 @@ export async function startMcpConnectorOAuth(
 ): Promise<
     | {
           ok: true;
-          result: Awaited<ReturnType<typeof startUserMcpConnectorOAuth>>;
+          result: Awaited<ReturnType<typeof startUserMcpConnectorOAuth>> & {
+              /** App mode: the device grant, when the server offers one. */
+              device?: McpDeviceAuthorization;
+          };
       }
     // The setup error is static text this repo authors, so it is safe to hand
     // to the browser — and it is the one failure here the user can fix.
@@ -242,6 +252,24 @@ export async function startMcpConnectorOAuth(
     | { ok: false; kind: "failed"; error: unknown }
 > {
     try {
+        // Mike's NativeCluster app links by the device grant first, where the
+        // server offers one and no usable grant is held already
+        // (lib/mcp/appLinking.ts); otherwise the code flow below.
+        if (isNcAppMode()) {
+            const token = await loadOAuthToken(connectorId, db);
+            const usable =
+                !!token?.encrypted_access_token &&
+                (!token.expires_at || Date.parse(token.expires_at) > Date.now());
+            if (!usable) {
+                const connector = await loadConnector(userId, connectorId, db);
+                const device = await startMcpDeviceAuthorization(connector, userId, redirectUri, db);
+                if (device)
+                    return {
+                        ok: true,
+                        result: { authorizationUrl: null, alreadyAuthorized: false, device },
+                    };
+            }
+        }
         const result = await startUserMcpConnectorOAuth(
             userId,
             connectorId,
