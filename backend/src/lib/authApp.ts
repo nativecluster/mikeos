@@ -1,4 +1,5 @@
 import type { Request } from "express";
+import { requestOriginIsTrusted } from "./origins";
 
 /**
  * Mike packaged as a NativeCluster app (MIKE_NC_APP=1, set by the app's
@@ -52,4 +53,41 @@ export function appAccessToken(req: HeaderSource): string {
   if (presented) return presented.replace(/^Bearer\s+/i, "").trim();
   const authorization = req.get("authorization") ?? "";
   return authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
+}
+
+/**
+ * In the app the pages are served at an origin of the app's own,
+ * `https://127.0.0.1:<port>`, whose port differs per computer, so no list
+ * configured in advance can name it. NativeCluster's host passes the
+ * browser's own Host header on and the launcher keeps it, so the app's own
+ * origin is the one whose host is the request's Host. Another app on the
+ * same computer has another port and is refused. Off app mode this is
+ * always false. (Kept out of lib/origins.ts, which docker/storage-cors.mjs
+ * loads on its own and so imports nothing.)
+ */
+export function requestOriginIsAppOwn(
+  origin: string | undefined,
+  host: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (!ncAppMode(env) || !origin || !host) return false;
+  try {
+    const url = new URL(origin);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return false;
+    return url.host === host.trim().toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
+/** A configured origin, or in the NativeCluster app the request's own. */
+export function requestOriginIsAllowed(
+  origin: string | undefined,
+  host: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return (
+    requestOriginIsTrusted(origin, env) ||
+    requestOriginIsAppOwn(origin, host, env)
+  );
 }

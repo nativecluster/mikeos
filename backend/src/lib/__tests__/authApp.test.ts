@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { appAccessToken, ncAppMode, ncPersonOf } from "../authApp";
-import { requestOriginIsAllowed, requestOriginIsAppOwn } from "../origins";
+import {
+  appAccessToken,
+  ncAppMode,
+  ncPersonOf,
+  requestOriginIsAllowed,
+  requestOriginIsAppOwn,
+} from "../authApp";
 
 const APP = { MIKE_NC_APP: "1", NODE_ENV: "production" } as NodeJS.ProcessEnv;
 const OFF = { NODE_ENV: "production", FRONTEND_URL: "https://mike.example.test" } as NodeJS.ProcessEnv;

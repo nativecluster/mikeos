@@ -1,5 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
-import { requestOriginIsAllowed } from "../lib/origins";
+import { requestOriginIsAllowed } from "../lib/authApp";
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
