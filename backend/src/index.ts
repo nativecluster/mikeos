@@ -28,6 +28,11 @@ import {
 } from "./lib/processLifecycle";
 import { log, tpl } from "./lib/log";
 import { listNativeClusterModels } from "./lib/llm/nativecluster";
+import {
+  internalSecretFromStdinEnabled,
+  ncAppCredential,
+  readLaunchSecrets,
+} from "./lib/nc/launchSecrets";
 
 const PORT = process.env.PORT ?? 3001;
 const HOST = process.env.HOST?.trim() || undefined;
@@ -92,9 +97,12 @@ function spawnWorkerThread(role: WorkerRole): void {
   );
   // Compiled mode inherits the parent's flags, including --enable-source-maps.
   // Explicit process.execArgv would reject V8 flags such as --max-old-space-size.
+  // A NativeCluster app's credential for the host's socket reaches the
+  // thread in memory (workerData), never through its environment.
+  const credential = ncAppCredential();
   const workerThread = new ThreadWorker(entry, {
     ...(isTs ? { execArgv: ["--require", "tsx/cjs"] } : {}),
-    workerData: { role },
+    workerData: { role, ...(credential ? { ncAppCredential: credential } : {}) },
   });
   workerThreads.set(role, workerThread);
   workerThread.on("error", (err) => {
@@ -133,6 +141,16 @@ function spawnWorkerThread(role: WorkerRole): void {
 let server: Server | null = null;
 
 async function main(): Promise<void> {
+  // A NativeCluster app's launcher hands its secrets over on stdin before
+  // anything else, and keeps stdin open: its end means the launcher is gone.
+  if (internalSecretFromStdinEnabled()) {
+    try {
+      await readLaunchSecrets(process.stdin, () => void shutdown("stdin closed"));
+    } catch (err) {
+      await failBoot(err, "launch-secrets");
+      return;
+    }
+  }
   await validateBootConfiguration();
   // Deploying this code against a database that has not run the
   // document-lifecycle migrations leaks storage silently and fails every
