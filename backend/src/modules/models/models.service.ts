@@ -7,6 +7,7 @@ import type {
     CatalogResult,
 } from "./models.types";
 export type {
+    NativeClusterCatalog,
     CatalogPricing,
     CatalogModel,
     LocalModel,
@@ -344,4 +345,5 @@ export async function listOpenCodeGoModels(
 }
 
 export { listBedrockModels } from "./models.bedrock";
+export { listNativeClusterCatalog } from "./models.nativecluster";
 export { listCustomEndpointModels, listXaiModels } from "./models.compatible";

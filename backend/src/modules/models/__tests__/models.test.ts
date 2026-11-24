@@ -65,6 +65,7 @@ vi.mock("../../../lib/providerCredentials/index", () => ({
 
 import { modelsRouter } from "../models.routes";
 import { resetModelRegistryCache } from "../../../lib/llm/registry";
+import { resetNativeClusterModelCache } from "../../../lib/llm/nativecluster";
 import {
     INTERNAL_ERROR_CODE,
     INTERNAL_ERROR_MESSAGE,
@@ -897,5 +898,106 @@ describe("catalog reporting envelopes", () => {
             expect(events[0].exception?.values?.some(value => value.type === "TypeError" && value.stacktrace?.frames?.length)).toBe(true);
         }
         expect(JSON.stringify(events)).not.toMatch(/PRIVATE_|private-endpoint/);
+    });
+});
+
+describe("GET /models/nativecluster", () => {
+    beforeEach(() => {
+        resetNativeClusterModelCache();
+        vi.stubEnv("NATIVECLUSTER_BASE_URL", "http://nc.test/v1");
+        vi.stubEnv("NATIVECLUSTER_API_KEY", "nct_catalog");
+        vi.stubEnv("MIKE_INFERENCE_PROVIDER", "");
+    });
+
+    afterEach(() => {
+        resetNativeClusterModelCache();
+        vi.unstubAllEnvs();
+        vi.unstubAllGlobals();
+        vi.clearAllMocks();
+    });
+
+    function stubModels() {
+        const fetchMock = vi.fn(async () =>
+            Response.json({
+                object: "list",
+                data: [
+                    {
+                        id: "qwen3.8:27b",
+                        kind: "chat",
+                        context_length: 65536,
+                        capabilities: ["completion", "tools", "thinking"],
+                    },
+                    { id: "bge-m3", kind: "embedding" },
+                ],
+            }),
+        );
+        vi.stubGlobal("fetch", fetchMock);
+        return fetchMock;
+    }
+
+    it("lists NativeCluster's chat models live, without its key or address", async () => {
+        const fetchMock = stubModels();
+        const response = await request(app).get("/models/nativecluster");
+
+        expect(response.status).toBe(200);
+        expect(response.body).toEqual({
+            inferenceOnly: false,
+            models: [
+                {
+                    id: "nativecluster/qwen3.8:27b",
+                    label: "qwen3.8:27b",
+                    group: "NativeCluster",
+                },
+            ],
+        });
+        expect(fetchMock).toHaveBeenCalledWith(
+            "http://nc.test/v1/models",
+            expect.anything(),
+        );
+        expect(JSON.stringify(response.body)).not.toContain("nct_catalog");
+        expect(JSON.stringify(response.body)).not.toContain("nc.test");
+    });
+
+    it("says when every model call goes to NativeCluster, and lists no other provider", async () => {
+        vi.stubEnv("MIKE_INFERENCE_PROVIDER", "nativecluster");
+        const fetchMock = stubModels();
+        getUserApiKeys.mockResolvedValue({ openrouter: "user-key" });
+
+        const catalog = await request(app).get("/models/nativecluster");
+        expect(catalog.body.inferenceOnly).toBe(true);
+        expect(catalog.body.models).toHaveLength(1);
+
+        for (const discovery of ["/models/ollama", "/models/configured"]) {
+            const response = await request(app).get(discovery);
+            expect(response.status).toBe(200);
+            expect(response.body).toEqual({ models: [] });
+        }
+        for (const provider of [
+            "openrouter",
+            "vercel",
+            "opencode-go",
+            "bedrock",
+            "xai",
+            "custom",
+        ]) {
+            const response = await request(app).get(`/models/${provider}`);
+            expect(response.status).toBe(403);
+            expect(response.body).toMatchObject({ code: "model_unavailable" });
+        }
+        // Only NativeCluster's own listing went out.
+        for (const [url] of fetchMock.mock.calls as unknown as Array<[string]>) {
+            expect(url).toBe("http://nc.test/v1/models");
+        }
+        expect(getUserApiKeys).not.toHaveBeenCalled();
+    });
+
+    it("lists nothing, and asks nothing, where NativeCluster is not set up", async () => {
+        vi.stubEnv("NATIVECLUSTER_BASE_URL", "");
+        vi.stubEnv("NATIVECLUSTER_API_KEY", "");
+        vi.stubEnv("NATIVECLUSTER_ENV_FILE", "");
+        const fetchMock = stubModels();
+        const response = await request(app).get("/models/nativecluster");
+        expect(response.body).toEqual({ inferenceOnly: false, models: [] });
+        expect(fetchMock).not.toHaveBeenCalled();
     });
 });

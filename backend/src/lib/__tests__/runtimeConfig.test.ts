@@ -235,6 +235,26 @@ describe("LLM_PROVIDER_DATA_RETENTION", () => {
   });
 });
 
+describe("MIKE_INFERENCE_PROVIDER", () => {
+  it.each(["nativecluster", "NativeCluster", ""])("accepts %j", (value) => {
+    expect(() =>
+      validateRuntimeConfiguration({
+        ...validProduction,
+        MIKE_INFERENCE_PROVIDER: value,
+      }),
+    ).not.toThrow();
+  });
+
+  it("refuses a provider it cannot restrict to", () => {
+    expect(() =>
+      validateRuntimeConfiguration({
+        ...validProduction,
+        MIKE_INFERENCE_PROVIDER: "ollama",
+      }),
+    ).toThrow(/MIKE_INFERENCE_PROVIDER must be "nativecluster"/);
+  });
+});
+
 describe("upload-session rate-limit configuration", () => {
   it("uses safe defaults when overrides are absent or invalid", () => {
     expect(

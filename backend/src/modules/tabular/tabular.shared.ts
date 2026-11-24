@@ -20,7 +20,9 @@ import { resolveRequestedModel } from "../../lib/routerModels";
 import {
     TABULAR_MODEL_REQUIRED_DETAIL,
     hasApiKeyForModel,
+    isAllowedByInferenceProvider,
 } from "../../lib/modelSelection";
+import { INFERENCE_ONLY_DETAIL } from "../../lib/llm/nativecluster";
 import { UserFacingError } from "../../lib/userFacingError";
 import type { Db } from "../../lib/supabase";
 import type { ServiceFailure } from "../../lib/serviceResult";
@@ -121,6 +123,7 @@ function providerLabel(provider: Provider): string {
     if (provider === "xai") return "xAI";
     if (provider === "custom") return "OpenAI-compatible endpoint";
     if (provider === "ollama") return "Local (Ollama)";
+    if (provider === "nativecluster") return "NativeCluster";
     if (provider === "openai-compatible") return "Configured endpoint";
     return "Gemini";
 }
@@ -136,7 +139,10 @@ export function missingModelApiKey(
     apiKeys: UserApiKeys,
 ): MissingApiKey | null {
     const provider = providerForModel(model);
-    if (provider === "ollama") return null; // local, no key
+    if (!isAllowedByInferenceProvider(model)) {
+        return { provider, model, detail: INFERENCE_ONLY_DETAIL };
+    }
+    if (provider === "ollama" || provider === "nativecluster") return null; // local, no key
     if (provider === "openai-compatible") {
         const configured = getConfiguredModel(model);
         if (!configured) return null;

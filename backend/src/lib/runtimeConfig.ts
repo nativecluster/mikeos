@@ -406,6 +406,15 @@ export function validateRuntimeConfiguration(
     );
   }
 
+  // Any value restricts model calls to NativeCluster (lib/llm/nativecluster),
+  // so a typo errs on the private side; it is still refused here.
+  const inferenceProvider = env.MIKE_INFERENCE_PROVIDER?.trim().toLowerCase();
+  if (inferenceProvider && inferenceProvider !== "nativecluster") {
+    errors.push(
+      'MIKE_INFERENCE_PROVIDER must be "nativecluster", or unset to allow every provider',
+    );
+  }
+
   const errorsBeforeProductionChecks = errors.length;
   if (env.NODE_ENV === "production") {
     const frontend = env.FRONTEND_URL?.trim();

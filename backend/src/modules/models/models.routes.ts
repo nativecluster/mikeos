@@ -25,10 +25,38 @@ import {
     listBedrockModels,
     listCustomEndpointModels,
     listXaiModels,
+    listNativeClusterCatalog,
 } from "./models.service";
 import { type CatalogFailure, type CatalogResult } from "./models.types";
+import {
+    INFERENCE_ONLY_DETAIL,
+    inferenceOnlyProvider,
+} from "../../lib/llm/nativecluster";
 
 export const modelsRouter = Router();
+
+/**
+ * MIKE_INFERENCE_PROVIDER: no other provider's catalog is listed. Local and
+ * configured discovery, which every picker asks for, answer that there is
+ * nothing to offer; a provider's own catalog, read with its key, is refused.
+ */
+function otherProvidersOnlyWhenAllowed(
+    discovery: boolean,
+): (req: Request, res: Response, next: () => void) => void {
+    return (_req, res, next) => {
+        if (!inferenceOnlyProvider()) return next();
+        if (discovery) {
+            res.json({ models: [] });
+            return;
+        }
+        res.status(403).json({
+            code: "model_unavailable",
+            detail: INFERENCE_ONLY_DETAIL,
+        });
+    };
+}
+const discoveryAllowed = otherProvidersOnlyWhenAllowed(true);
+const catalogAllowed = otherProvidersOnlyWhenAllowed(false);
 
 function sendCatalogFailure(res: Response, failure: CatalogFailure): void {
     if (failure.kind === "missing_api_key") {
@@ -91,44 +119,49 @@ async function sendCatalog(
     }
 }
 
+// GET /models/nativecluster
+modelsRouter.get("/nativecluster", requireAuth, asyncRoute(async (_req, res) => {
+    res.json(await listNativeClusterCatalog());
+}));
+
 // GET /models/ollama
-modelsRouter.get("/ollama", requireAuth, asyncRoute(async (_req, res) => {
+modelsRouter.get("/ollama", requireAuth, discoveryAllowed, asyncRoute(async (_req, res) => {
     res.json({ models: await listOllamaModels() });
 }));
 
 // GET /models/configured
-modelsRouter.get("/configured", requireAuth, asyncRoute(async (_req, res) => {
+modelsRouter.get("/configured", requireAuth, discoveryAllowed, asyncRoute(async (_req, res) => {
     const userId = res.locals.userId as string;
     const models = await listConfiguredModels(createServerSupabase(), userId);
     res.json({ models });
 }));
 
 // GET /models/openrouter
-modelsRouter.get("/openrouter", requireAuth, (req, res) =>
+modelsRouter.get("/openrouter", requireAuth, catalogAllowed, (req, res) =>
     sendCatalog(req, res, listOpenRouterModels),
 );
 
 // GET /models/vercel
-modelsRouter.get("/vercel", requireAuth, (req, res) =>
+modelsRouter.get("/vercel", requireAuth, catalogAllowed, (req, res) =>
     sendCatalog(req, res, listVercelModels),
 );
 
 // GET /models/opencode-go
-modelsRouter.get("/opencode-go", requireAuth, (req, res) =>
+modelsRouter.get("/opencode-go", requireAuth, catalogAllowed, (req, res) =>
     sendCatalog(req, res, listOpenCodeGoModels),
 );
 
-modelsRouter.get("/bedrock", requireAuth, (req, res) =>
+modelsRouter.get("/bedrock", requireAuth, catalogAllowed, (req, res) =>
     sendCatalog(req, res, listBedrockModels),
 );
 
 // GET /models/xai
-modelsRouter.get("/xai", requireAuth, (req, res) =>
+modelsRouter.get("/xai", requireAuth, catalogAllowed, (req, res) =>
     sendCatalog(req, res, listXaiModels),
 );
 
 // GET /models/custom
-modelsRouter.get("/custom", requireAuth, (req, res) =>
+modelsRouter.get("/custom", requireAuth, catalogAllowed, (req, res) =>
     sendCatalog(req, res, listCustomEndpointModels),
 );
 

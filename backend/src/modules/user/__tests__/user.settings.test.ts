@@ -458,3 +458,55 @@ describe("getUserModelSettings in an organization's workspace", () => {
         ).rejects.toThrow("Failed to read the organization's preferences");
     });
 });
+
+describe("getUserModelSettings with MIKE_INFERENCE_PROVIDER=nativecluster", () => {
+    afterEach(() => {
+        vi.unstubAllEnvs();
+    });
+
+    it("drops hosted preferences and runs reviews on the person's NativeCluster model", async () => {
+        vi.stubEnv("MIKE_INFERENCE_PROVIDER", "nativecluster");
+        vi.stubEnv("NATIVECLUSTER_MODEL", "");
+        const settings = await getUserModelSettings(
+            "user-1",
+            profileDb({
+                title_model: "claude-haiku-4-5",
+                tabular_model: "claude-sonnet-5-5",
+                memory_curator_model: "gpt-6-luna",
+                subagent_model: "openrouter/allowed/model",
+                last_selected_chat_model: "nativecluster/qwen3.8:27b",
+            }),
+        );
+
+        // Unset reads as the chat's model, which can only be NativeCluster's.
+        expect(settings.title_model).toBeNull();
+        expect(settings.memory_curator_model).toBeNull();
+        expect(settings.subagent_model).toBeNull();
+        expect(settings.tabular_model).toBe("nativecluster/qwen3.8:27b");
+        expect(settings.last_selected_chat_model).toBe(
+            "nativecluster/qwen3.8:27b",
+        );
+    });
+
+    it("falls back to the deployment's NativeCluster model", async () => {
+        vi.stubEnv("MIKE_INFERENCE_PROVIDER", "nativecluster");
+        vi.stubEnv("NATIVECLUSTER_MODEL", "gemma4:4b");
+        const settings = await getUserModelSettings(
+            "user-1",
+            profileDb({ tabular_model: null, last_selected_chat_model: "gpt-6-luna" }),
+        );
+        expect(settings.tabular_model).toBe("nativecluster/gemma4:4b");
+    });
+
+    it("leaves an unset tabular model unset without the switch", async () => {
+        vi.stubEnv("MIKE_INFERENCE_PROVIDER", "");
+        const settings = await getUserModelSettings(
+            "user-1",
+            profileDb({
+                tabular_model: null,
+                last_selected_chat_model: "nativecluster/qwen3.8:27b",
+            }),
+        );
+        expect(settings.tabular_model).toBeNull();
+    });
+});

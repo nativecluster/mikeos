@@ -22,6 +22,10 @@ import { reportError } from "../../lib/observability/sentry";
 import { getEffectiveRouterModels } from "../../lib/routerModels";
 import { loadWorkspacePreferences } from "../../lib/orgPreferences";
 import {
+    defaultNativeClusterModel,
+    inferenceOnlyProvider,
+} from "../../lib/llm/nativecluster";
+import {
     normalizeOptionalModelPreference,
     normalizeReasoningLevel,
 } from "../../lib/modelSelection";
@@ -240,15 +244,28 @@ export async function getUserModelSettings(
         web_search: webSearch,
     };
 
+    const lastSelectedChatModel = normalizeOptionalModelPreference(
+        data?.last_selected_chat_model,
+        routerModels,
+    );
+    const tabularModel = normalizeOptionalModelPreference(
+        governing.tabular_model,
+        routerModels,
+    );
+
     return {
         title_model: normalizeOptionalModelPreference(
             governing.title_model,
             routerModels,
         ),
-        tabular_model: normalizeOptionalModelPreference(
-            governing.tabular_model,
-            routerModels,
-        ),
+        // A NativeCluster-only deployment has one provider to choose from,
+        // so an unset tabular model is its chat model. Title, memory and
+        // subagent models already follow the chat's model when unset.
+        tabular_model:
+            tabularModel ??
+            (inferenceOnlyProvider()
+                ? await defaultNativeClusterModel(lastSelectedChatModel)
+                : null),
         memory_curator_model: normalizeOptionalModelPreference(
             governing.memory_curator_model,
             routerModels,
@@ -258,10 +275,7 @@ export async function getUserModelSettings(
             routerModels,
         ),
         subagent_reasoning: normalizeReasoningLevel(governing.subagent_reasoning),
-        last_selected_chat_model: normalizeOptionalModelPreference(
-            data?.last_selected_chat_model,
-            routerModels,
-        ),
+        last_selected_chat_model: lastSelectedChatModel,
         last_selected_reasoning_level: normalizeReasoningLevel(
             data?.last_selected_reasoning_level,
         ),
