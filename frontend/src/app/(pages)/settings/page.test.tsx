@@ -101,6 +101,22 @@ describe("SettingsPage Google email changes", () => {
         }
     });
 
+    it("shows no usage plan in the NativeCluster app, and the plan elsewhere", () => {
+        vi.stubEnv("NEXT_PUBLIC_MIKE_NC_APP", "1");
+        try {
+            const { unmount } = render(<SettingsPage />);
+            expect(screen.getByLabelText("Display Name")).toBeInTheDocument();
+            expect(screen.queryByRole("heading", { name: "Usage Plan" })).not.toBeInTheDocument();
+            expect(screen.queryByText("Free")).not.toBeInTheDocument();
+            unmount();
+        } finally {
+            vi.unstubAllEnvs();
+        }
+        render(<SettingsPage />);
+        expect(screen.getByRole("heading", { name: "Usage Plan" })).toBeInTheDocument();
+        expect(screen.getByText("Free")).toBeInTheDocument();
+    });
+
     it("keeps onboarding organisation out of account settings and places the photo below the name", () => {
         render(<SettingsPage />);
         expect(screen.queryByLabelText("Organisation")).not.toBeInTheDocument();

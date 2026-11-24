@@ -155,6 +155,30 @@ describe("SettingsLayout", () => {
         }
     });
 
+    it("finds no usage plan in the NativeCluster app's settings search, and finds it elsewhere", async () => {
+        const user = userEvent.setup();
+        vi.stubEnv("NEXT_PUBLIC_MIKE_NC_APP", "1");
+        try {
+            const { unmount } = render(
+                <SettingsLayout>
+                    <div />
+                </SettingsLayout>,
+            );
+            await user.type(screen.getByRole("searchbox", { name: "Search settings" }), "billing");
+            expect(screen.queryByRole("button", { name: /^Usage Plan, Account\./ })).not.toBeInTheDocument();
+            unmount();
+        } finally {
+            vi.unstubAllEnvs();
+        }
+        render(
+            <SettingsLayout>
+                <div />
+            </SettingsLayout>,
+        );
+        await user.type(screen.getByRole("searchbox", { name: "Search settings" }), "billing");
+        expect(await screen.findByRole("button", { name: /^Usage Plan, Account\./ })).toBeInTheDocument();
+    });
+
     it("marks Account current at the root of Settings, under Personal", () => {
         pathname = "/settings";
         render(

@@ -132,9 +132,10 @@ const GROUPS: SettingsShellGroup[] = [
 const GOVERNED_TAB_IDS = new Set(["features", "models", "byok"]);
 
 // In the NativeCluster app NativeCluster owns the account: its password, MFA,
-// email and deletion are not Mike's to offer (lib/ncApp.ts).
+// email and deletion are not Mike's to offer (lib/ncApp.ts), and there is
+// no usage plan (hosted Mike's tier, which nothing sets there).
 const NC_APP_HIDDEN_TAB_IDS = new Set(["security"]);
-const NC_APP_HIDDEN_SEARCH_IDS = new Set(["account-email", "account-delete"]);
+const NC_APP_HIDDEN_SEARCH_IDS = new Set(["account-email", "account-delete", "account-plan"]);
 
 export default function SettingsLayout({
     children,

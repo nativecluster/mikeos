@@ -325,7 +325,9 @@ export default function SettingsPage() {
       </section>
       )}
 
-      {/* Plan */}
+      {/* Plan: hosted Mike's, which the NativeCluster app has none of
+          (nothing sets or enforces a tier there). */}
+      {!ncApp && (
       <section className="space-y-3">
         <SettingsHeading id="usage-plan">Usage Plan</SettingsHeading>
         <GlassCardUI>
@@ -336,6 +338,7 @@ export default function SettingsPage() {
           </SettingsRow>
         </GlassCardUI>
       </section>
+      )}
 
       {/* Danger Zone: removing a person is NativeCluster's in its app. */}
       {!ncApp && (
