@@ -48,6 +48,10 @@ describe("linking inside the NativeCluster app", () => {
     // A link the window hands to the browser; no popup, no navigation of the page.
     expect(link.getAttribute("href")).toBe(AUTH_URL);
     expect(link.getAttribute("target")).toBe("_blank");
+    // A service that refuses to send the person back here is told apart.
+    expect(
+      screen.getByText(/If the service says it can't send you back to this address, it can't be linked from here\./),
+    ).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Address from your browser"), {
       target: { value: "https://127.0.0.1:8494/api/user/mcp-connectors/oauth/callback?code=x&state=s" },

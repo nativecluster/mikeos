@@ -226,6 +226,10 @@ function AppLinkBody({ pending: current }: { pending: Pending }) {
               </li>
               <li>Paste it here and choose Connect.</li>
             </ol>
+            <p className="text-gray-500">
+              If the service says it can&apos;t send you back to this address, it can&apos;t be linked from here. If it
+              gives you an API token, add it as a custom connector with that token instead.
+            </p>
             <ModalTextInput
               aria-label="Address from your browser"
               placeholder="https://127.0.0.1:…/…?code=…&state=…"
