@@ -1,0 +1,10 @@
+#!/bin/sh
+# The program NativeCluster starts. `mike manifest` prints nc-app.json
+# itself, with cat, so that step needs no Node; otherwise it runs the Node
+# the package carries on the launcher. Every file is found relative to this
+# script, never the working folder.
+here=$(cd "$(dirname "$0")" && pwd)
+if [ "$1" = "manifest" ]; then
+	exec cat "$here/nc-app.json"
+fi
+exec "$here/runtime/bin/node" "$here/launcher/main.mjs" "$@"
