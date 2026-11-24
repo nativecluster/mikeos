@@ -496,7 +496,7 @@ export async function prepareProjectChatStream(
         };
 
         const historyMessages = replaysReasoning(selectedModel)
-            ? await attachPriorReasoning(messages, chatId, db)
+            ? await attachPriorReasoning(messages, chatId, db, undefined, undefined, selectedModel)
             : messages;
         const timeZone = resolveRequestTimeZone(args.requestedTimeZone);
         const recordForUser = disownsReplayedToolRecord(selectedModel);

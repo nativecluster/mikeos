@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../lib/supabase", () => ({ createServerSupabase: vi.fn() }));
 vi.mock("../../../lib/storage", () => ({ downloadFile: vi.fn() }));
@@ -11,6 +11,7 @@ import {
   MAX_REPLAYED_REASONING_TOTAL_CHARS,
 } from "./contextBuilders";
 import type { ChatMessage } from "./types";
+import { estimateTokens } from "../../../lib/llm/contextBudget";
 
 type Row = { content: unknown };
 
@@ -210,6 +211,72 @@ describe("attachPriorReasoning", () => {
     );
     const total = result.reduce((sum, m) => sum + (m.reasoning?.length ?? 0), 0);
     expect(total).toBeLessThanOrEqual(MAX_REPLAYED_REASONING_TOTAL_CHARS);
+  });
+
+  describe("with a known context window", () => {
+    afterEach(() => vi.unstubAllEnvs());
+
+    it("keeps the tail of a turn's reasoning within 4% of the window", async () => {
+      vi.stubEnv("MIKE_CONTEXT_WINDOW_TOKENS", "32768");
+      const long = `${"word ".repeat(10_000)}END`;
+      const { db } = makeDb([turn(thought(long), said("Answer."))]);
+      const [message] = await attachPriorReasoning(
+        [{ role: "assistant", content: "Answer." }],
+        "chat-1",
+        db,
+        "chat_messages",
+        undefined,
+        MODEL,
+      );
+      expect(estimateTokens(message.reasoning!)).toBeLessThanOrEqual(
+        Math.floor(32_768 * 0.04),
+      );
+      expect(message.reasoning!.length).toBeLessThan(MAX_REPLAYED_REASONING_CHARS);
+      expect(message.reasoning?.endsWith("END")).toBe(true);
+    });
+
+    it("replays at most 12% of the window in all, newest turns first", async () => {
+      vi.stubEnv("MIKE_CONTEXT_WINDOW_TOKENS", "32768");
+      const count = 8;
+      const { db } = makeDb(
+        Array.from({ length: count }, (_, i) =>
+          turn(thought(`${i} ${"step ".repeat(500)}`), said(`Answer ${i}.`)),
+        ),
+      );
+      const result = await attachPriorReasoning(
+        Array.from({ length: count }, (_, i) => ({
+          role: "assistant" as const,
+          content: `Answer ${i}.`,
+        })),
+        "chat-1",
+        db,
+        "chat_messages",
+        undefined,
+        MODEL,
+      );
+      const total = result.reduce(
+        (sum, m) => sum + (m.reasoning ? estimateTokens(m.reasoning) : 0),
+        0,
+      );
+      expect(total).toBeLessThanOrEqual(Math.floor(32_768 * 0.12));
+      expect(result.at(-1)!.reasoning).toBeDefined();
+      expect(result[0].reasoning).toBeUndefined();
+    });
+
+    it("keeps the character caps when the model's window is unknown", async () => {
+      vi.stubEnv("MIKE_CONTEXT_WINDOW_TOKENS", "");
+      const long = `${"a".repeat(MAX_REPLAYED_REASONING_CHARS)}END`;
+      const { db } = makeDb([turn(thought(long), said("Answer."))]);
+      const [message] = await attachPriorReasoning(
+        [{ role: "assistant", content: "Answer." }],
+        "chat-1",
+        db,
+        "chat_messages",
+        undefined,
+        MODEL,
+      );
+      expect(message.reasoning).toHaveLength(MAX_REPLAYED_REASONING_CHARS);
+    });
   });
 
   it("stops at the first turn that does not fit, even if an older one would", async () => {
