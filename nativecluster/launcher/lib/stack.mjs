@@ -28,6 +28,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { openLogFd } from "./logs.mjs";
 import { socketCall } from "./proxy.mjs";
+import { API_PREFIX } from "./front.mjs";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -93,6 +94,11 @@ export function backendEnv({ paths, dataDir, socketsDir, hostSocket, secrets, lo
     USER_API_KEYS_ENCRYPTION_SECRET: secrets.userApiKeysEncryptionSecret,
     STORAGE_DRIVER: "fs",
     STORAGE_FS_ROOT: paths.storage,
+    // The filesystem driver's upload and download links (/download/signed/
+    // <token>) start with this, and only a browser follows them: the API's
+    // own path on the app's origin, whatever its port on this computer.
+    // Unset, they would name http://localhost:<the socket's path>.
+    BACKEND_PUBLIC_URL: API_PREFIX,
     MIKE_INFERENCE_PROVIDER: "nativecluster",
     NATIVECLUSTER_TRANSPORT: "host",
     SENTRY_DISABLED: "true",
