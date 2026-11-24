@@ -3,7 +3,7 @@
 // folder for that one run; host/host/pkg.go's check, which compares the two
 // compacted: this test holds the app to the bytes themselves).
 
-import { describe, test } from "node:test";
+import { describe, after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -14,6 +14,7 @@ const NCDEV = "/Applications/NativeCluster.app/Contents/Resources/ncdev";
 
 describe("manifest", () => {
   const host = new FakeHost({ pkg: PKG, state: stateDir("manifest"), log: () => {} });
+  after(() => host.close());
 
   test("nc-app.json names a program in the package", () => {
     assert.match(MANIFEST.program ?? "", /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/);
