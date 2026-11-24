@@ -169,17 +169,47 @@ async function seedResourceMetadataUrl(
     }
 }
 
-export async function fetchAuthorizationServerMetadata(
-    authorizationServer: string,
-): Promise<Record<string, unknown>> {
+/**
+ * Where an authorization server's metadata may be, in the order tried. For an
+ * issuer with a path (Airtable's `https://airtable.com/oauth2/v1`) RFC 8414
+ * puts the well-known segment between the host and the path
+ * (`https://airtable.com/.well-known/oauth-authorization-server/oauth2/v1`),
+ * and OpenID Connect appends it; both come first, as the MCP authorization
+ * spec orders them. The appended OAuth form and the issuer itself stay as
+ * the last tries, for servers that serve their metadata there.
+ */
+export function authorizationServerMetadataUrls(authorizationServer: string): string[] {
+    if (authorizationServer.includes("/.well-known/")) return [authorizationServer];
     const trimmed = authorizationServer.replace(/\/+$/, "");
-    const candidates = authorizationServer.includes("/.well-known/")
-        ? [authorizationServer]
+    let path = "";
+    let origin = trimmed;
+    try {
+        const url = new URL(trimmed);
+        origin = url.origin;
+        path = url.pathname.replace(/\/+$/, "");
+    } catch {
+        // Not a URL: only the appended forms can be tried.
+    }
+    const urls = path
+        ? [
+              `${origin}/.well-known/oauth-authorization-server${path}`,
+              `${origin}/.well-known/openid-configuration${path}`,
+              `${trimmed}/.well-known/openid-configuration`,
+              `${trimmed}/.well-known/oauth-authorization-server`,
+              authorizationServer,
+          ]
         : [
               `${trimmed}/.well-known/oauth-authorization-server`,
               `${trimmed}/.well-known/openid-configuration`,
               authorizationServer,
           ];
+    return [...new Set(urls)];
+}
+
+export async function fetchAuthorizationServerMetadata(
+    authorizationServer: string,
+): Promise<Record<string, unknown>> {
+    const candidates = authorizationServerMetadataUrls(authorizationServer);
     let lastError: unknown = null;
     for (const candidate of candidates) {
         try {
