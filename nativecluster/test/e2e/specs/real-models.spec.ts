@@ -32,7 +32,21 @@ test("one tiny tabular review on a real model", async ({ page }) => {
     await createReview(page, "Harness real review", SMALL);
     await addDocumentAndColumn(page, "Title", "What is the document's title? One line.");
     await run(page);
-    const cell = page.locator("td, [role=gridcell]").filter({ hasText: /\S/ }).filter({ hasNotText: /^test\.pdf$/ });
-    await expect(cell.first()).toBeVisible({ timeout: 600_000 });
+    // The cell is done once the review's record says so; its words then show
+    // in the table (which is not a <table>).
+    const reviewId = /\/tabular-reviews\/([^/?#]+)/.exec(page.url())?.[1];
+    expect(reviewId, "the review's page").toBeTruthy();
+    let summary = "";
+    await expect(async () => {
+        const r = await page.request.get(`/api/tabular-review/${reviewId}`);
+        expect(r.ok()).toBe(true);
+        const { cells } = (await r.json()) as { cells: { status: string; content?: { summary?: string } | null }[] };
+        const done = cells.find((c) => c.status === "done" && c.content?.summary?.trim());
+        expect(done, `a filled cell (cells: ${JSON.stringify(cells.map((c) => c.status))})`).toBeTruthy();
+        summary = done!.content!.summary!.trim();
+    }).toPass({ timeout: 600_000, intervals: [2_000] });
+    // The table shows the words, its citation markers ([[document:…]]) as links.
+    const words = summary.replace(/\[\[[^\]]*\]\]/g, " ").trim().split(/\s+/).slice(0, 6).join(" ");
+    await expect(page.getByText(words).first()).toBeVisible({ timeout: 30_000 });
     await expectLineSettled(600_000);
 });
