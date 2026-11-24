@@ -597,8 +597,15 @@ function NewTRModalForWorkspace({
                     ? {
                           label: "Next",
                           type: "button",
-                          onClick: () =>
-                              setStep(skipAccessStep ? "documents" : "access"),
+                          onClick: (event) => {
+                              // As on the access step: where it is skipped
+                              // (the NativeCluster app), the next render
+                              // makes this same footer node the documents
+                              // step's submit, Create, and a browser then
+                              // runs this click's default action on it.
+                              event.preventDefault();
+                              setStep(skipAccessStep ? "documents" : "access");
+                          },
                           disabled:
                               !title.trim() ||
                               (underProject && !selectedProjectId) ||

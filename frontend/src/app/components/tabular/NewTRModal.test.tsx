@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { flushSync } from "react-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
     getProjectPeople,
@@ -264,6 +265,44 @@ describe("NewTRModal", () => {
             fireEvent.click(screen.getByRole("button", { name: "Create" }));
             expect(onAdd).toHaveBeenCalledTimes(1);
         } finally {
+            vi.unstubAllEnvs();
+        }
+    });
+
+    // A browser commits React's update for a click before the button's own
+    // default action runs, so a footer button that becomes the form's submit
+    // on that render submits the form. Under act() jsdom runs the default
+    // action first, which hid this: commit as a browser does.
+    function commitClicksBeforeTheirDefault() {
+        const commit = () => flushSync(() => {});
+        document.addEventListener("click", commit);
+        return () => document.removeEventListener("click", commit);
+    }
+
+    it.each([
+        ["the NativeCluster app, which skips Access", "1", ["Next"]],
+        ["a deployment with the Access step", "", ["Next", "Next"]],
+    ])("creates the review only from Create, in %s", (_mode, ncApp, nexts) => {
+        vi.stubEnv("NEXT_PUBLIC_MIKE_NC_APP", ncApp);
+        const stop = commitClicksBeforeTheirDefault();
+        try {
+            const onAdd = vi.fn();
+            render(<NewTRModal open onClose={vi.fn()} onAdd={onAdd} />);
+            fireEvent.change(screen.getByLabelText("Review name"), {
+                target: { value: "Closing review" },
+            });
+            for (const name of nexts) {
+                fireEvent.click(screen.getByRole("button", { name }));
+            }
+
+            expect(onAdd).not.toHaveBeenCalled();
+            expect(
+                screen.getByRole("dialog", { name: "Add Documents" }),
+            ).toBeInTheDocument();
+            fireEvent.click(screen.getByRole("button", { name: "Create" }));
+            expect(onAdd).toHaveBeenCalledTimes(1);
+        } finally {
+            stop();
             vi.unstubAllEnvs();
         }
     });
