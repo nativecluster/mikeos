@@ -119,6 +119,21 @@ describe("the address the person pastes", () => {
         });
     });
 
+    it("takes them from inside NativeCluster's sign-in hand-off", () => {
+        // Measured on 0.4.23: an outside browser at the app's origin is sent
+        // through :8484 and back to /.nc/handoff?next=<the callback, encoded>.
+        expect(
+            parsePastedAuthorization(
+                "https://127.0.0.1:8496/.nc/handoff?next=%2Fapi%2Fuser%2Fmcp-connectors%2Foauth%2Fcallback%3Fcode%3Dc-1%26state%3Ds-1",
+            ),
+        ).toEqual({ code: "c-1", state: "s-1", error: null });
+        expect(parsePastedAuthorization("https://127.0.0.1:8496/.nc/handoff?next=https%3A%2F%2Fevil.test%2F%3Fcode%3Dx")).toEqual({
+            code: null,
+            state: null,
+            error: null,
+        });
+    });
+
     it("reads nothing from text that is not an authorization", () => {
         expect(parsePastedAuthorization("")).toEqual({ code: null, state: null, error: null });
         expect(parsePastedAuthorization(42)).toEqual({ code: null, state: null, error: null });

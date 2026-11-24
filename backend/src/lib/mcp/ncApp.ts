@@ -185,6 +185,17 @@ export function parsePastedAuthorization(pasted: unknown): PastedAuthorization {
         if (text.includes("=")) params = new URLSearchParams(text.replace(/^[?#]/, ""));
     }
     if (!params) return { ...empty, code: /^[\w.~\-/+]+$/.test(text) ? text : null };
+    // NativeCluster's origin may show the address mid-way through its
+    // sign-in hand-off (`/.nc/handoff?next=/api/…/callback?code=…&state=…`):
+    // the authorization is then inside `next`, a path on the same origin.
+    const next = params.get("next");
+    if (!params.has("code") && !params.has("error") && next?.startsWith("/")) {
+        try {
+            params = new URL(next, "https://app.invalid").searchParams;
+        } catch {
+            // `next` was not an address: nothing more to read.
+        }
+    }
     const pick = (key: string) => {
         const value = params!.get(key);
         return value && value.length <= 4096 ? value : null;
