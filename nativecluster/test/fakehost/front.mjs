@@ -27,6 +27,14 @@
 // door's default) set to "none" sends no ticket, "bad" one signed with
 // another key, "stale" one five minutes old.
 //
+// The app's origin, per request: X-Harness-App-Origin (or the
+// nc_harness_app_origin cookie) set to https://127.0.0.1:849x passes the
+// request on as the real origin would, with that Host, and an Origin and
+// Referer of the door's own rewritten to it; a Location the app answers on
+// it comes back as the door's. Without it the app sees the door's own Host
+// (127.0.0.1:43900), which is not an app origin: Mike's connectors, which
+// build their redirect from the Host, then refuse to start a sign-in.
+//
 // Control routes, the door's own, never passed on: /.harness/... (README).
 
 import http from "node:http";
@@ -34,6 +42,9 @@ import net from "node:net";
 import { signTicket, newTicketKey, TICKET_HEADER } from "./ticket.mjs";
 
 const HOP = new Set(["connection", "keep-alive", "proxy-connection", "transfer-encoding", "te", "trailer", "upgrade", "proxy-authorization", "proxy-authenticate"]);
+
+/** NativeCluster's app origins: https://127.0.0.1 on one of its ten app ports. */
+const APP_ORIGIN_RE = /^https:\/\/127\.0\.0\.1:849\d$/;
 
 function cookieOf(req, name) {
   for (const part of (req.headers.cookie ?? "").split(";")) {
@@ -62,7 +73,17 @@ export function createFront(host, { person = "alice", ticket = "valid", keepCred
     person: req.headers["x-harness-person"] ?? cookieOf(req, "nc_harness_person") ?? state.person,
     ticket: req.headers["x-harness-ticket"] ?? cookieOf(req, "nc_harness_ticket") ?? state.ticket,
     passNobody: (req.headers["x-harness-pass-nobody"] ?? cookieOf(req, "nc_harness_pass_nobody")) === "1",
+    appOrigin: appOriginOf(req.headers["x-harness-app-origin"] ?? cookieOf(req, "nc_harness_app_origin")),
   });
+
+  function appOriginOf(value) {
+    if (value === undefined) return null;
+    if (!APP_ORIGIN_RE.test(String(value))) throw new Error(`X-Harness-App-Origin is https://127.0.0.1:849x, not ${value}`);
+    return String(value);
+  }
+
+  /** The door's own origin, as the browser addressed it. */
+  const doorOrigin = (req) => `http://${req.headers.host ?? "127.0.0.1"}`;
 
   /** The ticket header for a request, or null for none. */
   function ticketFor(req, c) {
@@ -91,6 +112,12 @@ export function createFront(host, { person = "alice", ticket = "valid", keepCred
     }
     const t = ticketFor(req, c);
     if (t) h[TICKET_HEADER] = t;
+    if (c.appOrigin) {
+      const own = doorOrigin(req);
+      h.host = new URL(c.appOrigin).host;
+      if (h.origin === own) h.origin = c.appOrigin;
+      if (typeof h.referer === "string" && h.referer.startsWith(`${own}/`)) h.referer = c.appOrigin + h.referer.slice(own.length);
+    }
     return h;
   }
 
@@ -186,7 +213,12 @@ export function createFront(host, { person = "alice", ticket = "valid", keepCred
       return send(res, 500, `the harness's door failed: ${e.message}\n`);
     }
     if (refused(req, res)) return;
-    const c = choice(req);
+    let c;
+    try {
+      c = choice(req);
+    } catch (e) {
+      return send(res, 400, `the harness's door: ${e.message}\n`);
+    }
     if ((c.person === "nobody" || c.person === "") && c.ticket === "valid" && !c.passNobody) {
       return send(res, 401, "Sign in to NativeCluster to open this app. (The harness's door has no person chosen: set X-Harness-Person.)\n");
     }
@@ -197,6 +229,8 @@ export function createFront(host, { person = "alice", ticket = "valid", keepCred
         if (HOP.has(k) || k === "set-cookie") continue;
         headers[k] = v;
       }
+      if (c.appOrigin && typeof headers.location === "string" && headers.location.startsWith(c.appOrigin))
+        headers.location = doorOrigin(req) + headers.location.slice(c.appOrigin.length);
       res.writeHead(ur.statusCode ?? 502, headers);
       res.flushHeaders?.();
       ur.pipe(res);
@@ -214,8 +248,13 @@ export function createFront(host, { person = "alice", ticket = "valid", keepCred
 
   server.on("upgrade", (req, socket, head) => {
     const p = (req.url ?? "/").split("?")[0];
-    const c = choice(req);
     const fail = (status, words) => socket.end(`HTTP/1.1 ${status}\r\nContent-Type: text/plain\r\nContent-Length: ${Buffer.byteLength(words)}\r\nConnection: close\r\n\r\n${words}`);
+    let c;
+    try {
+      c = choice(req);
+    } catch (e) {
+      return fail("400 Bad Request", `the harness's door: ${e.message}\n`);
+    }
     if (p.startsWith("/nativecluster") || p.startsWith("/host/") || p.startsWith("/.nc/") || p.startsWith("/.harness/")) return fail("404 Not Found", "404 page not found\n");
     if ((c.person === "nobody" || c.person === "") && c.ticket === "valid" && !c.passNobody) return fail("401 Unauthorized", "Sign in to NativeCluster to open this app.\n");
     if (!host.proc) return fail("502 Bad Gateway", "The app is not running.\n");

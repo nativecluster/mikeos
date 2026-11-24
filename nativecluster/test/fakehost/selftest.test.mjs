@@ -218,3 +218,45 @@ describe("--models nativecluster", { skip: process.env.HARNESS_REAL_CALL !== "1"
     assert.deepEqual(host.ledger.problems({ final: true }), []);
   });
 });
+
+describe("the front door", () => {
+  // A stand-in app on a socket that answers with the headers it was given,
+  // and a Location on the app's origin.
+  const sockets = mkdtempSync(path.join(os.tmpdir(), "nc-door-"));
+  const appSocket = path.join(sockets, "app.sock");
+  const app = http.createServer((req, res) => {
+    res.writeHead(200, { "content-type": "application/json", location: "https://127.0.0.1:8494/next?x=1" });
+    res.end(JSON.stringify({ host: req.headers.host, origin: req.headers.origin ?? null, referer: req.headers.referer ?? null }));
+  });
+  const host = { proc: {}, appSocket, person: (label) => ({ id: `p_${label}` }), mint: () => ({ header: "t" }) };
+  let door;
+  let url;
+  before(async () => {
+    await new Promise((resolve) => app.listen(appSocket, resolve));
+    const { createFront } = await import("./front.mjs");
+    door = createFront(host);
+    await new Promise((resolve) => door.listen(0, "127.0.0.1", resolve));
+    url = `http://127.0.0.1:${door.address().port}`;
+  });
+  after(() => {
+    door?.close();
+    app.close();
+  });
+
+  test("passes the door's own Host unless asked to stand in for an app origin", async () => {
+    const plain = await (await fetch(`${url}/x`, { headers: { origin: url } })).json();
+    assert.equal(plain.host, new URL(url).host);
+    assert.equal(plain.origin, url);
+  });
+
+  test("stands in for https://127.0.0.1:849x as the real origin would, Host, Origin, Referer and Location", async () => {
+    const r = await fetch(`${url}/x`, { redirect: "manual", headers: { origin: url, referer: `${url}/settings/connectors`, "x-harness-app-origin": "https://127.0.0.1:8494" } });
+    assert.deepEqual(await r.json(), { host: "127.0.0.1:8494", origin: "https://127.0.0.1:8494", referer: "https://127.0.0.1:8494/settings/connectors" });
+    assert.equal(r.headers.get("location"), `${url}/next?x=1`);
+  });
+
+  test("refuses an app origin that is not one of NativeCluster's", async () => {
+    const r = await fetch(`${url}/x`, { headers: { "x-harness-app-origin": "https://example.com" } });
+    assert.equal(r.status, 400);
+  });
+});
