@@ -132,6 +132,11 @@ export interface ClientToolsAdapter {
   owns: (name: string) => boolean;
   execute: (
     call: import("../../../lib/llm").NormalizedToolCall,
+    /**
+     * Set when the model's context window is known: the tokens a read may
+     * return now, from the turn's budget.
+     */
+    context?: { pageTokens: number },
   ) => Promise<{ content: string; events: AssistantEvent[] }>;
 }
 
@@ -1136,18 +1141,31 @@ export async function runLLMStream(params: {
           ),
         );
         throwIfAborted(signal);
+        // Results spent from the turn's budget as they arrive, so a later
+        // read in this step sees what is really left.
+        const spentCallIds = new Set<string>();
+        const spend = (callId: string, content: string) => {
+          if (!turnBudget) return;
+          turnBudget.spendText(content);
+          spentCallIds.add(callId);
+        };
         webCalls.forEach((call, index) => {
           const { content, event } = webResults[index];
           clientResultByCallId.set(call.id, content);
+          spend(call.id, content);
           events.push(event);
           write(`data: ${JSON.stringify(event)}\n\n`);
         });
         if (clientTools) {
           for (const call of permittedCalls) {
             if (!clientTools.owns(call.name)) continue;
-            const { content, events: clientEvents } =
-              await clientTools.execute(call);
+            const { content, events: clientEvents } = turnBudget
+              ? await clientTools.execute(call, {
+                  pageTokens: turnBudget.pageTokens(),
+                })
+              : await clientTools.execute(call);
             clientResultByCallId.set(call.id, content);
+            spend(call.id, content);
             events.push(...clientEvents);
             throwIfAborted(signal);
           }
@@ -1308,13 +1326,11 @@ export async function runLLMStream(params: {
         // Every result stays in the conversation for the rest of the turn.
         // The dispatcher's document reads spent theirs as they returned.
         if (turnBudget) {
-          const spentByReads = new Set(
-            serverCalls
-              .filter((c) => SELF_SPENDING_TOOLS.has(c.name))
-              .map((c) => c.id),
-          );
+          for (const call of serverCalls) {
+            if (SELF_SPENDING_TOOLS.has(call.name)) spentCallIds.add(call.id);
+          }
           for (const result of results) {
-            if (!spentByReads.has(result.tool_use_id)) {
+            if (!spentCallIds.has(result.tool_use_id)) {
               turnBudget.spendText(result.content);
             }
           }

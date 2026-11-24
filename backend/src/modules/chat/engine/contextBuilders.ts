@@ -799,7 +799,12 @@ export async function enrichWithPriorEvents(
 // Word add-in document context (`document_context` on POST /word-chat)
 // ---------------------------------------------------------------------------
 
-/** Cap so an oversized document body can't blow the model's context window. */
+/**
+ * Cap so an oversized document body can't blow the model's context window.
+ * For a model whose window is known it is only a size bound on what the pane
+ * sends: what reaches the model goes by the turn's budget, read_document and
+ * read_active_document returning the document a part at a time.
+ */
 export const MAX_DOCUMENT_CONTEXT_CHARS = 200_000;
 
 /**

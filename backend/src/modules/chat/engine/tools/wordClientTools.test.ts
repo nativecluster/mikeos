@@ -630,6 +630,35 @@ describe("hardening: unconfirmed outcomes and unsearchable input", () => {
     expect(content).toContain("[Document truncated at");
     expect(content.length).toBeLessThan(MAX_DOCUMENT_CONTEXT_CHARS + 1_000);
   });
+
+  it("returns what the turn has room for when the model's window is known, and where to read on", async () => {
+    const frames: Record<string, unknown>[] = [];
+    const citationText = vi.fn();
+    const adapter = createWordClientToolsAdapter({
+      userId: "u1",
+      write: (line) => {
+        if (!line.startsWith("data: ")) return;
+        frames.push(JSON.parse(line.replace(/^data: /, "").trim()) as Record<string, unknown>);
+      },
+      onCitationText: citationText,
+    });
+    const document = "The Tenant shall repair. ".repeat(4_000);
+    const execution = adapter.execute(
+      { id: "t3", name: READ_ACTIVE_DOCUMENT_TOOL_NAME, input: {} },
+      { pageTokens: 2_000 },
+    );
+    const frame = frames.find((f) => f.type === "client_tool_call");
+    submitClientToolResult(frame?.tool_call_id as string, "u1", { document });
+    const { content } = await execution;
+
+    const [, end] = content.match(/characters 0-(\d+) of 100000/)!;
+    expect(Number(end)).toBeLessThanOrEqual(6_000);
+    expect(content).toContain(
+      `call read_document with doc_id "active-word-document" and offset ${end}`,
+    );
+    // read_document reads on from the text this read returned.
+    expect(citationText).toHaveBeenCalledWith(document);
+  });
 });
 
 describe("per-turn cost guards", () => {
