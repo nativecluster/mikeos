@@ -233,13 +233,13 @@ describe("the real app behind the door", () => {
     vi.stubEnv("SUPABASE_URL", "http://supabase.test.local");
     vi.stubEnv("SUPABASE_PUBLISHABLE_KEY", "k");
     vi.stubEnv("SUPABASE_SECRET_KEY", "s");
-    const plain = (await import("../../../app")).app;
+    const plain = (await import("../../../app.js")).app;
     expect((await request(plain).get("/health")).status).toBe(200);
 
     vi.resetModules();
     vi.stubEnv("MIKE_INTERNAL_SECRET_STDIN", "1");
-    const { app } = await import("../../../app");
-    const secrets = await import("../launchSecrets");
+    const { app } = await import("../../../app.js");
+    const secrets = await import("../launchSecrets.js");
     const input = new PassThrough();
     const reading = secrets.readLaunchSecrets(input);
     input.write(JSON.stringify({ app_credential: CREDENTIAL, internal_secret: SECRET }) + "\n");
