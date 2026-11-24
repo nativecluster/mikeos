@@ -137,6 +137,26 @@ describe("AuthProvider", () => {
         );
     });
 
+    it("says why when the NativeCluster app ends a session for another person", async () => {
+        getAuthSession.mockResolvedValue(user);
+        render(
+            <AuthProvider>
+                <Consumer />
+            </AuthProvider>,
+        );
+        await screen.findByText(user.email);
+
+        const message =
+            "This Mike account belongs to another NativeCluster person on this computer.";
+        fireEvent(
+            window,
+            new CustomEvent(AUTH_SESSION_INVALIDATED_EVENT, { detail: { message } }),
+        );
+
+        expect(screen.getByTestId("user")).toHaveTextContent("signed-out");
+        expect(screen.getByTestId("error")).toHaveTextContent(message);
+    });
+
     it("keeps the user signed in and exposes an error when logout fails", async () => {
         getAuthSession.mockResolvedValue(user);
         logout.mockRejectedValue(new Error("network failure"));

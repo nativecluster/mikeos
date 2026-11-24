@@ -8,6 +8,13 @@ import {
     reportedUpstreamMessage,
     type Operation,
 } from "@mike/client";
+import {
+    clearAppSession,
+    fetchWithAppSession,
+    readAppSession,
+    storeAppSession,
+} from "@/app/lib/appSession";
+import { isNcApp } from "@/app/lib/ncApp";
 
 export interface AuthUser {
     id: string;
@@ -55,26 +62,38 @@ export class AuthApiError extends Error {
  * `report: false` marks a failure handled instead of sending it: a caller
  * retrying the same request (AuthContext's session check during an outage)
  * reports the first failure of its streak, not every attempt.
+ *
+ * `authenticated` marks a route that acts on the signed-in session. In the
+ * NativeCluster app (lib/ncApp.ts), where no cookie carries it, such a
+ * request presents the session lib/appSession.ts keeps, refreshing it once
+ * on a 401.
  */
 async function authRequest<T>(
     operation: Operation,
     path: string,
     init?: RequestInit,
-    { report = true }: { report?: boolean } = {},
+    {
+        report = true,
+        authenticated = false,
+    }: { report?: boolean; authenticated?: boolean } = {},
 ): Promise<T> {
     const url = `/api/auth${path}`;
     const method = init?.method ?? "GET";
+    const requestInit: RequestInit = {
+        ...init,
+        credentials: "include",
+        cache: "no-store",
+        headers: {
+            ...(init?.body ? { "Content-Type": "application/json" } : {}),
+            ...(init?.headers as Record<string, string> | undefined),
+        },
+    };
     let response: Response;
     try {
-        response = await fetch(url, {
-            ...init,
-            credentials: "include",
-            cache: "no-store",
-            headers: {
-                ...(init?.body ? { "Content-Type": "application/json" } : {}),
-                ...(init?.headers as Record<string, string> | undefined),
-            },
-        });
+        response =
+            authenticated && isNcApp()
+                ? (await fetchWithAppSession(url, requestInit)).response
+                : await fetch(url, requestInit);
     } catch (error) {
         // Same rule as mikeApi: a request that never got a response is one
         // "API unreachable" event per outage, never one per auth screen. An
@@ -135,9 +154,14 @@ async function authRequest<T>(
 export async function getAuthSession(
     options: { report?: boolean } = {},
 ): Promise<AuthUser | null> {
+    // In the app, no stored session is no session: nothing to ask.
+    if (isNcApp() && !readAppSession()) return null;
     try {
         return (
-            await authRequest<{ user: AuthUser }>("auth.session", "/session", undefined, options)
+            await authRequest<{ user: AuthUser }>("auth.session", "/session", undefined, {
+                ...options,
+                authenticated: true,
+            })
         ).user;
     } catch (error) {
         if (error instanceof AuthApiError && error.status === 401) return null;
@@ -145,21 +169,35 @@ export async function getAuthSession(
     }
 }
 
+/**
+ * In the NativeCluster app an answer that made a session carries its tokens
+ * (`session`), which the browser keeps; elsewhere it sets the cookie and
+ * carries none.
+ */
+function keepSession<T>(answer: T): T {
+    if (isNcApp()) storeAppSession((answer as { session?: unknown } | undefined)?.session);
+    return answer;
+}
+
 export async function login(email: string, password: string) {
-    return authRequest<{ user: AuthUser }>("auth.signin", "/login", {
-        method: "POST",
-        body: JSON.stringify({ email, password }),
-    });
+    return keepSession(
+        await authRequest<{ user: AuthUser }>("auth.signin", "/login", {
+            method: "POST",
+            body: JSON.stringify({ email, password }),
+        }),
+    );
 }
 
 export async function signup(email: string, password: string, next: string) {
-    return authRequest<{
-        user: AuthUser;
-        requiresEmailConfirmation: boolean;
-    }>("auth.signup", "/signup", {
-        method: "POST",
-        body: JSON.stringify({ email, password, next }),
-    });
+    return keepSession(
+        await authRequest<{
+            user: AuthUser;
+            requiresEmailConfirmation: boolean;
+        }>("auth.signup", "/signup", {
+            method: "POST",
+            body: JSON.stringify({ email, password, next }),
+        }),
+    );
 }
 
 /** Which sign-in routes this deployment offers, and whether it still needs its first account. */
@@ -184,10 +222,12 @@ export async function getSignInOptions() {
 
 /** First-run setup: create this deployment's first account and sign it in. */
 export async function setupFirstAccount(email: string, password: string) {
-    return authRequest<{ user: AuthUser }>("auth.setup", "/setup", {
-        method: "POST",
-        body: JSON.stringify({ email, password }),
-    });
+    return keepSession(
+        await authRequest<{ user: AuthUser }>("auth.setup", "/setup", {
+            method: "POST",
+            body: JSON.stringify({ email, password }),
+        }),
+    );
 }
 
 export async function startGoogleOAuth(next: string) {
@@ -218,67 +258,123 @@ export async function requestPasswordReset(email: string) {
     });
 }
 
+const SESSION = { authenticated: true } as const;
+
 export async function logout(scope: "local" | "global" = "local") {
-    return authRequest<void>("auth.session", "/logout", {
-        method: "POST",
-        body: JSON.stringify({ scope }),
-    });
+    try {
+        return await authRequest<void>(
+            "auth.session",
+            "/logout",
+            {
+                method: "POST",
+                body: JSON.stringify({ scope }),
+            },
+            SESSION,
+        );
+    } finally {
+        // Signing out here is forgetting the tokens; the request above
+        // revokes them in GoTrue when it can.
+        if (isNcApp()) clearAppSession();
+    }
 }
 
 export async function updateAuthEmail(email: string, next: string) {
-    return authRequest<{ user: AuthUser }>("auth.session", "/email", {
-        method: "PATCH",
-        body: JSON.stringify({ email, next }),
-    });
+    return authRequest<{ user: AuthUser }>(
+        "auth.session",
+        "/email",
+        {
+            method: "PATCH",
+            body: JSON.stringify({ email, next }),
+        },
+        SESSION,
+    );
 }
 
 export async function updateAuthPassword(password: string, signOut = false) {
-    return authRequest<{ user: AuthUser }>("auth.session", "/password", {
-        method: "PATCH",
-        body: JSON.stringify({ password, signOut }),
-    });
+    const answer = await authRequest<{ user: AuthUser }>(
+        "auth.session",
+        "/password",
+        {
+            method: "PATCH",
+            body: JSON.stringify({ password, signOut }),
+        },
+        SESSION,
+    );
+    // The server signed every session out, this one included.
+    if (signOut && isNcApp()) clearAppSession();
+    return answer;
 }
 
 export function listMfaFactors() {
-    return authRequest<{ all: MfaFactor[]; totp: MfaFactor[] }>("auth.mfa", "/mfa/factors");
+    return authRequest<{ all: MfaFactor[]; totp: MfaFactor[] }>(
+        "auth.mfa",
+        "/mfa/factors",
+        undefined,
+        SESSION,
+    );
 }
 
 export function getMfaAssurance() {
     return authRequest<{
         currentLevel: string | null;
         nextLevel: string | null;
-    }>("auth.mfa", "/mfa/assurance");
+    }>("auth.mfa", "/mfa/assurance", undefined, SESSION);
 }
 
 export function enrollMfa(friendlyName: string) {
     return authRequest<{
         id: string;
         totp: { qr_code: string; secret: string };
-    }>("auth.mfa", "/mfa/enroll", {
-        method: "POST",
-        body: JSON.stringify({ friendlyName }),
-    });
+    }>(
+        "auth.mfa",
+        "/mfa/enroll",
+        {
+            method: "POST",
+            body: JSON.stringify({ friendlyName }),
+        },
+        SESSION,
+    );
 }
 
 export function challengeMfa(factorId: string) {
-    return authRequest<{ id: string }>("auth.mfa", "/mfa/challenge", {
-        method: "POST",
-        body: JSON.stringify({ factorId }),
-    });
+    return authRequest<{ id: string }>(
+        "auth.mfa",
+        "/mfa/challenge",
+        {
+            method: "POST",
+            body: JSON.stringify({ factorId }),
+        },
+        SESSION,
+    );
 }
 
-export function verifyMfa(factorId: string, challengeId: string, code: string) {
-    return authRequest<unknown>("auth.mfa", "/mfa/verify", {
-        method: "POST",
-        body: JSON.stringify({ factorId, challengeId, code }),
-    });
+/** A verified factor raises the session to aal2, with new tokens in the app. */
+export async function verifyMfa(factorId: string, challengeId: string, code: string) {
+    return keepSession(
+        await authRequest<unknown>(
+            "auth.mfa",
+            "/mfa/verify",
+            {
+                method: "POST",
+                body: JSON.stringify({ factorId, challengeId, code }),
+            },
+            SESSION,
+        ),
+    );
 }
 
-export function challengeAndVerifyMfa(factorId: string, code: string) {
-    return authRequest<unknown>("auth.mfa", "/mfa/challenge-and-verify", {
-        method: "POST",
-        body: JSON.stringify({ factorId, code }),
-    });
+export async function challengeAndVerifyMfa(factorId: string, code: string) {
+    return keepSession(
+        await authRequest<unknown>(
+            "auth.mfa",
+            "/mfa/challenge-and-verify",
+            {
+                method: "POST",
+                body: JSON.stringify({ factorId, code }),
+            },
+            SESSION,
+        ),
+    );
 }
 
 export function unenrollMfa(factorId: string) {
@@ -288,6 +384,7 @@ export function unenrollMfa(factorId: string) {
         {
             method: "DELETE",
         },
+        SESSION,
     );
 }
 
