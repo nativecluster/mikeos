@@ -16,6 +16,7 @@ import Link from "next/link";
 import { SiteLogo } from "@/app/components/site-logo";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { cn } from "@/app/lib/utils";
+import { isNcApp } from "@/app/lib/ncApp";
 import { SsoAuthButton } from "@/app/components/auth/SsoAuthButton";
 import { GoogleAuthButton } from "@/app/components/auth/GoogleAuthButton";
 import { useSignInOptions } from "@/app/hooks/useSignInOptions";
@@ -318,12 +319,16 @@ export default function LoginPage() {
                                     <FieldLabel htmlFor="password">
                                         Password
                                     </FieldLabel>
-                                    <Link
-                                        href="/forgot-password"
-                                        className="text-xs font-medium text-gray-500 transition-colors hover:text-gray-950"
-                                    >
-                                        Forgot password?
-                                    </Link>
+                                    {/* A reset link completes through a cookie
+                                        the NativeCluster app cannot keep. */}
+                                    {!isNcApp() && (
+                                        <Link
+                                            href="/forgot-password"
+                                            className="text-xs font-medium text-gray-500 transition-colors hover:text-gray-950"
+                                        >
+                                            Forgot password?
+                                        </Link>
+                                    )}
                                 </div>
                                 <InputUI
                                     id="password"

@@ -200,6 +200,28 @@ describe("LoginPage", () => {
         expect(screen.queryByRole("button", { name: "Continue with SSO" })).toBeNull();
     });
 
+    it("offers no password-reset link in the NativeCluster app", () => {
+        vi.stubEnv("NEXT_PUBLIC_MIKE_NC_APP", "1");
+        render(<LoginPage />);
+        expect(screen.queryByRole("link", { name: "Forgot password?" })).toBeNull();
+        vi.unstubAllEnvs();
+        render(<LoginPage />);
+        expect(screen.getByRole("link", { name: "Forgot password?" })).toBeInTheDocument();
+    });
+
+    it("shows the app's sentence when the account is another NativeCluster person's", async () => {
+        const detail =
+            "This Mike account belongs to another NativeCluster person on this computer. Sign in to NativeCluster as that person, or log in to Mike with an account of your own.";
+        login.mockRejectedValue(new AuthApiError(403, "nc_person_mismatch", detail));
+        const user = userEvent.setup();
+        render(<LoginPage />);
+        await user.type(screen.getByRole("textbox", { name: "Email" }), "person@example.com");
+        await user.type(screen.getByLabelText("Password"), "correct horse");
+        await user.click(screen.getByRole("button", { name: "Log in" }));
+        expect(await screen.findByRole("alert")).toHaveTextContent(detail);
+        expect(push).not.toHaveBeenCalled();
+    });
+
     it("shows no provider buttons until the deployment has said which it offers", () => {
         signInOptions.current = {
             options: { google: true, sso: true, setupRequired: false, signup: true },

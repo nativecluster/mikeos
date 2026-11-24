@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { getSignInOptions, type SignInOptions } from "@/app/lib/authApi";
 import { useSignInProviderHint } from "@/app/contexts/SignInProviderHintContext";
+import { isNcApp } from "@/app/lib/ncApp";
 
 /**
  * What the sign-in screens offered before the deployment could say: both
@@ -40,7 +41,9 @@ export interface SignInOptionsState {
 export function useSignInOptions(): SignInOptionsState {
     const hint = useSignInProviderHint();
     const [state, setState] = useState<{ options: SignInOptions; loaded: boolean }>({
-        options: hint ? { ...DEFAULT_SIGN_IN_OPTIONS, ...hint } : DEFAULT_SIGN_IN_OPTIONS,
+        options: withAppProviders(
+            hint ? { ...DEFAULT_SIGN_IN_OPTIONS, ...hint } : DEFAULT_SIGN_IN_OPTIONS,
+        ),
         loaded: false,
     });
 
@@ -48,16 +51,31 @@ export function useSignInOptions(): SignInOptionsState {
         let cancelled = false;
         getSignInOptions()
             .then((options) => {
-                if (!cancelled) setState({ options, loaded: true });
+                if (!cancelled) setState({ options: withAppProviders(options), loaded: true });
             })
             .catch(() => {
                 // Reported by the auth client; keep the defaults.
-                if (!cancelled) setState({ options: DEFAULT_SIGN_IN_OPTIONS, loaded: true });
+                if (!cancelled) {
+                    setState({ options: withAppProviders(DEFAULT_SIGN_IN_OPTIONS), loaded: true });
+                }
             });
         return () => {
             cancelled = true;
         };
     }, []);
 
-    return { ...state, providersKnown: state.loaded || hint !== null };
+    return {
+        ...state,
+        // The app's providers are known from the start: none.
+        providersKnown: state.loaded || hint !== null || isNcApp(),
+    };
+}
+
+/**
+ * The NativeCluster app offers email and password alone: Google refuses
+ * embedded web views and, like SSO, redirects to an origin fixed in
+ * advance, where the app's differs per computer.
+ */
+function withAppProviders(options: SignInOptions): SignInOptions {
+    return isNcApp() ? { ...options, google: false, sso: false } : options;
 }
