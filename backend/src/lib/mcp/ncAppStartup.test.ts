@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { decryptString, encryptString, setConnectorEncryptionSecret } from "./client";
 import { ncAppSecrets, resetNcAppConnectors } from "./ncApp";
-import { CONNECTOR_KEY_SECRET, ensureConnectorKey, startNcAppConnectors } from "./ncAppStartup";
+import { API_KEYS_KEY_SECRET, CONNECTOR_KEY_SECRET, ensureConnectorKey, startNcAppConnectors } from "./ncAppStartup";
 import { HostSecretUnreadableError, memoryHostSecrets } from "./ncSecrets";
 
 afterEach(() => {
@@ -34,8 +34,10 @@ describe("starting Mike's connectors as a NativeCluster app", () => {
 
     it("wires the store and encrypts with the host's key, not the environment's", async () => {
         const store = memoryHostSecrets();
-        await startNcAppConnectors({ socketPath: "", credential: "", secrets: store });
+        const { apiKeysEncryptionSecret } = await startNcAppConnectors({ socketPath: "", credential: "", secrets: store });
         expect(ncAppSecrets()).toBe(store);
+        expect(apiKeysEncryptionSecret).toMatch(/^[0-9a-f]{64}$/);
+        expect(store.values.get(API_KEYS_KEY_SECRET)).toBe(apiKeysEncryptionSecret);
         const sealed = encryptString("x");
         expect(decryptString(sealed.encrypted, sealed.iv, sealed.tag)).toBe("x");
         setConnectorEncryptionSecret("another-key");

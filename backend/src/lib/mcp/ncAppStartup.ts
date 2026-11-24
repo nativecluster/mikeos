@@ -18,12 +18,24 @@ import { configureNcAppConnectors } from "./ncApp";
 import { createHostSecrets, HostSecretUnreadableError, type HostSecrets } from "./ncSecrets";
 
 export const CONNECTOR_KEY_SECRET = "mike:app:connectors-key";
+/**
+ * The key for the API keys people paste (CourtListener, Brave, Tavily),
+ * which lib/providerCredentials keeps encrypted in Mike's tables under
+ * USER_API_KEYS_ENCRYPTION_SECRET: kept by the host too, for the integration
+ * to hand that module (it reads the environment today).
+ */
+export const API_KEYS_KEY_SECRET = "mike:app:api-keys-key";
 
 /** Reads (or, the first time, makes and keeps) the connectors' column key. */
-export async function ensureConnectorKey(secrets: HostSecrets): Promise<string> {
+export function ensureConnectorKey(secrets: HostSecrets): Promise<string> {
+    return ensureHostKey(secrets, CONNECTOR_KEY_SECRET);
+}
+
+/** Reads (or, the first time, makes and keeps) a 32-byte key the host keeps under `name`. */
+export async function ensureHostKey(secrets: HostSecrets, name: string): Promise<string> {
     let key: string | null = null;
     try {
-        key = await secrets.getSecret(CONNECTOR_KEY_SECRET);
+        key = await secrets.getSecret(name);
     } catch (err) {
         // The key is sealed under a key this computer no longer holds: what it
         // encrypted is lost either way, so a new one starts. Connections whose
@@ -32,7 +44,7 @@ export async function ensureConnectorKey(secrets: HostSecrets): Promise<string> 
     }
     if (!key) {
         key = crypto.randomBytes(32).toString("hex");
-        await secrets.putSecret(CONNECTOR_KEY_SECRET, key);
+        await secrets.putSecret(name, key);
     }
     return key;
 }
@@ -43,9 +55,10 @@ export async function startNcAppConnectors(options: {
     currentPerson?: () => string | null | undefined;
     /** For tests: a store in place of the host socket's. */
     secrets?: HostSecrets;
-}): Promise<void> {
+}): Promise<{ apiKeysEncryptionSecret: string }> {
     const secrets =
         options.secrets ?? createHostSecrets({ socketPath: options.socketPath, credential: options.credential });
     configureNcAppConnectors({ secrets, currentPerson: options.currentPerson });
     setConnectorEncryptionSecret(await ensureConnectorKey(secrets));
+    return { apiKeysEncryptionSecret: await ensureHostKey(secrets, API_KEYS_KEY_SECRET) };
 }

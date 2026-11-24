@@ -39,6 +39,7 @@ beforeEach(() => {
         "GOOGLE_DRIVE_PICKER_API_KEY",
         "GOOGLE_DRIVE_PICKER_APP_ID",
         "GOOGLE_WORKSPACE_DISABLED_PROVIDERS",
+        "MIKE_NC_GOOGLE_CONNECTORS",
     ])
         vi.stubEnv(key, "");
     setConnectorEncryptionSecret("k".repeat(64));
@@ -59,11 +60,30 @@ afterEach(() => {
 });
 
 function withClient() {
+    vi.stubEnv("MIKE_NC_GOOGLE_CONNECTORS", "1");
     vi.stubEnv("GOOGLE_DRIVE_OAUTH_CLIENT_ID", "client-id");
     vi.stubEnv("GOOGLE_DRIVE_OAUTH_CLIENT_SECRET", "client-secret");
 }
 
-describe("Google in the app without a Google OAuth client", () => {
+describe("Google in the app's first version", () => {
+    it("is not offered even with a client, and Drive's routes refuse it in words", async () => {
+        vi.stubEnv("GOOGLE_DRIVE_OAUTH_CLIENT_ID", "client-id");
+        vi.stubEnv("GOOGLE_DRIVE_OAUTH_CLIENT_SECRET", "client-secret");
+        vi.stubEnv("GOOGLE_WORKSPACE_OAUTH_CLIENT_ID", "ws-id");
+        vi.stubEnv("GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET", "ws-secret");
+        const { db } = driveDb();
+        const owner = personalConnectorOwner("u1");
+        expect(await getGoogleDriveStatus(owner, db)).toMatchObject({ available: false, pickerAvailable: false });
+        await expect(startGoogleDriveOAuth(owner, REDIRECT, db)).rejects.toThrow("Google Drive is not offered");
+        await expect(browseGoogleDriveFiles(owner, {}, db)).rejects.toBeInstanceOf(GoogleDriveUnavailableError);
+        expect(isWorkspaceProviderAvailable("gmail")).toBe(false);
+        expect(isWorkspaceProviderAvailable("google-calendar")).toBe(false);
+    });
+});
+
+describe("Google in the app, switched on, without a Google OAuth client", () => {
+    beforeEach(() => vi.stubEnv("MIKE_NC_GOOGLE_CONNECTORS", "1"));
+
     it("offers no Drive, Gmail or Calendar, and starting one says it is not offered", async () => {
         const { db } = driveDb();
         const status = await getGoogleDriveStatus(personalConnectorOwner("u1"), db);
@@ -223,6 +243,7 @@ describe("Google in the app with a Google OAuth client", () => {
     });
 
     it("starts Gmail with the person and the app's origin bound to the attempt", async () => {
+        vi.stubEnv("MIKE_NC_GOOGLE_CONNECTORS", "1");
         vi.stubEnv("GOOGLE_WORKSPACE_OAUTH_CLIENT_ID", "ws-id");
         vi.stubEnv("GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET", "ws-secret");
         const drive = driveDb();

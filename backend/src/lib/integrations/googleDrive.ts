@@ -74,13 +74,16 @@ import {
 
 /**
  * Whether Drive is offered here. In Mike's NativeCluster app (MIKE_NC_APP=1)
- * that also takes a Google OAuth client: Mike ships none, so without one
- * Drive is not offered at all, as in upstream's desktop app, and no card
- * offers a button that can only fail.
+ * it is not, by default (Pablo, 2026-11-24, for the first version: "not
+ * having google drive yet or its connectors for now"): no card, and every
+ * route refuses it in words. MIKE_NC_GOOGLE_CONNECTORS=1 offers it again,
+ * and only with a Google OAuth client, which Mike does not ship: a company
+ * must register one with Google.
  */
 function isGoogleServiceAvailable(service: "google-drive"): boolean {
     if (!isGoogleServiceSwitchedOn(service)) return false;
     if (!isNcAppMode()) return true;
+    if (process.env.MIKE_NC_GOOGLE_CONNECTORS !== "1") return false;
     const env = googleDriveOAuthEnv();
     return !!(env.clientId && env.clientSecret);
 }

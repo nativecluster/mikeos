@@ -67,10 +67,12 @@ export class GoogleWorkspaceUnavailableError extends GoogleWorkspaceError {}
 /** See GOOGLE_WORKSPACE_DISABLED_PROVIDERS in ./googleAvailability. */
 export function isWorkspaceProviderAvailable(provider: GoogleProvider): boolean {
   if (!isGoogleServiceAvailable(provider)) return false;
-  // Mike's NativeCluster app: Mike ships no Google OAuth client, so without
-  // one Gmail and Calendar are not offered at all (as in upstream's desktop
-  // app) rather than offered with a button that can only fail.
+  // Mike's NativeCluster app: not offered by default (the first version has
+  // no Google connectors), and with MIKE_NC_GOOGLE_CONNECTORS=1 only with a
+  // Google OAuth client, which Mike does not ship. No card offers a button
+  // that can only fail.
   if (!isNcAppMode()) return true;
+  if (process.env.MIKE_NC_GOOGLE_CONNECTORS !== "1") return false;
   const env = googleWorkspaceEnv();
   return !!(env.clientId && env.clientSecret);
 }
