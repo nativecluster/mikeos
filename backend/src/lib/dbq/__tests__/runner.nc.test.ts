@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { currentNcScope, ncOriginFor, runInNcJob, runInNcRequest } from "../../nc/context";
 import { createNcUnitsReporter, setNcUnitsReporter, type NcUnitsReport } from "../../nc/units";
 import { enqueueDbJob } from "../enqueue";
-import { processClaimedJob, queuedNcJobs } from "../runner";
+import { processClaimedJob, queuedNcJobs, startDbJobRunner, stopDbJobRunner } from "../runner";
 import type { DbJob } from "../types";
 
 function makeDb(rows: unknown[] = []) {
@@ -152,5 +152,32 @@ describe("a job queued during a request", () => {
       enqueueDbJob(db as never, { kind: "extraction.extract", payload: { x: 1 } }),
     );
     expect(inserts[0].payload).toEqual({ x: 1 });
+  });
+});
+
+describe("the runner's own timers", () => {
+  afterEach(async () => {
+    await stopDbJobRunner();
+    vi.useRealTimers();
+  });
+
+  async function timersAfterStart(): Promise<number> {
+    vi.stubEnv("SUPABASE_URL", "http://127.0.0.1:9");
+    vi.stubEnv("SUPABASE_SECRET_KEY", "not-a-real-key");
+    vi.stubEnv("QUEUE_DRIVER", "postgres");
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.useFakeTimers();
+    startDbJobRunner({});
+    return vi.getTimerCount();
+  }
+
+  it("keeps the poll and drops the retention sweep's timers in a NativeCluster app", async () => {
+    vi.stubEnv("MIKE_NC_APP", "1");
+    // The poll interval and its first tick.
+    expect(await timersAfterStart()).toBe(2);
+  });
+
+  it("keeps the retention sweep's timers outside the app", async () => {
+    expect(await timersAfterStart()).toBe(4);
   });
 });

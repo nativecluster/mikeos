@@ -14,6 +14,7 @@ import { startAllWorkers, stopAllWorkers, WORKER_ROLES, type WorkerRole } from "
 import { flushSentry, reportError } from "./lib/observability/sentry";
 import { log, tpl } from "./lib/log";
 import { setNcAppCredential } from "./lib/nc/launchSecrets";
+import { refreshNcUnits } from "./lib/nc/units";
 
 // index.ts starts one thread per role; with no role, this thread runs them all.
 const data = workerData as { role?: WorkerRole; ncAppCredential?: string } | null;
@@ -24,6 +25,11 @@ startAllWorkers(role ? [role] : WORKER_ROLES);
 log.info(tpl`[worker-thread] background workers started (${role ?? "all"})`);
 
 parentPort?.on("message", (message: unknown) => {
+    // The host's beat (a NativeCluster app): report this thread's units.
+    if (message === "nc-tick") {
+        void refreshNcUnits({ force: true });
+        return;
+    }
     if (message === "shutdown") {
         void stopAllWorkers()
             .catch((err) => {

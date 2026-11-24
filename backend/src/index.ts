@@ -12,11 +12,13 @@ import {
   validateRuntimeConfiguration,
 } from "./lib/runtimeConfig";
 import {
+  runNativeClusterTick,
   startAllWorkers,
   stopAllWorkers,
   WORKER_ROLES,
   type WorkerRole,
 } from "./workerRuntime";
+import { ncAppMode, setNcTickHandler } from "./lib/nc/tick";
 import { reportError } from "./lib/observability/sentry";
 import { drainStdout } from "./lib/log";
 import { flushToolActivity } from "./lib/toolActivity";
@@ -142,6 +144,20 @@ function spawnWorkerThread(role: WorkerRole): void {
 
 let server: Server | null = null;
 
+/**
+ * A NativeCluster app (MIKE_NC_APP=1): its sweeps run now, once, and then on
+ * the host's beat, which the launcher forwards to POST /nc/v1/tick. Each beat
+ * also reaches the worker threads, whose job runner reports its units.
+ */
+function startNativeClusterBeat(): void {
+  setNcTickHandler(async () => {
+    const ran = await runNativeClusterTick();
+    for (const thread of workerThreads.values()) thread.postMessage("nc-tick");
+    return ran;
+  });
+  void runNativeClusterTick();
+}
+
 async function main(): Promise<void> {
   // A NativeCluster app's launcher hands its secrets over on stdin before
   // anything else, and keeps stdin open: its end means the launcher is gone.
@@ -189,6 +205,7 @@ async function main(): Promise<void> {
       }
       // WORKERS_MODE === "none": a standalone worker process owns background
       // work (node dist/worker.js).
+      if (ncAppMode()) startNativeClusterBeat();
     },
     undefined,
     HOST,
