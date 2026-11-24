@@ -6,6 +6,7 @@ import { Modal } from "@/app/components/modals/Modal";
 import { AccessVisibilityField } from "@/app/components/modals/AccessVisibilityField";
 import type { ContentVisibility } from "@/app/components/shared/types";
 import type { Playbook, PlaybookContent } from "@/app/lib/mikeApi";
+import { isNcApp } from "@/app/lib/ncApp";
 import {
   PlaybookDetailsFields,
   playbookDetailsOf,
@@ -85,12 +86,18 @@ export function PlaybookDetailsModal({
         if (!saving) onClose();
       }}
       breadcrumbs={["Playbooks", playbook.name || "Untitled playbook", "Details"]}
-      secondaryAction={{
-        label: "People",
-        icon: <Users className="h-4 w-4" />,
-        onClick: onPeople,
-        disabled: saving,
-      }}
+      // Accounts are per computer in the NativeCluster app: nobody to share
+      // with.
+      secondaryAction={
+        isNcApp()
+          ? undefined
+          : {
+              label: "People",
+              icon: <Users className="h-4 w-4" />,
+              onClick: onPeople,
+              disabled: saving,
+            }
+      }
       footerStatus={
         updated && !hasChanges ? (
           <span className="text-sm text-gray-400">Updated</span>

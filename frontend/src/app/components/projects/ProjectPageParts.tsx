@@ -19,6 +19,7 @@ import type { Project } from "@/app/components/shared/types";
 import type { DocumentVersion } from "@/app/lib/mikeApi";
 import { RowActions } from "@/app/components/shared/RowActions";
 import { HeaderActionsMenu } from "@/app/components/shared/HeaderActionsMenu";
+import { isNcApp } from "@/app/lib/ncApp";
 import { DocumentUploadMenu } from "@/app/components/shared/DocumentUploadMenu";
 import { tableTreeCellStyle } from "@/app/components/shared/TablePrimitive";
 
@@ -510,12 +511,18 @@ export function ProjectPageHeader({
                         onChange: onSearchChange,
                         placeholder: "Search…",
                     },
-                    {
-                        onClick: onOpenAccess,
-                        iconOnly: true,
-                        title: "Access",
-                        icon: <Users className="h-4 w-4" />,
-                    },
+                    // Accounts are per computer in the NativeCluster app:
+                    // nobody to share with.
+                    ...(isNcApp()
+                        ? []
+                        : [
+                              {
+                                  onClick: onOpenAccess,
+                                  iconOnly: true,
+                                  title: "Access",
+                                  icon: <Users className="h-4 w-4" />,
+                              },
+                          ]),
                     {
                         type: "custom",
                         render: (

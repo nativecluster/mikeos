@@ -28,6 +28,7 @@ import {
 } from "@/app/components/settings/SettingsShell";
 import { SettingsSearch } from "@/app/components/settings/SettingsSearch";
 import { SETTINGS_SEARCH_ENTRIES } from "@/app/lib/settingsSearch";
+import { isNcApp } from "@/app/lib/ncApp";
 
 // Settings come in two groups. Workspace settings belong to the workspace in
 // view (Personal, or one of the person's organizations): each workspace keeps
@@ -130,6 +131,11 @@ const GROUPS: SettingsShellGroup[] = [
 // change, so they are not listed (useWorkspaceSettingsScope).
 const GOVERNED_TAB_IDS = new Set(["features", "models", "byok"]);
 
+// In the NativeCluster app NativeCluster owns the account: its password, MFA,
+// email and deletion are not Mike's to offer (lib/ncApp.ts).
+const NC_APP_HIDDEN_TAB_IDS = new Set(["security"]);
+const NC_APP_HIDDEN_SEARCH_IDS = new Set(["account-email", "account-delete"]);
+
 export default function SettingsLayout({
     children,
 }: {
@@ -150,6 +156,7 @@ export default function SettingsLayout({
     // Where every model call goes to NativeCluster there are no provider
     // keys to bring.
     const { inferenceOnly } = useNativeClusterModels();
+    const ncApp = isNcApp();
     const visibleGroups = useMemo(
         () =>
             GROUPS.map((group) => ({
@@ -158,10 +165,11 @@ export default function SettingsLayout({
                     (tab) =>
                         !(hidePrivacyData && tab.id === "privacy-data") &&
                         !(hideGoverned && GOVERNED_TAB_IDS.has(tab.id)) &&
-                        !(inferenceOnly && tab.id === "byok"),
+                        !(inferenceOnly && tab.id === "byok") &&
+                        !(ncApp && NC_APP_HIDDEN_TAB_IDS.has(tab.id)),
                 ),
             })),
-        [hideGoverned, hidePrivacyData, inferenceOnly],
+        [hideGoverned, hidePrivacyData, inferenceOnly, ncApp],
     );
     // Search only what is listed: an entry on a hidden tab would open a page
     // the person is not offered.
@@ -169,10 +177,12 @@ export default function SettingsLayout({
         const visibleTabIds = new Set(
             visibleGroups.flatMap((group) => group.tabs.map((tab) => tab.id)),
         );
-        return SETTINGS_SEARCH_ENTRIES.filter((entry) =>
-            visibleTabIds.has(entry.tabId),
+        return SETTINGS_SEARCH_ENTRIES.filter(
+            (entry) =>
+                visibleTabIds.has(entry.tabId) &&
+                !(ncApp && NC_APP_HIDDEN_SEARCH_IDS.has(entry.id)),
         );
-    }, [visibleGroups]);
+    }, [ncApp, visibleGroups]);
 
     useEffect(() => {
         if (!authLoading && !isAuthenticated) {

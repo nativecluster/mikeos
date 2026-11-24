@@ -11,7 +11,7 @@ import {
     clearHighlights,
     getPdfJs,
     highlightQuote,
-    STANDARD_FONT_DATA_URL,
+    standardFontDataUrl,
 } from "./highlightQuote";
 import { createPdfQuoteMatcher, normalizePdfQuoteText } from "./pdfQuoteSearch";
 import { orderTextItemLines, type TextItemGeometry } from "./pdfTextOrder";
@@ -770,7 +770,7 @@ export function PdfView({
                 // PDF.js transfers this buffer to its worker. Keep the fetched
                 // bytes attached so another render can load the same result.
                 data: new Uint8Array(result.buffer.slice(0)),
-                standardFontDataUrl: STANDARD_FONT_DATA_URL,
+                standardFontDataUrl: standardFontDataUrl(),
             });
             const pdfDoc = await loadingTask.promise;
             if (cancelled) return;

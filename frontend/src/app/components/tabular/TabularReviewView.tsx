@@ -58,6 +58,7 @@ import { AddColumnModal } from "./AddColumnModal";
 import { TRWorkflowModal } from "./TRWorkflowModal";
 import { AddDocumentsModal } from "../modals/AddDocumentsModal";
 import { AccessModal } from "../modals/AccessModal";
+import { isNcApp } from "@/app/lib/ncApp";
 import { PermissionDeniedPopup } from "../popups/PermissionDeniedPopup";
 import { ApiKeyMissingPopup } from "../popups/ApiKeyMissingPopup";
 import { ConfirmPopup } from "../popups/ConfirmPopup";
@@ -1793,7 +1794,9 @@ export function TRView({ reviewId, projectId }: Props) {
                                 render: (
                                     <HeaderActionsMenu
                                         items={[
-                                            ...(!projectId
+                                            // Accounts are per computer in the
+                                            // NativeCluster app: nobody to share with.
+                                            ...(!projectId && !isNcApp()
                                                 ? [{
                                                       label: "Access",
                                                       icon: Users,

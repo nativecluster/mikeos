@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
     copyDocumentsToWorkflowAssets,
     createWorkflow,
@@ -428,6 +428,53 @@ describe("NewWorkflowModal editing", () => {
         await waitFor(() => expect(createWorkflow).toHaveBeenCalledTimes(1));
         expect(copyDocumentsToWorkflowAssets).not.toHaveBeenCalled();
         expect(onCreated).toHaveBeenCalled();
+    });
+
+    describe("in the NativeCluster app, whose accounts are per computer", () => {
+        beforeEach(() => vi.stubEnv("NEXT_PUBLIC_MIKE_NC_APP", "1"));
+        afterEach(() => vi.unstubAllEnvs());
+
+        it("goes from details straight to Assets for an assistant workflow", async () => {
+            const user = userEvent.setup({ delay: null });
+            render(<NewWorkflowModal open onClose={vi.fn()} onCreated={vi.fn()} />);
+
+            await user.type(screen.getByLabelText("Title"), "New workflow");
+            await user.click(screen.getByRole("button", { name: "Next" }));
+            expect(screen.getByRole("dialog", { name: "Add Assets" })).toBeVisible();
+            expect(screen.queryByText("Share Access")).toBeNull();
+
+            await user.click(screen.getByRole("button", { name: "Back" }));
+            expect(screen.getByLabelText("Title")).toHaveValue("New workflow");
+            await user.click(screen.getByRole("button", { name: "Next" }));
+
+            await user.click(screen.getByRole("button", { name: "Create workflow" }));
+            await waitFor(() => expect(createWorkflow).toHaveBeenCalledTimes(1));
+            expect(shareWorkflow).not.toHaveBeenCalled();
+        });
+
+        it("creates a tabular workflow from its details", async () => {
+            const user = userEvent.setup({ delay: null });
+            const onCreated = vi.fn();
+            render(<NewWorkflowModal open onClose={vi.fn()} onCreated={onCreated} />);
+
+            await user.click(screen.getByRole("button", { name: "Tabular" }));
+            await user.type(screen.getByLabelText("Title"), "Tabular workflow");
+            expect(screen.queryByRole("button", { name: "Next" })).toBeNull();
+            await user.click(screen.getByRole("button", { name: "Create workflow" }));
+            await waitFor(() => expect(createWorkflow).toHaveBeenCalledTimes(1));
+            expect(screen.queryByText("Share Access")).toBeNull();
+            expect(onCreated).toHaveBeenCalled();
+        });
+
+        it("still never creates from a generic form submission", () => {
+            render(<NewWorkflowModal open onClose={vi.fn()} onCreated={vi.fn()} />);
+            fireEvent.click(screen.getByRole("button", { name: "Tabular" }));
+            fireEvent.change(screen.getByLabelText("Title"), {
+                target: { value: "Tabular workflow" },
+            });
+            fireEvent.submit(document.getElementById("workflow-modal-form")!);
+            expect(createWorkflow).not.toHaveBeenCalled();
+        });
     });
 
     it("never creates a new workflow from a generic form submission", () => {

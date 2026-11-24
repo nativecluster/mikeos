@@ -13,6 +13,8 @@ import { preloadSidebarIcons } from "@/app/components/shared/AppSidebarSkeuoIcon
 import { FullScreenLoader } from "@/app/components/shared/FullScreenLoader";
 import { HeaderButtonUI, HeaderButtonsUI } from "@mike/ui";
 import { cn } from "@/app/lib/utils";
+import { isNcApp } from "@/app/lib/ncApp";
+import { NcAppSignedOut } from "@/app/components/auth/NcAppSignedOut";
 
 export default function MikeLayout({
     children,
@@ -20,7 +22,9 @@ export default function MikeLayout({
     children: React.ReactNode;
 }) {
     preloadSidebarIcons();
-    const { isAuthenticated, authLoading } = useAuth();
+    const { isAuthenticated, authLoading, retrySession } = useAuth();
+    // NativeCluster is the only sign-in in its app: there is no login page.
+    const ncApp = isNcApp();
     const [hasMounted, setHasMounted] = useState(false);
     useEffect(() => {
         // An outer auth provider may settle before this streamed boundary
@@ -110,16 +114,18 @@ export default function MikeLayout({
     const sidebarValue = useMemo(() => ({ setSidebarOpen }), [setSidebarOpen]);
 
     useEffect(() => {
-        if (!authLoading && !isAuthenticated) {
+        if (!authLoading && !isAuthenticated && !ncApp) {
             router.push("/login");
         }
-    }, [authLoading, isAuthenticated, router]);
+    }, [authLoading, isAuthenticated, ncApp, router]);
 
     if (!hasMounted || authLoading) {
         return <FullScreenLoader />;
     }
 
-    if (!isAuthenticated) return null;
+    if (!isAuthenticated) {
+        return ncApp ? <NcAppSignedOut onRetry={retrySession} /> : null;
+    }
 
     return (
         <WorkspaceProvider>

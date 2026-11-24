@@ -55,6 +55,7 @@ import {
     SignOutSkeuoIcon,
 } from "@/app/components/shared/AppSidebarSkeuoIcons";
 import { listProjectsPage } from "@/app/lib/mikeApi";
+import { isNcApp } from "@/app/lib/ncApp";
 import { notifyError } from "@/app/lib/userFacingError";
 import { useAssignLatest } from "@/app/hooks/useLatestRef";
 import type { Project } from "@/app/components/shared/types";
@@ -1019,15 +1020,19 @@ export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
                                       Organization
                                   </DropdownItem>
                               ) : null}
-                              <DropdownItem
-                                  onSelect={() => {
-                                      void handleSignOut();
-                                  }}
-                                  className="h-8 gap-2 rounded-md px-2 py-2 text-sm font-medium text-gray-700 hover:text-gray-700 focus:text-gray-700 data-[selected=true]:text-gray-900 data-[selected=true]:hover:text-gray-900 data-[selected=true]:focus:text-gray-900"
-                              >
-                                  <SignOutSkeuoIcon className="h-4 w-4 text-black" />
-                                  Sign out
-                              </DropdownItem>
+                              {/* In the NativeCluster app the person signs
+                                  out of NativeCluster, not of Mike. */}
+                              {!isNcApp() && (
+                                  <DropdownItem
+                                      onSelect={() => {
+                                          void handleSignOut();
+                                      }}
+                                      className="h-8 gap-2 rounded-md px-2 py-2 text-sm font-medium text-gray-700 hover:text-gray-700 focus:text-gray-700 data-[selected=true]:text-gray-900 data-[selected=true]:hover:text-gray-900 data-[selected=true]:focus:text-gray-900"
+                                  >
+                                      <SignOutSkeuoIcon className="h-4 w-4 text-black" />
+                                      Sign out
+                                  </DropdownItem>
+                              )}
                           </DropdownContent>
                         </Dropdown>
                     )}

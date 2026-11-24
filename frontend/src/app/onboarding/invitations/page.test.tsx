@@ -60,6 +60,18 @@ describe("OnboardingInvitationsPage", () => {
         expect(mocks.replace).not.toHaveBeenCalled();
     });
 
+    it("goes on to the model step in the NativeCluster app, which has no invitations", async () => {
+        vi.stubEnv("NEXT_PUBLIC_MIKE_NC_APP", "1");
+        try {
+            render(<OnboardingInvitationsPage />);
+            await waitFor(() => expect(mocks.replace).toHaveBeenCalledWith("/onboarding/models"));
+            expect(screen.queryByRole("heading", { name: "Organization invitations" })).toBeNull();
+            expect(mocks.list).not.toHaveBeenCalled();
+        } finally {
+            vi.unstubAllEnvs();
+        }
+    });
+
     it("lets users continue without accepting an invitation", async () => {
         const user = userEvent.setup();
         render(<OnboardingInvitationsPage />);

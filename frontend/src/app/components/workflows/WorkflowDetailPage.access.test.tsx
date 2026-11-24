@@ -120,6 +120,19 @@ describe("WorkflowDetailPage access mutations", () => {
         });
     }
 
+    it("offers no access button in the NativeCluster app, whose accounts are per computer", async () => {
+        vi.stubEnv("NEXT_PUBLIC_MIKE_NC_APP", "1");
+        try {
+            render(<WorkflowDetailPage id="workflow-1" workflowType="assistant" />);
+            expect(await screen.findByRole("button", { name: "Use" })).toBeInTheDocument();
+            expect(
+                screen.queryByRole("button", { name: "Open workflow access" }),
+            ).toBeNull();
+        } finally {
+            vi.unstubAllEnvs();
+        }
+    });
+
     it("does not report a role change as failed when only the re-read fails", async () => {
         const user = userEvent.setup();
         vi.mocked(listWorkflowShares).mockRejectedValue(

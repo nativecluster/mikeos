@@ -35,6 +35,7 @@ import {
 import { EmptyState } from "@/app/components/ui/empty-state";
 import type { ResourceAccessScope } from "@/app/components/shared/types";
 import type { Playbook, PlaybookImport } from "@/app/lib/mikeApi";
+import { isNcApp } from "@/app/lib/ncApp";
 
 const NAME_COLUMN = "flex min-w-64 flex-1 items-center pl-3 pr-4";
 const CREATOR_COLUMN = "w-36 shrink-0 pr-4";
@@ -172,7 +173,17 @@ export function PlaybookActionItems({
               run: () => onDetails(playbook.id),
             },
             { label: "Run", icon: Play, run: () => onRun(playbook.id) },
-            { label: "People", icon: Users, run: () => onPeople(playbook) },
+            // Accounts are per computer in the NativeCluster app: nobody
+            // to share with.
+            ...(isNcApp()
+              ? []
+              : [
+                  {
+                    label: "People",
+                    icon: Users,
+                    run: () => onPeople(playbook),
+                  },
+                ]),
             {
               label: "Delete",
               icon: Trash2,

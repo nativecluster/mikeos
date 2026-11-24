@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { OnboardingShell } from "@/app/components/auth/OnboardingShell";
+import { onboardingStepLabel, pathBeforeModels } from "@/app/onboarding/steps";
 import { WarningPopup } from "@/app/components/popups/WarningPopup";
 import { MODEL_API_KEY_FIELDS } from "@/app/components/settings/modelProviders";
 import { PersonalProviderKeys } from "@/app/components/settings/PersonalProviderKeys";
@@ -133,7 +134,7 @@ function ModelStep({ userId }: { userId: string }) {
 
     return (
         <OnboardingShell
-            step="Step 4 of 4"
+            step={onboardingStepLabel("models")}
             title="Connect a model"
             description={
                 inferenceOnly
@@ -155,7 +156,7 @@ function ModelStep({ userId }: { userId: string }) {
                     tone="white"
                     size="normal"
                     disabled={submitting}
-                    onClick={() => router.push("/onboarding/invitations")}
+                    onClick={() => router.push(pathBeforeModels())}
                 >
                     Back
                 </PillButtonUI>

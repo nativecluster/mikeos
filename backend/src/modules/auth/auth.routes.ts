@@ -26,6 +26,8 @@ import { createServerSupabase } from "../../lib/supabase";
 import { requireAuth } from "../../middleware/auth";
 import { asyncRoute, routerErrorHandler } from "../../middleware/asyncRoute";
 import { requireTrustedOrigin } from "../../middleware/trustedOrigin";
+import { unavailableInNcApp } from "../../middleware/ncApp";
+import { ncAppMode } from "../../lib/authApp";
 import {
   applyHandoffSession,
   buildCallbackUrl,
@@ -74,6 +76,20 @@ authRouter.use(requireTrustedOrigin);
 authRouter.use((_req, res, next) => {
   res.setHeader("Cache-Control", "private, no-store");
   next();
+});
+
+// In the NativeCluster app NativeCluster is the only sign-in
+// (lib/authApp.ts): the session is the person the launcher names, the
+// sign-in options are none, and signing out is NativeCluster's. Every other
+// route here (passwords, sign-up, OAuth and SSO, the Word handoff, email,
+// MFA) is refused before it can reach GoTrue, which does not run there.
+const NC_APP_AUTH_ROUTES = new Set(["GET /session", "GET /options", "POST /logout"]);
+authRouter.use((req, res, next) => {
+  if (!ncAppMode() || NC_APP_AUTH_ROUTES.has(`${req.method} ${req.path}`)) {
+    next();
+    return;
+  }
+  unavailableInNcApp(req, res, next);
 });
 
 function requestOrigin(req: Request): string {
@@ -424,6 +440,17 @@ authRouter.post("/password-reset", asyncRoute(async (req, res) => {
 
 authRouter.get("/session", requireAuth, asyncRoute(async (_req, res) => {
   setOperation("auth.session");
+  if (res.locals.authSource === "nativecluster") {
+    // The NativeCluster person's account, from requireAuth: no GoTrue call.
+    return res.json({
+      user: {
+        id: res.locals.userId as string,
+        email: res.locals.userEmail as string,
+        pendingEmail: null,
+        createdWithGoogle: false,
+      },
+    });
+  }
   const client = cookieClient(_req, res);
   if (!client) return;
   const { user, error } = await currentUser(client);
@@ -433,6 +460,8 @@ authRouter.get("/session", requireAuth, asyncRoute(async (_req, res) => {
 
 authRouter.post("/logout", asyncRoute(async (req, res) => {
   setOperation("auth.session");
+  // Nothing of Mike's to end: the person signs out of NativeCluster.
+  if (ncAppMode()) return res.status(204).end();
   try {
     const client = createRequestSupabase(req, res);
     await signOut(client, req.body?.scope === "global" ? "global" : "local");

@@ -23,6 +23,7 @@ import { consumeAuthHandoff, issueAuthHandoff } from "../../lib/authHandoff";
 import type { Db } from "../../lib/supabase";
 import { supabaseSessionConfiguration } from "../../lib/runtimeConfig";
 import { ssoConfiguration } from "../../lib/ssoConfig";
+import { ncAppMode } from "../../lib/authApp";
 
 // ---------------------------------------------------------------------------
 // Request payload schemas
@@ -380,6 +381,9 @@ export async function signInOptions(
   db: Db,
   fetchImpl: typeof fetch = fetch,
 ): Promise<SignInOptions> {
+  // NativeCluster is the only sign-in in the NativeCluster app: nothing to
+  // offer, and nothing to ask GoTrue, which does not run there.
+  if (ncAppMode()) return { google: false, sso: false, setupRequired: false, signup: false };
   const [google, setupRequired] = await Promise.all([
     googleSignInEnabled(fetchImpl),
     instanceSetupAvailable(db),

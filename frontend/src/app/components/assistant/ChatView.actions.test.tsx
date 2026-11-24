@@ -592,6 +592,18 @@ describe("ChatView header actions", () => {
         );
     });
 
+    it("offers no Share in the NativeCluster app, whose accounts are per computer", async () => {
+        vi.stubEnv("NEXT_PUBLIC_MIKE_NC_APP", "1");
+        try {
+            renderView();
+            openActions();
+            expect(await screen.findByText("Rename")).toBeInTheDocument();
+            expect(screen.queryByText("Share")).toBeNull();
+        } finally {
+            vi.unstubAllEnvs();
+        }
+    });
+
     it("opens chat access from Share", async () => {
         renderView();
         openActions();

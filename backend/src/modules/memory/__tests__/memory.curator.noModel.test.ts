@@ -123,6 +123,50 @@ function fakeDb() {
 }
 
 describe("memory.consolidate with no available model", () => {
+  it("resolves the actor from the profile, not GoTrue, in the NativeCluster app", async () => {
+    // GoTrue does not run in the app: the curator must never call it.
+    process.env.MIKE_NC_APP = "1";
+    TABLES.user_profiles = [{ user_id: "u1", email: "U1@example.com" }];
+    try {
+      resolveEffectiveChatModel.mockResolvedValue({ ok: false, reason: "no_available_model" });
+      getUserModelSettings.mockResolvedValue({
+        api_keys: {},
+        last_selected_chat_model: null,
+        memory_curator_model: null,
+      });
+      ensureMemoryFile.mockResolvedValue({
+        id: "memory-file",
+        scope: "user",
+        user_id: "u1",
+        project_id: null,
+        enabled: true,
+        epoch: 1,
+        revision: 3,
+        learning_cutoff_at: null,
+      });
+      const { db } = fakeDb();
+      const result = await handleMemoryConsolidation(db as never, {
+        id: "job-1",
+        kind: "memory.consolidate",
+        payload: {
+          stateId: "state-1",
+          generation: 2,
+          conversationGeneration: 5,
+          appEpoch: 1,
+          sourceEpoch: 1,
+          actorUserId: "u1",
+        },
+      } as never);
+      expect(result).toEqual({ skipped: "no_available_model" });
+      expect(db.auth.admin.getUserById).not.toHaveBeenCalled();
+      expect(db.from).toHaveBeenCalledWith("user_profiles");
+    } finally {
+      delete process.env.MIKE_NC_APP;
+      delete TABLES.user_profiles;
+      resolveEffectiveChatModel.mockReset();
+    }
+  });
+
   it("skips without retrying, reporting or marking the conversation processed", async () => {
     resolveEffectiveChatModel.mockResolvedValue({ ok: false, reason: "no_available_model" });
     getUserModelSettings.mockResolvedValue({

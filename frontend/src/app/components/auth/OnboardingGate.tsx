@@ -1,16 +1,22 @@
 "use client";
 
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { FullScreenLoader } from "@/app/components/shared/FullScreenLoader";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useUserProfile } from "@/app/contexts/UserProfileContext";
+import { isNcApp } from "@/app/lib/ncApp";
 
 export function OnboardingGate({ children }: { children: ReactNode }) {
     const pathname = usePathname();
     const router = useRouter();
     const { user } = useAuth();
-    const { profile, loading } = useUserProfile();
+    const { profile, loading, completeOnboarding } = useUserProfile();
+    // The NativeCluster app has no onboarding screens: NativeCluster brought
+    // the person, their name and email, and the details stay editable in
+    // Settings. Their profile is marked onboarded instead (once).
+    const ncApp = isNcApp();
+    const completingRef = useRef(false);
     const isOnboardingRoute = pathname.startsWith("/onboarding");
     // Credential-recovery pages must stay reachable even when onboarding is
     // incomplete: a recovery link logs the user in, and bouncing them to
@@ -29,7 +35,16 @@ export function OnboardingGate({ children }: { children: ReactNode }) {
     const needsOnboarding = profile?.onboardingComplete === false;
 
     useEffect(() => {
-        if (!user || loading || !profile) return;
+        if (!ncApp || !user || loading || !needsOnboarding) return;
+        if (completingRef.current) return;
+        completingRef.current = true;
+        void completeOnboarding().catch(() => {
+            completingRef.current = false;
+        });
+    }, [completeOnboarding, loading, ncApp, needsOnboarding, user]);
+
+    useEffect(() => {
+        if (ncApp || !user || loading || !profile) return;
 
         if (needsOnboarding && !isOnboardingRoute && !isAuthTransitionRoute) {
             router.replace("/onboarding/profile");
@@ -42,13 +57,14 @@ export function OnboardingGate({ children }: { children: ReactNode }) {
         isOnboardingRoute,
         isAuthTransitionRoute,
         loading,
+        ncApp,
         needsOnboarding,
         profile,
         router,
         user,
     ]);
 
-    if (!user) return <>{children}</>;
+    if (!user || ncApp) return <>{children}</>;
     if (loading || !profile) return <FullScreenLoader />;
     if (needsOnboarding && !isOnboardingRoute && !isAuthTransitionRoute) {
         return <FullScreenLoader />;

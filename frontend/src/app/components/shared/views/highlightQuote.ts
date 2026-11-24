@@ -1,3 +1,4 @@
+import { isNcApp } from "@/app/lib/ncApp";
 import { normalizePdfQuoteText } from "./pdfQuoteSearch";
 let pdfjsLib: typeof import("pdfjs-dist") | null = null;
 
@@ -11,8 +12,28 @@ export async function getPdfJs() {
     return pdfjsLib;
 }
 
+/** pdf.js's standard fonts as a CDN serves them, for builds that load from outside. */
 export const STANDARD_FONT_DATA_URL =
     "https://unpkg.com/pdfjs-dist@4.10.38/standard_fonts/";
+
+/**
+ * The same fonts from the app's own origin: public/pdfjs/standard_fonts, a
+ * copy of the installed pdfjs-dist's standard_fonts/ (a test keeps the two
+ * identical).
+ */
+export const VENDORED_STANDARD_FONT_DATA_URL = "/pdfjs/standard_fonts/";
+
+/**
+ * Where pdf.js fetches its standard fonts. The NativeCluster app's pages load
+ * nothing from outside, so it uses the copy served beside them, as an
+ * absolute URL (pdf.js accepts any URL ending in a slash; an absolute one
+ * stays right if pdf.js ever fetches from its worker).
+ */
+export function standardFontDataUrl(): string {
+    if (!isNcApp()) return STANDARD_FONT_DATA_URL;
+    if (typeof window === "undefined") return VENDORED_STANDARD_FONT_DATA_URL;
+    return new URL(VENDORED_STANDARD_FONT_DATA_URL, window.location.href).href;
+}
 
 const HIGHLIGHT_CLASS = "pdf-text-highlight";
 const ORIGINAL_TEXT_ATTR = "data-original-text";

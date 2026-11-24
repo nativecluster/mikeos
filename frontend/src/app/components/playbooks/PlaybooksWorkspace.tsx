@@ -108,6 +108,7 @@ import { TableToolbar } from "@/app/components/shared/TableToolbar";
 import { SelectionActionsMenu } from "@/app/components/shared/SelectionActionsMenu";
 import { AddDocumentsModal } from "@/app/components/modals/AddDocumentsModal";
 import { AccessModal } from "@/app/components/modals/AccessModal";
+import { isNcApp } from "@/app/lib/ncApp";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { userFacingApiError } from "@/app/lib/userFacingError";
 import { settleBulkRequests } from "@/app/lib/bulkRequests";
@@ -1084,12 +1085,20 @@ function PlaybooksWorkspace() {
                       ]
                     : [],
                   [
-                    {
-                      onClick: () => openAccess(selected),
-                      title: "Playbook people",
-                      iconOnly: true,
-                      icon: <Users aria-hidden="true" className="h-4 w-4" />,
-                    },
+                    // Accounts are per computer in the NativeCluster app:
+                    // nobody to share with.
+                    ...(isNcApp()
+                      ? []
+                      : [
+                          {
+                            onClick: () => openAccess(selected),
+                            title: "Playbook people",
+                            iconOnly: true,
+                            icon: (
+                              <Users aria-hidden="true" className="h-4 w-4" />
+                            ),
+                          },
+                        ]),
                     {
                       type: "custom",
                       render: (

@@ -138,6 +138,23 @@ describe("SettingsLayout", () => {
             ).not.toBeNull();
     });
 
+    it("does not list Security in the NativeCluster app, whose passwords and MFA are NativeCluster's", () => {
+        vi.stubEnv("NEXT_PUBLIC_MIKE_NC_APP", "1");
+        try {
+            render(
+                <SettingsLayout>
+                    <div />
+                </SettingsLayout>,
+            );
+            const nav = screen.getByRole("navigation", { name: "Settings" });
+            expect(
+                tabNames(within(nav).getByRole("list", { name: "Personal" })),
+            ).toEqual(["Account", "Personalisation", "Appearance", "My Activity", "Organizations"]);
+        } finally {
+            vi.unstubAllEnvs();
+        }
+    });
+
     it("marks Account current at the root of Settings, under Personal", () => {
         pathname = "/settings";
         render(

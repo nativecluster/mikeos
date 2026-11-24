@@ -8,6 +8,7 @@ import {
     reportedUpstreamMessage,
     type Operation,
 } from "@mike/client";
+import { isNcApp } from "@/app/lib/ncApp";
 
 export interface AuthUser {
     id: string;
@@ -141,6 +142,15 @@ export async function getAuthSession(
         ).user;
     } catch (error) {
         if (error instanceof AuthApiError && error.status === 401) return null;
+        // The NativeCluster app answers "nobody is signed in to NativeCluster"
+        // (lib/ncApp.ts): no session, not a failure.
+        if (
+            isNcApp() &&
+            error instanceof AuthApiError &&
+            error.code === "nc_person_required"
+        ) {
+            return null;
+        }
         throw error;
     }
 }

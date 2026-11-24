@@ -18,6 +18,8 @@
  * are enforced.
  */
 
+import { isNcApp } from "./ncApp";
+
 export type HeaderEntry = { key: string; value: string };
 
 /** 180 days, matching the API's helmet HSTS setting. */
@@ -46,8 +48,14 @@ const ENFORCED_CSP = [
  *   signed URL whose origin depends on the deployment.
  * - blob:/data:: document previews, downloads and the pdf.js worker.
  * Sentry posts to the same-origin /monitoring tunnel, so it needs nothing.
+ *
+ * The NativeCluster app's pages load nothing from outside: pdf.js's fonts
+ * come from its own origin (highlightQuote.ts's standardFontDataUrl), and the
+ * DOCX editor's packaged fonts are bundled assets (EigenpalDocxRenderer.tsx
+ * uses packagedFonts(); only @docx-editor.dev/fonts/google, which no page
+ * imports, points at cdn.jsdelivr.net). So its font-src names no CDN.
  */
-function reportOnlyCsp(production: boolean): string {
+function reportOnlyCsp(production: boolean, ncApp: boolean): string {
     return [
         "default-src 'self'",
         [
@@ -58,7 +66,9 @@ function reportOnlyCsp(production: boolean): string {
         ].join(" "),
         "style-src 'self' 'unsafe-inline'",
         "img-src 'self' data: blob: https:",
-        "font-src 'self' data: blob: https://cdn.jsdelivr.net https://unpkg.com",
+        ncApp
+            ? "font-src 'self' data: blob:"
+            : "font-src 'self' data: blob: https://cdn.jsdelivr.net https://unpkg.com",
         "connect-src 'self' blob: data: https:",
         "media-src 'self' blob: data:",
         "worker-src 'self' blob:",
@@ -68,12 +78,19 @@ function reportOnlyCsp(production: boolean): string {
     ].join("; ");
 }
 
-export function securityHeaders(production: boolean): HeaderEntry[] {
+/**
+ * `ncApp`: built for the NativeCluster app (NEXT_PUBLIC_MIKE_NC_APP=1, read
+ * when next.config.ts computes the headers at build time).
+ */
+export function securityHeaders(
+    production: boolean,
+    ncApp: boolean = isNcApp(),
+): HeaderEntry[] {
     return [
         { key: "Content-Security-Policy", value: ENFORCED_CSP },
         {
             key: "Content-Security-Policy-Report-Only",
-            value: reportOnlyCsp(production),
+            value: reportOnlyCsp(production, ncApp),
         },
         // For browsers that predate frame-ancestors.
         { key: "X-Frame-Options", value: "DENY" },

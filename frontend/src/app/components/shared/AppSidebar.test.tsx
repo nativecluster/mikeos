@@ -117,4 +117,16 @@ describe("AppSidebar failures", () => {
             screen.getByRole("button", { name: "Retry" }),
         ).toBeInTheDocument();
     });
+
+    it("offers no Mike sign-out in the NativeCluster app, whose people sign out of NativeCluster", async () => {
+        vi.stubEnv("NEXT_PUBLIC_MIKE_NC_APP", "1");
+        try {
+            const user = userEvent.setup();
+            renderSidebar();
+            await user.click(screen.getByText("Alice").closest("button")!);
+            expect(screen.queryByRole("menuitem", { name: "Sign out" })).toBeNull();
+        } finally {
+            vi.unstubAllEnvs();
+        }
+    });
 });

@@ -22,7 +22,7 @@ vi.mock("./highlightQuote", () => ({
     }),
     clearHighlights: vi.fn(),
     highlightQuote: vi.fn(),
-    STANDARD_FONT_DATA_URL: "/standard_fonts/",
+    standardFontDataUrl: () => "/standard_fonts/",
 }));
 
 const pdfDocument = {

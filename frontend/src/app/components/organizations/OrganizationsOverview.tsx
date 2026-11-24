@@ -20,6 +20,7 @@ import {
 } from "@/app/lib/mikeApi";
 import { ORG_ROLE_LABELS } from "@/app/lib/permissions";
 import { userFacingApiError } from "@/app/lib/userFacingError";
+import { isNcApp, NC_APP_SHARING_UNAVAILABLE } from "@/app/lib/ncApp";
 import { GlassCardUI, LIQUID_GLASS_SUBTLE_CLASS, PillButtonUI } from "@mike/ui";
 import { DeletedOrganizations } from "./DeletedOrganizations";
 import { CreateOrganizationModal } from "./OrganizationModals";
@@ -228,9 +229,14 @@ export function OrganizationsOverview() {
         )}
       </section>
 
-      {/* Shown only when there is something to answer, or the list of
-          invitations could not be read: an empty inbox needs no section. */}
-      {invitationsError || invitations.length > 0 ? (
+      {/* The NativeCluster app has no invitations to answer (accounts are
+          per computer): one plain line says so where they would be.
+          Elsewhere the section is shown only when there is something to
+          answer, or the list of invitations could not be read: an empty
+          inbox needs no section. */}
+      {isNcApp() ? (
+        <SettingsDescription>{NC_APP_SHARING_UNAVAILABLE}</SettingsDescription>
+      ) : invitationsError || invitations.length > 0 ? (
         <section aria-labelledby="my-invitations-heading">
           <div className="mb-4">
             <SettingsHeading id="my-invitations-heading">

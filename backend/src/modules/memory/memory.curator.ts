@@ -22,6 +22,7 @@ import {
 } from "../../lib/llm/providerErrors";
 import { providerFailureLevel } from "../../lib/llm/providerErrors";
 import { AppError } from "../../lib/appError";
+import { ncAppMode } from "../../lib/authApp";
 import { setOperation } from "../../lib/observability/sentry";
 import { ensureMemoryFile, getMemoryCurrentForFile, MemoryConversationNotQuietError, MemoryDisabledError, MemoryEpochSupersededError, MemoryJobSupersededError, MemoryValidationError, writeMemoryFile, type MemoryFileRow, type MemoryScope, type MemorySurface } from "../../lib/memory/files";
 import { MEMORY_INACTIVITY_MS } from "../../lib/memory/schedule";
@@ -389,6 +390,18 @@ function timestampMicros(value: string): bigint | null {
 }
 
 async function actorEmail(db: Db, userId: string): Promise<string | null> {
+  // GoTrue does not run in the NativeCluster app: the profile carries the
+  // account's email, which the auth.users triggers keep in step.
+  if (ncAppMode()) {
+    const { data, error } = await db
+      .from("user_profiles")
+      .select("email")
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (error) throw new Error("Memory curator could not resolve the actor");
+    const email = (data as { email?: unknown } | null)?.email;
+    return typeof email === "string" && email.trim() ? email.trim().toLowerCase() : null;
+  }
   const { data, error } = await db.auth.admin.getUserById(userId);
   if (error) throw new Error("Memory curator could not resolve the actor");
   return data.user?.email?.trim().toLowerCase() ?? null;

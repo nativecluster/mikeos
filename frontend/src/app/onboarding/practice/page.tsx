@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { OnboardingShell } from "@/app/components/auth/OnboardingShell";
+import { onboardingStepLabel, pathAfterPractice } from "@/app/onboarding/steps";
 import {
     PersonalisationFields,
     personalisationInitialValues,
@@ -53,7 +54,7 @@ function PracticeDetailsForm({
         setError(null);
         const saved = await updatePersonalisation(details);
         if (saved) {
-            router.push("/onboarding/invitations");
+            router.push(pathAfterPractice());
         } else {
             // `updatePersonalisation` already raised the notice with the
             // sentence, Retry and support; an inline line would repeat it.
@@ -86,7 +87,7 @@ function PracticeDetailsForm({
 
     return (
         <OnboardingShell
-            step="Step 2 of 4"
+            step={onboardingStepLabel("practice")}
             title="Your legal practice"
             description="Optionally add your professional setting, primary jurisdiction, and the areas you work in."
         >
@@ -125,7 +126,7 @@ function PracticeDetailsForm({
                         <button
                             type="button"
                             disabled={submitting}
-                            onClick={() => router.push("/onboarding/invitations")}
+                            onClick={() => router.push(pathAfterPractice())}
                             className="text-sm font-medium text-gray-500 transition-colors hover:text-gray-950 disabled:cursor-not-allowed disabled:text-gray-300"
                         >
                             Skip

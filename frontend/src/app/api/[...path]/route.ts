@@ -1,6 +1,7 @@
 import { BACKEND_REPORTING_OWNER } from "@mike/client";
 import { randomUUID } from "node:crypto";
 import { backendOrigin } from "@/app/lib/backendOrigin";
+import { isNcApp } from "@/app/lib/ncApp";
 import { reportError } from "@/app/lib/errorReporting";
 import { diagnosticErrorTags, diagnosticRoute } from "@mike/client";
 import type { NextRequest } from "next/server";
@@ -17,6 +18,23 @@ export const runtime = "nodejs";
 
 type RouteContext = { params: Promise<{ path: string[] }> };
 
+/**
+ * The host and scheme the browser used, which the backend builds callback
+ * URLs from. `request.nextUrl` names this server's own address; inside the
+ * NativeCluster app, where Next runs in the app's own process, that reads
+ * http://localhost:3000. The app build therefore takes the Host header the
+ * request arrived with, over https, the only scheme its origin
+ * (https://127.0.0.1:<port>) has.
+ */
+function browserHostAndProto(request: NextRequest): { host: string; proto: string } {
+    const host = isNcApp() ? request.headers.get("host")?.trim() : "";
+    if (host) return { host, proto: "https" };
+    return {
+        host: request.nextUrl.host,
+        proto: request.nextUrl.protocol.replace(":", ""),
+    };
+}
+
 async function proxy(request: NextRequest, context: RouteContext) {
     const { path } = await context.params;
     const requestPath = `/${path.map(encodeURIComponent).join("/")}`;
@@ -31,11 +49,9 @@ async function proxy(request: NextRequest, context: RouteContext) {
         // Mint correlation here rather than trusting a caller-supplied ID.
         // The backend logs the same ID even if its response never arrives.
         headers.set("x-request-id", requestId);
-        headers.set("x-forwarded-host", request.nextUrl.host);
-        headers.set(
-            "x-forwarded-proto",
-            request.nextUrl.protocol.replace(":", ""),
-        );
+        const browser = browserHostAndProto(request);
+        headers.set("x-forwarded-host", browser.host);
+        headers.set("x-forwarded-proto", browser.proto);
 
         const init: RequestInit & { duplex?: "half" } = {
             method: request.method,

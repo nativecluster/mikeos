@@ -89,6 +89,18 @@ describe("SettingsPage Google email changes", () => {
         };
     });
 
+    it("leaves the email and deleting the account to NativeCluster in its app", () => {
+        vi.stubEnv("NEXT_PUBLIC_MIKE_NC_APP", "1");
+        try {
+            render(<SettingsPage />);
+            expect(screen.getByLabelText("Display Name")).toBeInTheDocument();
+            expect(screen.queryByLabelText("Email address")).not.toBeInTheDocument();
+            expect(screen.queryByRole("button", { name: /Delete account/ })).not.toBeInTheDocument();
+        } finally {
+            vi.unstubAllEnvs();
+        }
+    });
+
     it("keeps onboarding organisation out of account settings and places the photo below the name", () => {
         render(<SettingsPage />);
         expect(screen.queryByLabelText("Organisation")).not.toBeInTheDocument();

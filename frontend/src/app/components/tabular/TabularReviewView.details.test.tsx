@@ -210,6 +210,25 @@ describe("TabularReviewView details gate", () => {
         ).toBeInTheDocument();
     });
 
+    it("offers Access on a review outside a project", async () => {
+        mockDetail({ access_role: "owner" });
+        render(<TRView reviewId="r1" />);
+        await openActionsMenu();
+        expect(screen.getByText("Access")).toBeInTheDocument();
+    });
+
+    it("offers no Access in the NativeCluster app, whose accounts are per computer", async () => {
+        vi.stubEnv("NEXT_PUBLIC_MIKE_NC_APP", "1");
+        try {
+            mockDetail({ access_role: "owner" });
+            render(<TRView reviewId="r1" />);
+            await openActionsMenu();
+            expect(screen.queryByText("Access")).toBeNull();
+        } finally {
+            vi.unstubAllEnvs();
+        }
+    });
+
     it("lets a member open and save details, matching the server's PATCH", async () => {
         // PATCH /tabular-review/:id gates title on content.edit — 403 "Only a
         // review member can change review settings". The menu used to demand

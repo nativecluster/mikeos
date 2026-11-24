@@ -8,6 +8,16 @@ import { noteUpstreamReachable } from "../lib/upstreamOutage";
 import { clearRequestAuthCookies, createRequestSupabase } from "../lib/authSession";
 import { reportSchemaOutOfDateOnce } from "../lib/schemaOutOfDate";
 import { requestOriginIsTrusted } from "../lib/origins";
+import {
+  ncAppMode,
+  ncPersonEmailOf,
+  ncPersonNameOf,
+  ncPersonOf,
+} from "../lib/authApp";
+import {
+  NC_PERSON_REQUIRED_DETAIL,
+  ensureNcPersonAccount,
+} from "../lib/authNcPeople";
 import { devLog, isDev } from "../lib/log";
 import { AppError } from "../lib/appError";
 import {
@@ -171,11 +181,53 @@ function getAdminClient(res: Response) {
   }
 }
 
+/**
+ * The NativeCluster app (lib/authApp.ts): NativeCluster is the only sign-in.
+ * The person the launcher names is the caller, as their Mike account
+ * (lib/authNcPeople.ts), made on their first request. No token, no cookie,
+ * no GoTrue call, and no Mike MFA: NativeCluster owns people.
+ */
+async function requireNcPerson(
+  req: Request<ParamsFlatDictionary>,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  const person = ncPersonOf(req);
+  if (!person) {
+    res.status(403).json({ code: "nc_person_required", detail: NC_PERSON_REQUIRED_DETAIL });
+    return;
+  }
+  const admin = getAdminClient(res);
+  if (!admin) return;
+  const result = await ensureNcPersonAccount(admin, {
+    id: person,
+    email: ncPersonEmailOf(req),
+    name: ncPersonNameOf(req),
+  });
+  if (!result.ok) {
+    sendInternalError(
+      res,
+      new AppError("db.query_failed", "NativeCluster person account lookup failed", {
+        cause: result.error,
+      }),
+    );
+    return;
+  }
+  res.locals.userId = result.account.userId;
+  // NativeCluster vouches for the email it gives (or the account has the
+  // <person>@people.invalid placeholder, which nothing is shared with).
+  res.locals.userEmail = result.account.email;
+  res.locals.authSource = "nativecluster";
+  setCurrentUser(result.account.userId);
+  next();
+}
+
 export async function requireAuth(
   req: Request<ParamsFlatDictionary>,
   res: Response,
   next: NextFunction,
 ): Promise<void> {
+  if (ncAppMode()) return requireNcPerson(req, res, next);
   const auth = req.headers.authorization ?? "";
   const admin = getAdminClient(res);
   if (!admin) return;
@@ -333,6 +385,11 @@ export async function requireMfaIfEnrolled(
   res: Response,
   next: NextFunction,
 ): Promise<void> {
+  // NativeCluster signs people in to the app; Mike has no MFA of its own there.
+  if (ncAppMode() && res.locals.authSource === "nativecluster") {
+    next();
+    return;
+  }
   const token = typeof res.locals.token === "string" ? res.locals.token : "";
   if (!token) {
     devLog("[auth/mfa] missing auth session", {

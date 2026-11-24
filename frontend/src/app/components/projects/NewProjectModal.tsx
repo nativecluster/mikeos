@@ -31,6 +31,7 @@ import {
     type PendingDirectGrant,
     type PendingOrgOverride,
 } from "../modals/CreateAccessStep";
+import { isNcApp } from "@/app/lib/ncApp";
 import { AccessVisibilityField } from "../modals/AccessVisibilityField";
 import { settleBulkRequests } from "@/app/lib/bulkRequests";
 
@@ -52,6 +53,9 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
     const [step, setStep] = useState<"details" | "access" | "documents">(
         "details",
     );
+    // The NativeCluster app has no one to share with (accounts are per
+    // computer), so it skips the access step.
+    const skipAccessStep = isNcApp();
     const [name, setName] = useState("");
     const [cmNumber, setCmNumber] = useState("");
     const [practice, setPractice] = useState("");
@@ -172,7 +176,7 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
         e.preventDefault();
         if (!name.trim()) return;
         if (step === "details") {
-            setStep("access");
+            setStep(skipAccessStep ? "documents" : "access");
             return;
         }
         if (step === "access") {
@@ -507,7 +511,8 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
                 step === "documents"
                     ? {
                           label: "Back",
-                          onClick: () => setStep("access"),
+                          onClick: () =>
+                              setStep(skipAccessStep ? "details" : "access"),
                           // Back stays open once the project exists: a retry
                           // persists a changed memory choice before anything
                           // else, so the details step still describes
@@ -534,7 +539,8 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
                     ? {
                           label: "Next",
                           type: "button",
-                          onClick: () => setStep("access"),
+                          onClick: () =>
+                              setStep(skipAccessStep ? "documents" : "access"),
                           disabled: !name.trim() || loading,
                       }
                     : step === "access"
