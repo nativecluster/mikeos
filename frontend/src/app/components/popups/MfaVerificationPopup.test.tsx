@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { MfaVerificationPopup } from "./MfaVerificationPopup";
+import { MfaVerificationPopup, needsMfaVerification } from "./MfaVerificationPopup";
 
 const { challengeAndVerifyMfa, getMfaAssurance, listMfaFactors } = vi.hoisted(
     () => ({
@@ -34,6 +34,19 @@ async function enterCode(user: ReturnType<typeof userEvent.setup>) {
     await user.paste("123456");
     await user.click(screen.getByRole("button", { name: "Verify" }));
 }
+
+describe("needsMfaVerification", () => {
+    it("asks nothing in the NativeCluster app, which has no Mike MFA", async () => {
+        vi.stubEnv("NEXT_PUBLIC_MIKE_NC_APP", "1");
+        try {
+            getMfaAssurance.mockReset();
+            await expect(needsMfaVerification()).resolves.toBe(false);
+            expect(getMfaAssurance).not.toHaveBeenCalled();
+        } finally {
+            vi.unstubAllEnvs();
+        }
+    });
+});
 
 describe("MfaVerificationPopup", () => {
     beforeEach(() => {

@@ -14,6 +14,7 @@ import {
     listMfaFactors,
 } from "@/app/lib/authApi";
 import { Modal } from "../modals/Modal";
+import { isNcApp } from "@/app/lib/ncApp";
 
 type MfaFactor = {
     id: string;
@@ -27,6 +28,9 @@ const devLog = (...args: Parameters<typeof console.log>) => {
 };
 
 export async function needsMfaVerification() {
+    // NativeCluster signs people in to its app: Mike has no MFA of its own
+    // there, and its MFA routes are refused (lib/ncApp.ts).
+    if (isNcApp()) return false;
     const data = await getMfaAssurance();
     return data.nextLevel === "aal2" && data.currentLevel !== "aal2";
 }
