@@ -38,6 +38,7 @@ import {
   runWebToolCall,
   webToolErrorMessage,
   webToolsFor,
+  withPagedWebReads,
   type WebTurnState,
 } from "./tools/webSearchTools";
 import {
@@ -63,11 +64,13 @@ import {
   TOOL_ERROR_MESSAGE,
 } from "./types";
 import {
+  PAGED_READS_SYSTEM_PROMPT,
   PLAYBOOK_TOOLS,
   TOOLS,
   WORKFLOW_TOOLS,
   isDocumentMutatingTool,
   toolName,
+  withPagedDocumentReads,
   withoutDocumentMutatingTools,
 } from "./tools/toolSchemas";
 import { limitCitationPayload } from "./citations";
@@ -104,6 +107,11 @@ import {
   tabularCitations,
 } from "./citeSources";
 import { buildMemoryTurn } from "../../../lib/memory/prompt";
+import { contextWindowFor } from "../../../lib/llm/contextWindow";
+import {
+  turnContextBudget,
+  type TurnContextBudget,
+} from "../../../lib/llm/contextBudget";
 
 export type { AssistantEvent } from "@mike/contracts";
 import type { AssistantEvent, AssistantErrorCode } from "@mike/contracts";
@@ -312,6 +320,12 @@ function throwIfAborted(signal?: AbortSignal) {
   err.name = "AbortError";
   throw err;
 }
+
+/** Tools whose results the dispatcher spends from the turn's budget itself. */
+const SELF_SPENDING_TOOLS: ReadonlySet<string> = new Set([
+  "read_document",
+  "fetch_documents",
+]);
 
 export async function runLLMStream(params: {
   apiMessages: unknown[];
@@ -870,6 +884,8 @@ export async function runLLMStream(params: {
     }
   };
 
+  // Set once the model is known; null when its context window is not.
+  let turnBudget: TurnContextBudget | null = null;
   try {
     throwIfAborted(signal);
     // Single request-time choke point for every runLLMStream caller (chat,
@@ -902,14 +918,31 @@ export async function runLLMStream(params: {
       orgId,
     );
     answerModel = selectedModel;
+    // A model whose context window is known reads long documents and pages
+    // in parts sized to what this turn has left (documentPages.ts). With no
+    // window known the tools, prompt and reads are exactly as before.
+    const contextWindow = contextWindowFor(selectedModel);
+    const requestTools =
+      contextWindow === undefined
+        ? turnTools
+        : withPagedWebReads(withPagedDocumentReads(turnTools));
+    const requestSystemPrompt =
+      contextWindow === undefined
+        ? systemPrompt
+        : `${systemPrompt}\n\n${PAGED_READS_SYSTEM_PROMPT}`;
+    turnBudget = turnContextBudget(contextWindow, {
+      systemPrompt: requestSystemPrompt,
+      tools: requestTools,
+      messages: chatMessages,
+    });
     const delegateContext = subagentRuns && delegateContextFor(subagentRuns, selectedModel);
     const providerSearches =
       webSearch === "provider" ? providerWebSearch.reserve() : 0;
     await streamChatWithTools({
       model: selectedModel,
-      systemPrompt,
+      systemPrompt: requestSystemPrompt,
       messages: chatMessages,
-      tools: turnTools as OpenAIToolSchema[],
+      tools: requestTools as OpenAIToolSchema[],
       // Keep in step with DEFAULT_MAX_ITERATIONS in llm/aiSdk.ts. Deliberately
       // a literal, not an import: tests mock the "../llm" barrel, and reaching
       // past it into llm/aiSdk loads the real SDK module into suites that only
@@ -938,6 +971,7 @@ export async function runLLMStream(params: {
         },
         onContentDelta: (delta) => {
           iterText += delta;
+          turnBudget?.spendText(delta);
           streamVisibleContent(delta);
         },
         onStopNotice: (notice) => {
@@ -949,6 +983,7 @@ export async function runLLMStream(params: {
         },
         onReasoningDelta: (delta) => {
           iterReasoning += delta;
+          turnBudget?.spendText(delta);
           write(
             `data: ${JSON.stringify({ type: "reasoning_delta", text: delta })}\n\n`,
           );
@@ -965,6 +1000,7 @@ export async function runLLMStream(params: {
         // until the tool's first event arrives.
         onToolCallStart: (call) => {
           flushText();
+          turnBudget?.spendText(JSON.stringify(call.input ?? {}));
           subagentRun?.onToolStart(call.name);
           write(
             `data: ${JSON.stringify({
@@ -1037,6 +1073,10 @@ export async function runLLMStream(params: {
             ? delegateCalls.map((call) => startDelegation(call, delegateContext))
             : [],
         );
+        // Page reads in this step share half of what the turn has left.
+        const webPageTokens = turnBudget?.pageTokens(
+          webCalls.filter((call) => call.name === WEB_TOOL_NAMES.read).length,
+        );
         const webResults = await Promise.all(
           webCalls.map((call) =>
             runWebToolCall(call, {
@@ -1045,6 +1085,7 @@ export async function runLLMStream(params: {
               nonce,
               signal,
               write,
+              ...(webPageTokens === undefined ? {} : { pageTokens: webPageTokens }),
             }),
           ),
         );
@@ -1109,6 +1150,9 @@ export async function runLLMStream(params: {
                 documentsScoped: subagentRun?.documentsScoped,
                 signal,
                 results: batch,
+                // A script's own reads are not shown to the model, so they
+                // are neither paged nor counted; what the script returns is.
+                ...(turnBudget && !byScript ? { readBudget: turnBudget } : {}),
               },
             );
           } catch (error) {
@@ -1215,6 +1259,20 @@ export async function runLLMStream(params: {
               error: `Tool '${c.name}' is not available.`,
             }),
         }));
+        // Every result stays in the conversation for the rest of the turn.
+        // The dispatcher's document reads spent theirs as they returned.
+        if (turnBudget) {
+          const spentByReads = new Set(
+            serverCalls
+              .filter((c) => SELF_SPENDING_TOOLS.has(c.name))
+              .map((c) => c.id),
+          );
+          for (const result of results) {
+            if (!spentByReads.has(result.tool_use_id)) {
+              turnBudget.spendText(result.content);
+            }
+          }
+        }
         // Recorded before a pause too, so a continued subagent knows what
         // already ran beside the actions awaiting approval.
         subagentRun?.onToolBatch(

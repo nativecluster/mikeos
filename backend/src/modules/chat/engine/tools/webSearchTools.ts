@@ -14,6 +14,7 @@ import {
     type WebSearchResult,
 } from "../../../../lib/webSearch";
 import { spotlight } from "../contextBuilders";
+import { endWithinTokens } from "../../../../lib/llm/contextBudget";
 
 type WebLimits = { searches: number; reads: number };
 
@@ -105,6 +106,26 @@ const READ_TOOL = {
         },
     },
 };
+
+/**
+ * read_webpage for a model whose context window is known: a page comes back in
+ * parts sized to what the turn has room for (WebToolContext.pageTokens).
+ */
+const PAGED_READ_TOOL = {
+    ...READ_TOOL,
+    function: {
+        ...READ_TOOL.function,
+        description:
+            "Read a web page or online PDF and return its main text, as much at a time as this model's context window has room for. A longer page reports next_offset: call again with that offset to keep reading, as far as you need. The URL must come from web search results this turn, a link on a page already read, or the user's latest message.",
+    },
+};
+
+/** The tool list with read_webpage reading parts sized to the model's window. */
+export function withPagedWebReads<T>(tools: T[]): T[] {
+    return tools.map((tool) =>
+        tool === (READ_TOOL as unknown) ? (PAGED_READ_TOOL as T) : tool,
+    );
+}
 
 /**
  * Mike's web tools for a turn. With the provider's own search, only the page
@@ -242,6 +263,11 @@ type WebToolContext = {
     nonce?: string;
     signal?: AbortSignal;
     write: (chunk: string) => void;
+    /**
+     * Tokens a page read may return, when the model's window is known, in
+     * place of READ_CHUNK_CHARS; 0 when the turn has no room left.
+     */
+    pageTokens?: number;
 };
 
 const fence = (text: string, nonce?: string) =>
@@ -393,7 +419,15 @@ async function runRead(
             `The offset must be between 0 and ${page.text.length - 1}, the page's last character.`,
         );
     }
-    const end = Math.min(offset + READ_CHUNK_CHARS, page.text.length);
+    if (ctx.pageTokens === 0) {
+        return failed(
+            "This model's context window has no room left in this response for more page text. Answer from what you have read.",
+        );
+    }
+    const end =
+        ctx.pageTokens === undefined
+            ? Math.min(offset + READ_CHUNK_CHARS, page.text.length)
+            : endWithinTokens(page.text, offset, ctx.pageTokens);
     const body = [
         ...(page.title && offset === 0 ? [`Title: ${page.title}`] : []),
         page.text.slice(offset, end),

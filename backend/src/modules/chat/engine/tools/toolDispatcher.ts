@@ -118,6 +118,16 @@ import {
 } from "./courtlistenerTurnState";
 import type { Db } from "../../../../lib/supabase";
 import { renderTableCells } from "./tableCells";
+import {
+  contextFullResult,
+  documentPage,
+  partFooting,
+  partHeading,
+  partReadKey,
+  pastEndResult,
+  readOffset,
+} from "./documentPages";
+import type { TurnContextBudget } from "../../../../lib/llm/contextBudget";
 import { log } from "../../../../lib/log";
 
 /**
@@ -391,6 +401,12 @@ export async function runToolCalls(
     orgId?: string | null;
     /** The conversation's model, used by run_playbook for its review. */
     model?: string;
+    /**
+     * The turn's context budget, when the model's window is known: then
+     * read_document and fetch_documents return what fits, a part at a time,
+     * and spend what they return. Without it they return whole texts.
+     */
+    readBudget?: TurnContextBudget;
     /**
      * Shared by every runToolCalls of one answer, its subagents' included, so
      * two writes to one document never start from the same version.
@@ -726,22 +742,35 @@ export async function runToolCalls(
     if (tc.function.name === "read_document") {
       const rawDocId = args.doc_id as string;
       const docId = resolveDocLabel(rawDocId, docStore, docIndex) ?? rawDocId;
+      // A model with a known window reads in parts, each with a read-once
+      // key of its own; without one the whole text comes back, once.
+      const readBudget = options.readBudget;
+      const offset = readBudget ? readOffset(args.offset) : 0;
       const readIdentity = await getTurnReadIdentity({
         docLabel: docId,
         docStore,
         docIndex,
         db,
       });
-      if (readIdentity && turnReadState?.has(readIdentity.key)) {
+      const readKey =
+        readIdentity && (readBudget ? partReadKey(readIdentity.key, offset) : readIdentity.key);
+      const pushResult = (content: string) => {
+        toolResults.push({ role: "tool", tool_call_id: tc.id, content });
+        readBudget?.spendText(content);
+      };
+      if (readIdentity && readKey && turnReadState?.has(readKey)) {
         const promptFilename = spotlightFilename(readIdentity.filename, nonce);
         const sourceNotice = sourceMaterialNotice(
           docStore.get(docId)?.source_kind,
         );
-        toolResults.push({
-          role: "tool",
-          tool_call_id: tc.id,
-          content: `Document filename: ${promptFilename}${sourceNotice ? `\n${sourceNotice}` : ""}\n\n${duplicateReadDocumentResult(readIdentity)}`,
-        });
+        pushResult(
+          `Document filename: ${promptFilename}${sourceNotice ? `\n${sourceNotice}` : ""}\n\n${duplicateReadDocumentResult(readIdentity, readBudget ? { offset } : undefined)}`,
+        );
+        continue;
+      }
+      const pageTokens = readBudget?.pageTokens() ?? 0;
+      if (readBudget && pageTokens === 0) {
+        pushResult(contextFullResult(docId));
         continue;
       }
       const content = await readDocumentContent(
@@ -752,10 +781,21 @@ export async function runToolCalls(
         db,
         { readIdentity },
       );
+      const page = readBudget
+        ? documentPage(content, offset, pageTokens)
+        : ({ kind: "whole", text: content } as const);
+      if (page.kind === "past_end") {
+        pushResult(pastEndResult(docId, page.total));
+        continue;
+      }
+      if (page.kind === "full") {
+        pushResult(contextFullResult(docId));
+        continue;
+      }
       const filename = docStore.get(docId)?.filename;
       const documentId = docIndex?.[docId]?.document_id;
-      if (readIdentity && turnReadState) {
-        turnReadState.set(readIdentity.key, readIdentity);
+      if (readIdentity && readKey && turnReadState) {
+        turnReadState.set(readKey, readIdentity);
       }
       if (filename)
         docsRead.push({
@@ -766,18 +806,21 @@ export async function runToolCalls(
         });
       // Wrap document content in the spotlight fence: the document body
       // is entirely user-controlled and may contain injected instructions.
-      const fencedContent = nonce ? spotlight(content, nonce) : content;
+      // A part's position and where it continues are ours, outside it.
+      const fencedContent = nonce ? spotlight(page.text, nonce) : page.text;
+      const body =
+        page.kind === "part"
+          ? `${partHeading(page)}\n\n${fencedContent}\n\n${partFooting(docId, page)}`
+          : fencedContent;
       const promptFilename = spotlightFilename(filename ?? "", nonce);
       const sourceNotice = sourceMaterialNotice(
         docStore.get(docId)?.source_kind,
       );
-      toolResults.push({
-        role: "tool",
-        tool_call_id: tc.id,
-        content: filename
-          ? `${citationReminder(docId, filename, promptFilename)}${sourceNotice ? `\n${sourceNotice}` : ""}\n\n${fencedContent}`
-          : fencedContent,
-      });
+      pushResult(
+        filename
+          ? `${citationReminder(docId, filename, promptFilename)}${sourceNotice ? `\n${sourceNotice}` : ""}\n\n${body}`
+          : body,
+      );
     } else if (
       tc.function.name === "find_documents" &&
       options.documentsScoped &&
@@ -967,7 +1010,11 @@ export async function runToolCalls(
       const labelFor = createDocLabelResolver(docStore, docIndex);
       const docIds = rawDocIds.map((id) => labelFor(id) ?? id);
       const parts: string[] = [];
-      for (const docId of docIds) {
+      // With a known window each document gets an even share of what is
+      // left, and one longer than its share comes back as its first part.
+      const readBudget = options.readBudget;
+      const spent = () => readBudget?.spendText(parts.at(-1) ?? "");
+      for (const [index, docId] of docIds.entries()) {
         if (stopped()) break;
         const readIdentity = await getTurnReadIdentity({
           docLabel: docId,
@@ -975,7 +1022,9 @@ export async function runToolCalls(
           docIndex,
           db,
         });
-        if (readIdentity && turnReadState?.has(readIdentity.key)) {
+        const readKey =
+          readIdentity && (readBudget ? partReadKey(readIdentity.key, 0) : readIdentity.key);
+        if (readIdentity && readKey && turnReadState?.has(readKey)) {
           const filename = docStore.get(docId)?.filename ?? docId;
           const promptFilename = spotlightFilename(filename, nonce);
           const sourceNotice = sourceMaterialNotice(
@@ -984,8 +1033,16 @@ export async function runToolCalls(
           parts.push(
             `--- ${docId} ---\nDocument filename: ${promptFilename}${sourceNotice ? `\n${sourceNotice}` : ""}\n\n${duplicateReadDocumentResult(
               readIdentity,
+              readBudget ? { offset: 0 } : undefined,
             )}`,
           );
+          spent();
+          continue;
+        }
+        const pageTokens = readBudget?.pageTokens(docIds.length - index) ?? 0;
+        if (readBudget && pageTokens === 0) {
+          parts.push(`--- ${docId} ---\n${contextFullResult(docId)}`);
+          spent();
           continue;
         }
         const content = await readDocumentContent(
@@ -996,19 +1053,32 @@ export async function runToolCalls(
           db,
           { readIdentity },
         );
+        const page = readBudget
+          ? documentPage(content, 0, pageTokens)
+          : ({ kind: "whole", text: content } as const);
+        if (page.kind === "full" || page.kind === "past_end") {
+          parts.push(`--- ${docId} ---\n${contextFullResult(docId)}`);
+          spent();
+          continue;
+        }
         const filename = docStore.get(docId)?.filename ?? docId;
-        if (readIdentity && turnReadState) {
-          turnReadState.set(readIdentity.key, readIdentity);
+        if (readIdentity && readKey && turnReadState) {
+          turnReadState.set(readKey, readIdentity);
         }
         // Document body is user-controlled; spotlight it.
-        const fencedContent = nonce ? spotlight(content, nonce) : content;
+        const fencedContent = nonce ? spotlight(page.text, nonce) : page.text;
+        const body =
+          page.kind === "part"
+            ? `${partHeading(page)}\n\n${fencedContent}\n\n${partFooting(docId, page)}`
+            : fencedContent;
         const promptFilename = spotlightFilename(filename, nonce);
         const sourceNotice = sourceMaterialNotice(
           docStore.get(docId)?.source_kind,
         );
         parts.push(
-          `--- ${docId} ---\n${citationReminder(docId, filename, promptFilename)}${sourceNotice ? `\n${sourceNotice}` : ""}\n\n${fencedContent}`,
+          `--- ${docId} ---\n${citationReminder(docId, filename, promptFilename)}${sourceNotice ? `\n${sourceNotice}` : ""}\n\n${body}`,
         );
+        spent();
         if (docStore.get(docId)) {
           const documentId = docIndex?.[docId]?.document_id;
           docsRead.push({
