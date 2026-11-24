@@ -1,0 +1,45 @@
+{
+  "format": "nc-app.v1",
+  "id": "mike",
+  "name": "Mike",
+  "version": "2.1.0-nc.1",
+  "min_host": "0.4.23",
+  "program": "mike",
+  "icon": "assets/icon.png",
+  "tasks": [
+    { "id": "assistant", "name": "the assistant: chats, drafting and research", "ability": "tools" },
+    { "id": "tabular", "name": "filling tabular reviews" },
+    { "id": "playbook", "name": "reviewing documents against playbooks", "ability": "tools" },
+    { "id": "titles", "name": "naming chats" },
+    { "id": "memory", "name": "keeping the assistant's memory" }
+  ],
+  "permissions": [
+    { "id": "models.use", "tasks": ["assistant", "tabular", "playbook", "titles", "memory"] },
+    { "id": "storage.cluster", "kinds": ["documents", "work"] },
+    { "id": "people.read" },
+    { "id": "compute.background", "triggers": ["upkeep"] },
+    {
+      "id": "net.courtlistener",
+      "hosts": ["www.courtlistener.com", "storage.courtlistener.com"],
+      "what": "your case-law searches, and requests for the cases you open, with your own CourtListener key when you add one"
+    },
+    {
+      "id": "net.websearch",
+      "hosts": ["api.search.brave.com", "api.tavily.com"],
+      "what": "the words of your web searches, with your own Brave or Tavily key, and requests for the web pages the assistant reads from the results"
+    },
+    {
+      "id": "net.mcp",
+      "hosts": ["mcp.slack.com", "slack.com", "mcp.notion.com", "mcp.linear.app", "mcp.airtable.com", "mcp.lawve.ai", "legaldatahunter.com"],
+      "what": "requests to the MCP connectors you add, these or any server you name, and their sign-in"
+    }
+  ],
+  "triggers": [
+    { "id": "upkeep", "kind": "time", "name": "tidying up Mike's old exports and stalled work" }
+  ],
+  "storage": [
+    { "kind": "documents", "label": "your documents and their text", "place": "cluster" },
+    { "kind": "work", "label": "your projects, chats, reviews, playbooks and the assistant's memory", "place": "cluster" }
+  ],
+  "review": null
+}
