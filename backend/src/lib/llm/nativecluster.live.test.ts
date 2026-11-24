@@ -84,5 +84,7 @@ describe.skipIf(!live)("NativeCluster, live", () => {
     );
     expect(toolCalls.map((call) => call.name)).toEqual(["get_notice_period"]);
     expect(result.fullText).toMatch(/30/);
+    // The answer arrived as streamed deltas.
+    expect(deltas.join("")).toBe(result.fullText);
   });
 });

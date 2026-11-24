@@ -6,6 +6,8 @@
   registration, Ollama, and first-run setup
 - [Manual and production deployment](deployment.md) — managed infrastructure,
   environment variables, database upgrades, and deployment safety
+- [NativeCluster](nativecluster.md) — models on a group's own Macs, and
+  running every model call there
 - [Troubleshooting](troubleshooting.md) — common local and production problems
 - [Safe local testing](safe-local-testing.md) — disposable resources, synthetic
   documents, and secret handling
