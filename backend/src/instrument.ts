@@ -14,10 +14,16 @@ import path from "node:path";
 import { isMainThread } from "node:worker_threads";
 import { initSentry, type SentryRole } from "./lib/observability/sentry";
 import { installErrorLogRedaction } from "./lib/log";
+import { installSupabaseSocketFetch } from "./lib/nc/supabaseSockets";
 
 // Before anything can log: provider errors carry the prompt and the
 // provider's response, and stdout goes to the host's log store.
 installErrorLogRedaction();
+
+// Inside NativeCluster's sandbox (MIKE_REST_SOCKET / MIKE_AUTH_SOCKET), every
+// Supabase client of this process or thread reaches PostgREST and GoTrue over
+// their unix sockets. A no-op otherwise.
+installSupabaseSocketFetch();
 
 function detectRole(): SentryRole {
   const override = process.env.SENTRY_ROLE;
