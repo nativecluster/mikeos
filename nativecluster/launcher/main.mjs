@@ -204,9 +204,12 @@ async function route(req, res, ticket, r) {
       return send(res, 200, { jobs: [] });
     }
     case "api": {
+      // While the stack starts, a request waits for it, as the host holds a
+      // request until the app answers its health check (two minutes at most).
+      if (!stackReady() && stack?.state.phase === "starting") await waitReady(120000);
       if (!stackReady()) {
         const failed = stack?.state.phase === "failed";
-        return send(res, 503, { code: failed ? "app_failed" : "starting", detail: failed ? "Mike could not start. Quit Mike and open it again." : "Mike is starting. Try again in a moment." }, "application/json", failed ? {} : { "retry-after": "2" });
+        return send(res, 503, { code: failed ? "app_failed" : "starting", detail: failed ? "Mike could not start. Quit Mike and open it again." : "Mike is still starting. Try again in a moment." }, "application/json", failed ? {} : { "retry-after": "2" });
       }
       const headers = backendHeaders(req.headers, ticket, internalSecret, { peopleRead });
       return proxyRequest(req, res, { socketPath: stack.paths.apiSocket, path: r.backendPath, headers, onError: (e) => log.warn(`api request failed: ${e.code ?? e.message}`) });
