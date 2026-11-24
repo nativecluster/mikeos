@@ -11,12 +11,19 @@ import type { NcConnectorPlane } from "@/app/lib/ncApp";
  */
 export function useConnectorsOff(): {
     off: (plane: NcConnectorPlane) => boolean;
+    /**
+     * The MCP providers whose connectors cannot link here (Mike's app: no
+     * dynamic client registration and no client configured), whose presets
+     * are not offered.
+     */
+    mcpSetupRequired: readonly string[];
     loading: boolean;
 } {
     const context = useOptionalUserProfile();
     const planes = context?.profile?.connectorsOff ?? [];
     return {
         off: (plane) => planes.includes(plane),
+        mcpSetupRequired: context?.profile?.mcpSetupRequired ?? [],
         loading: !!context && !context.profile && context.loading,
     };
 }

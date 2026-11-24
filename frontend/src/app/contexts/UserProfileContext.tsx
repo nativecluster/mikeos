@@ -86,6 +86,11 @@ interface UserProfile extends RouterProfileLists {
     courtlistenerBulkData: boolean;
     /** The connectors NativeCluster turned off for everyone (lib/ncApp.ts). */
     connectorsOff: NcConnectorPlane[];
+    /**
+     * Mike's NativeCluster app: the MCP providers whose connectors cannot
+     * link here (no dynamic client registration, no client configured).
+     */
+    mcpSetupRequired: string[];
     quickActionsVisible: boolean;
     /** Whether responses and subagents show the model, effort and tokens they used. */
     responseDetailsVisible: boolean;
@@ -214,6 +219,9 @@ function toProfile(data: ApiUserProfile): UserProfile {
         mfaOnLogin: profile.mfaOnLogin === true,
         courtlistenerBulkData: profile.courtlistenerBulkData === true,
         connectorsOff: ncConnectorPlanes(profile.connectorsOff),
+        mcpSetupRequired: Array.isArray(profile.mcpSetupRequired)
+            ? profile.mcpSetupRequired.filter((id): id is string => typeof id === "string")
+            : [],
         responseDetailsVisible: profile.responseDetailsVisible === true,
         projectMemoryDefault: profile.projectMemoryDefault !== false,
         ...routerProfileLists(profile),
@@ -335,6 +343,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                 mfaOnLogin: false,
                 courtlistenerBulkData: false,
                 connectorsOff: [],
+                mcpSetupRequired: [],
                 quickActionsVisible: true,
                 responseDetailsVisible: false,
                 ...routerProfileLists({}),

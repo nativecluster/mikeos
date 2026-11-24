@@ -842,6 +842,12 @@ export interface UserProfile extends RouterProfileLists {
      * everyone (each net plane's off switch at 0). Absent elsewhere.
      */
     connectorsOff?: string[];
+    /**
+     * Mike's NativeCluster app: the MCP providers whose connectors cannot
+     * link here (no dynamic client registration, no client configured).
+     * Empty elsewhere.
+     */
+    mcpSetupRequired?: string[];
     quickActionsVisible: boolean;
     /** Whether responses and subagents show the model, effort and tokens they used. */
     responseDetailsVisible?: boolean;

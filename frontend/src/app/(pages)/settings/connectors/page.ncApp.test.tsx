@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ConnectorsPage from "./page";
 import {
     type McpConnectorSummary,
+    MikeApiError,
     createMcpConnector,
     deleteMcpConnector,
     getGoogleDriveStatus,
@@ -80,6 +81,7 @@ vi.mock("@/app/contexts/WorkspaceContext", async (importOriginal) => ({
 
 beforeEach(() => {
     offPlanes.planes = [];
+    offPlanes.setupRequired = [];
     workspaceState.workspaceId = "personal";
     workspaceState.activeOrganization = null;
     workspaceState.organizations = [];
@@ -113,11 +115,13 @@ vi.mock("@/app/components/settings/CourtListenerConnector", () => ({
     },
 }));
 
-// The connectors NativeCluster turned off for everyone, as the profile says.
-const offPlanes = vi.hoisted(() => ({ planes: [] as string[] }));
+// The connectors NativeCluster turned off for everyone, and the MCP
+// providers that cannot link here, as the profile says.
+const offPlanes = vi.hoisted(() => ({ planes: [] as string[], setupRequired: [] as string[] }));
 vi.mock("@/app/hooks/useConnectorsOff", () => ({
     useConnectorsOff: () => ({
         off: (plane: string) => offPlanes.planes.includes(plane),
+        mcpSetupRequired: offPlanes.setupRequired,
         loading: false,
     }),
 }));
@@ -262,6 +266,131 @@ describe("ConnectorsPage in the NativeCluster app", () => {
             await flushMicrotasks();
         });
         expect(deleteMcpConnector).toHaveBeenCalledWith("connector-1");
+    });
+});
+
+describe("ConnectorsPage's buttons in the NativeCluster app", () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+        vi.useFakeTimers({ shouldAdvanceTime: true });
+        vi.stubEnv("NEXT_PUBLIC_MIKE_NC_APP", "1");
+        // As Mike's package ships: no Slack or Google client, so the
+        // profile names both.
+        offPlanes.setupRequired = ["google", "slack"];
+        vi.mocked(needsMfaVerification).mockResolvedValue(false);
+        vi.mocked(listMcpConnectors).mockResolvedValue([]);
+        vi.mocked(deleteMcpConnector).mockResolvedValue(undefined);
+    });
+    afterEach(() => {
+        cleanup();
+        vi.useRealTimers();
+        vi.unstubAllEnvs();
+    });
+
+    async function renderPage() {
+        render(<ConnectorsPage />);
+        await act(async () => {
+            await flushMicrotasks();
+        });
+    }
+
+    it("offers no Slack, whose sign-in needs a client nobody set up here, and every preset that can link", async () => {
+        await renderPage();
+        expect(screen.queryByRole("button", { name: "Add Slack connector" })).toBeNull();
+        for (const name of ["Notion", "Airtable", "Linear", "Lawve", "Legal Data Hunter", "CourtListener"])
+            expect(screen.getByRole("button", { name: `Add ${name} connector` })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Add custom connector" })).toBeInTheDocument();
+    });
+
+    it("links a preset in the app's own dialog, with no popup", async () => {
+        const open = vi.spyOn(window, "open");
+        const notion = makeSummary({ id: "notion-1", name: "Notion", serverUrl: "https://mcp.notion.com/mcp" });
+        vi.mocked(createMcpConnector).mockResolvedValue({ connector: notion, oauthRequired: true });
+        vi.mocked(getMcpConnector).mockResolvedValue(notion);
+        vi.mocked(startMcpConnectorOAuth).mockResolvedValue({
+            authorizationUrl: "https://mcp.notion.com/authorize?state=s",
+            alreadyAuthorized: false,
+            callbackOrigin: "https://127.0.0.1:8494",
+        });
+        await renderPage();
+        await act(async () => {
+            fireEvent.click(screen.getByRole("button", { name: "Add Notion connector" }));
+            await flushMicrotasks();
+        });
+        expect(createMcpConnector).toHaveBeenCalledWith(
+            { name: "Notion", serverUrl: "https://mcp.notion.com/mcp", bearerToken: null },
+            "personal",
+        );
+        const link = await screen.findByRole("link", { name: /open the sign-in page/i });
+        expect(link.getAttribute("href")).toBe("https://mcp.notion.com/authorize?state=s");
+        expect(screen.getByLabelText("Address from your browser")).toBeInTheDocument();
+        expect(open).not.toHaveBeenCalled();
+        expect(screen.queryByText("Could not add connector")).toBeNull();
+    });
+
+    it("connects a custom server by its token, with no sign-in", async () => {
+        const files = makeSummary({
+            id: "files-1",
+            name: "Files",
+            serverUrl: "https://mcp.example.com/mcp",
+            authType: "bearer",
+            hasAuthConfig: true,
+            tools: [
+                {
+                    id: "t1", toolName: "search", openaiToolName: "files_search", title: "Search",
+                    description: null, enabled: true, write: false,
+                } as McpConnectorSummary["tools"][number],
+            ],
+            toolCount: 1,
+        });
+        vi.mocked(createMcpConnector).mockResolvedValue({ connector: files, oauthRequired: false });
+        render(<ConnectorsPage />);
+        await act(async () => {
+            await flushMicrotasks();
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Add custom connector" }));
+        fireEvent.change(screen.getByPlaceholderText("Connector label"), { target: { value: "Files" } });
+        fireEvent.change(screen.getByPlaceholderText("https://mcp.example.com/mcp"), {
+            target: { value: "https://mcp.example.com/mcp" },
+        });
+        fireEvent.change(screen.getByPlaceholderText("Bearer token"), { target: { value: "tok-1" } });
+        await act(async () => {
+            fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+            await flushMicrotasks();
+        });
+        expect(createMcpConnector).toHaveBeenCalledWith(
+            { name: "Files", serverUrl: "https://mcp.example.com/mcp", bearerToken: "tok-1" },
+            "personal",
+        );
+        expect(startMcpConnectorOAuth).not.toHaveBeenCalled();
+        expect(await screen.findByText(/Files is connected\./)).toBeInTheDocument();
+    });
+
+    it("says in words when a server's sign-in can't finish from the app, with no operator's guide", async () => {
+        const words =
+            "mcp.example.com won't send you back to Mike after you sign in: it refuses Mike's address on this computer (https://127.0.0.1:8494), so it can't be linked from Mike's NativeCluster app by signing in.";
+        vi.mocked(createMcpConnector).mockResolvedValue({ connector: makeSummary(), oauthRequired: true });
+        vi.mocked(startMcpConnectorOAuth).mockRejectedValue(
+            new MikeApiError({ message: words, status: 400, code: "connector_redirect_rejected" }),
+        );
+        await addCustomConnector();
+        expect(await screen.findByText("Could not add connector")).toBeInTheDocument();
+        expect(screen.getByText(words)).toBeInTheDocument();
+        expect(screen.queryByRole("link", { name: "Open connector setup guide" })).toBeNull();
+        expect(deleteMcpConnector).toHaveBeenCalledWith("connector-1");
+    });
+
+    it("shows no operator's guide for a Slack address typed into Custom", async () => {
+        vi.mocked(createMcpConnector).mockRejectedValue(
+            new MikeApiError({
+                message: "Slack can't be linked from Mike's NativeCluster app.",
+                status: 400,
+                code: "connector_setup_required",
+            }),
+        );
+        await addCustomConnector();
+        expect(await screen.findByText("Slack can't be linked from Mike's NativeCluster app.")).toBeInTheDocument();
+        expect(screen.queryByRole("link", { name: "Open connector setup guide" })).toBeNull();
     });
 });
 

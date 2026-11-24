@@ -30,6 +30,7 @@ import {
   CONNECTOR_PRESETS,
   findConnectorPreset,
   normalizedServerUrl,
+  offeredConnectorPresets,
 } from "@/app/components/settings/connectorPresets";
 import {
   ConnectorDetailsModal,
@@ -1409,7 +1410,11 @@ function WorkspaceConnectors({
     (connector) =>
       !connector.status?.connected && connector.status?.available !== false,
   );
-  const discoverPresets = (mcpOffered ? CONNECTOR_PRESETS : []).filter(
+  // A preset whose provider needs a client nobody configured here (Slack
+  // in Mike's NativeCluster app) is not offered: adding it could only fail.
+  const discoverPresets = (
+    mcpOffered ? offeredConnectorPresets(connectorsOff.mcpSetupRequired) : []
+  ).filter(
     (preset) =>
       !connectors.some(
         (connector) =>
@@ -1817,7 +1822,9 @@ function WorkspaceConnectors({
           setAddErrorGuideUrl(null);
         }}
       >
-        {addErrorGuideUrl && (
+        {/* The guides are an operator's steps for a deployment's own
+            clients: nobody in Mike's NativeCluster app can take them. */}
+        {addErrorGuideUrl && !isNcAppMode() && (
           <ConnectorSetupGuideLink href={addErrorGuideUrl} />
         )}
       </WarningPopup>
@@ -1829,11 +1836,15 @@ function WorkspaceConnectors({
       />
       <WarningPopup
         open={!!detailSetupNotice}
-        title="Administrator setup required"
+        title={
+          isNcAppMode()
+            ? "This connector can't be linked here"
+            : "Administrator setup required"
+        }
         message={detailSetupNotice}
         onClose={() => setDetailSetupNotice(null)}
       >
-        {selectedConnector && (
+        {selectedConnector && !isNcAppMode() && (
           <ConnectorSetupGuideLink
             href={connectorSetupGuideUrl(selectedConnector.serverUrl)}
           />

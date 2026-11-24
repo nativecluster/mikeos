@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 const context = vi.hoisted(() => ({
     value: undefined as
         | undefined
-        | { profile: { connectorsOff: string[] } | null; loading: boolean },
+        | { profile: { connectorsOff: string[]; mcpSetupRequired?: string[] } | null; loading: boolean },
 }));
 vi.mock("@/app/contexts/UserProfileContext", () => ({
     useOptionalUserProfile: () => context.value,
@@ -31,5 +31,14 @@ describe("useConnectorsOff", () => {
         expect(result.current.loading).toBe(false);
         expect(result.current.off("mcp")).toBe(true);
         expect(result.current.off("websearch")).toBe(false);
+    });
+
+    it("names the MCP providers the profile says cannot link here", () => {
+        context.value = undefined;
+        const { result, rerender } = renderHook(() => useConnectorsOff());
+        expect(result.current.mcpSetupRequired).toEqual([]);
+        context.value = { profile: { connectorsOff: [], mcpSetupRequired: ["slack"] }, loading: false };
+        rerender();
+        expect(result.current.mcpSetupRequired).toEqual(["slack"]);
     });
 });

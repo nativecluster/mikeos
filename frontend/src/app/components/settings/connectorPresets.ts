@@ -1,8 +1,16 @@
-export const CONNECTOR_PRESETS: ReadonlyArray<{
+export type ConnectorPreset = {
     name: string;
     serverUrl: string;
-}> = [
-    { name: "Slack", serverUrl: "https://mcp.slack.com/mcp" },
+    /**
+     * The backend's provider id (backend/src/lib/mcp/providers.ts) for a
+     * server that offers no dynamic client registration: it links only with
+     * a client a company registered with the provider.
+     */
+    provider?: string;
+};
+
+export const CONNECTOR_PRESETS: ReadonlyArray<ConnectorPreset> = [
+    { name: "Slack", serverUrl: "https://mcp.slack.com/mcp", provider: "slack" },
     { name: "Notion", serverUrl: "https://mcp.notion.com/mcp" },
     { name: "Airtable", serverUrl: "https://mcp.airtable.com/mcp" },
     { name: "Linear", serverUrl: "https://mcp.linear.app/mcp" },
@@ -34,5 +42,19 @@ export function findConnectorPreset(serverUrl: string) {
         (candidate) =>
             normalizedServerUrl(candidate.serverUrl) ===
             normalizedServerUrl(serverUrl),
+    );
+}
+
+/**
+ * The presets that can be added here: none whose provider the profile names
+ * as needing a client this deployment has not configured (Mike's
+ * NativeCluster app; the list is empty elsewhere), since adding it could
+ * only fail.
+ */
+export function offeredConnectorPresets(
+    setupRequired: readonly string[],
+): ReadonlyArray<ConnectorPreset> {
+    return CONNECTOR_PRESETS.filter(
+        (preset) => !preset.provider || !setupRequired.includes(preset.provider),
     );
 }
