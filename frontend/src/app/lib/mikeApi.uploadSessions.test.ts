@@ -1337,6 +1337,19 @@ describe("failedUploadMessage for a file the worker refused", () => {
         ).toBe("a.pdf, b.pdf are not valid PDF files.");
     });
 
+    // D1: a PDF locked with a password is refused at upload, in its own words.
+    it("tells the person to remove a PDF's password", () => {
+        expect(failedUploadMessage([refused("locked.pdf", "pdf_password_protected")])).toBe(
+            "locked.pdf is password-protected; remove the password and upload it again.",
+        );
+        expect(
+            failedUploadMessage([
+                refused("a.pdf", "pdf_password_protected"),
+                refused("b.pdf", "pdf_password_protected"),
+            ]),
+        ).toBe("a.pdf, b.pdf are password-protected; remove the passwords and upload them again.");
+    });
+
     it("falls back to the generic line when the failures have mixed causes", () => {
         expect(
             failedUploadMessage([
@@ -1361,6 +1374,7 @@ describe("uploadOutcomeNeedsRetry", () => {
 
     it("leaves out a file the server refused as not a PDF, and files that landed", () => {
         expect(uploadOutcomeNeedsRetry(outcome("error", "invalid_pdf_file"))).toBe(false);
+        expect(uploadOutcomeNeedsRetry(outcome("error", "pdf_password_protected"))).toBe(false);
         expect(uploadOutcomeNeedsRetry(outcome("completed", null))).toBe(false);
     });
 });

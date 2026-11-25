@@ -5,7 +5,7 @@
 import { validateDocxPackage } from "../docxpackagevalidation";
 import { extractDocxBodyText } from "../docxTrackedChanges";
 import { extractPresentationText } from "../officeText";
-import { extractLegacyOfficeText, extractPdfText, extractPdfTextForModel, readPdfFacts } from "../pdfText";
+import { extractLegacyOfficeText, extractPdfText, readPdfFacts, readPdfTextForModel } from "../pdfText";
 import { spreadsheetToLLMText } from "../spreadsheet";
 import { extractDocumentMarkdown } from "./documentMarkdown";
 import { extractDocumentText } from "./documentText";
@@ -25,8 +25,8 @@ export const EXTRACTION_OPS = {
     extractDocumentMarkdown(bytes, fileType),
   /** An uploaded PDF's page count and textless pages, read in full; unreadable throws. */
   pdfFacts: (bytes: ArrayBuffer) => readPdfFacts(bytes),
-  /** read_document views, one per file type. */
-  pdfForModel: (bytes: ArrayBuffer) => extractPdfTextForModel(bytes),
+  /** read_document views, one per file type. A PDF that cannot be read throws. */
+  pdfForModel: (bytes: ArrayBuffer) => readPdfTextForModel(bytes),
   /** A PDF's page text, "" when it cannot be read (a playbook's import). */
   pdfText: (bytes: ArrayBuffer) => extractPdfText(bytes),
   // The same accepted view the edit_document matcher anchors against, with

@@ -17,7 +17,7 @@ import { ExtractionBusyError, ExtractionLimitError, withExtractionRequest, withE
 import { Document, Packer, Paragraph } from "docx";
 import { diagnosticErrorTags } from "../../../lib/observability/sentryPrivacy";
 import { PDF_MAX_DECODED_STREAM_BYTES } from "../../../lib/pdfjs";
-import { bombPdf, writePdf } from "../../../lib/__tests__/hostilePdfs";
+import { bombPdf, nestedPdf, passwordPdf, writePdf } from "../../../lib/__tests__/hostilePdfs";
 
 const mocks = vi.hoisted(() => ({
   maxUploadBytes: 100 * 1024 * 1024,
@@ -497,6 +497,48 @@ describe("upload processing", () => {
     expect(db.rpc).toHaveBeenCalledWith("create_document_version", expect.objectContaining({
       p_version: expect.objectContaining({ page_count: 2, textless_page_count: 2 }),
     }));
+  });
+
+  // D1: these uploaded as completed, listed ready, and read as nothing.
+  it.each([
+    ["a PDF locked with a password", () => passwordPdf(), "pdf_password_protected"],
+    ["a PDF whose page nests past what a parser follows", () => nestedPdf(), "invalid_pdf_file"],
+    ["a PDF cut off before its cross-references", () => buildOnePagePdf().subarray(0, 60), "invalid_pdf_file"],
+  ])("refuses %s in words before destination writes", async (_label, pdf, code) => {
+    const bytes = pdf();
+    mocks.createFileReadStream.mockImplementation(() => Readable.from([bytes]));
+    const db = fakeDb();
+    await expect(processUploadFile(db as never, baseSession, {
+      ...baseFile, expected_size_bytes: bytes.length,
+    })).rejects.toMatchObject({ code });
+    expect(db.from).not.toHaveBeenCalled();
+    expect(mocks.copyFile).not.toHaveBeenCalled();
+  });
+
+  it("records a password-protected PDF as pdf_password_protected, terminal, never retried", async () => {
+    const bytes = passwordPdf();
+    mocks.createFileReadStream.mockImplementation(() => Readable.from([bytes]));
+    const db = scriptedDb([
+      { data: { id: "job-1", session_id: baseSession.id, file_id: baseFile.id, attempts: 1, locked_by: "worker-1" } },
+      { data: baseSession },
+      { data: { ...baseFile, expected_size_bytes: bytes.length } },
+      { data: { id: "job-1" } }, // Initial heartbeat.
+      { error: null }, // Processing status.
+      { data: { id: "job-1" } }, // Failure heartbeat.
+      { error: null }, // File error.
+      { error: null }, // Document error.
+      { data: { id: "job-1" } }, // Final heartbeat.
+      { error: null }, // Remove failed document.
+      { data: [{ sealed_storage_path: baseFile.sealed_storage_path }] },
+      { data: { id: "job-1" } },
+    ]);
+    await processUploadJob(db as never, "job-1", "worker-1");
+    expect(db.calls).toContainEqual(expect.objectContaining({
+      table: "upload_session_files", operation: "update",
+      payload: expect.objectContaining({ status: "error", error_code: "pdf_password_protected" }),
+    }));
+    expect(db.calls.some((call) => (call.payload as { status?: string })?.status === "queued")).toBe(false);
+    expect(db.remaining).toHaveLength(0);
   });
 
   it.each([false, true])("keeps invalid PDFs terminal when already failed=%s", async (alreadyFailed) => {

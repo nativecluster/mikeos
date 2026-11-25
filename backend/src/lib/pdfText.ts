@@ -402,17 +402,31 @@ async function readPdfPages(buf: ArrayBuffer): Promise<PdfReadResult> {
  * The verdict on a PDF pdf.js read but could not use: it would not open
  * (corrupt, truncated, encrypted, not a PDF), or a page of it failed (a
  * structure nested past what a parser can follow). The same bytes fail the
- * same way every time. pdf.js's own error stays the cause.
+ * same way every time. pdf.js's own error stays the cause, so a password is
+ * still told apart (isPdfPasswordError).
  */
 function unreadablePdf(raw: unknown): ExtractionParseError {
   return new ExtractionParseError("extraction.pdf_unreadable", PDF_UNREADABLE_MESSAGE, { cause: raw });
 }
 
+/** Whether a PDF failed for its password: pdf.js's PasswordException, anywhere on the chain. */
+export function isPdfPasswordError(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  let link: unknown = error;
+  while (link && typeof link === "object" && !seen.has(link) && seen.size < 12) {
+    seen.add(link);
+    if ((link as { name?: unknown }).name === "PasswordException") return true;
+    link = (link as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 /**
  * What an upload records of a PDF, read in full as the reader would: its
  * page count and how many pages have no text layer. Strict: a PDF that cannot
- * be read throws (ExtractionParseError), so it is never kept as a ready
- * document with an empty body; one past the reader's bounds throws
+ * be read throws (ExtractionParseError, with pdf.js's PasswordException kept
+ * as its cause for an encrypted one), so it is never kept as a ready document
+ * with an empty body; one past the reader's bounds throws
  * ExtractionLimitError.
  */
 export async function readPdfFacts(
@@ -517,6 +531,21 @@ export async function extractPdfTextForModel(buf: ArrayBuffer): Promise<string> 
   if (!read.pages) {
     reportUnreadablePdf(read.cause);
     return "";
+  }
+  return textForModel(read.pages);
+}
+
+/**
+ * The same text, strict: a PDF pdf.js cannot read throws
+ * ExtractionParseError (pdf.js's PasswordException kept as its cause), so
+ * read_document says the document could not be read instead of handing the
+ * model an empty body as if the document were blank.
+ */
+export async function readPdfTextForModel(buf: ArrayBuffer): Promise<string> {
+  const read = await readPdfPages(buf);
+  if (!read.pages) {
+    if (read.stage === "load") throw read.cause;
+    throw unreadablePdf(read.raw);
   }
   return textForModel(read.pages);
 }

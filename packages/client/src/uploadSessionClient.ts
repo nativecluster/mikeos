@@ -105,6 +105,12 @@ const UPLOAD_FILE_CONTENT_MESSAGES: Record<
         filenames.length === 1
             ? `${filenames[0]} is not a valid PDF file.`
             : `${filenames.join(", ")} are not valid PDF files.`,
+    // Encrypted with a user password: Mike cannot read it, and nothing it
+    // could do would let it.
+    pdf_password_protected: (filenames) =>
+        filenames.length === 1
+            ? `${filenames[0]} is password-protected; remove the password and upload it again.`
+            : `${filenames.join(", ")} are password-protected; remove the passwords and upload them again.`,
     invalid_docx_package: (filenames) =>
         filenames.length === 1
             ? `${filenames[0]} is not a valid DOCX file.`

@@ -10,7 +10,7 @@ const {
   downloadFile,
   headFile,
   deleteFile,
-  extractPdfTextForModel,
+  readPdfTextForModel,
   extractDocxBodyText,
   getFileStreamSource,
 } = vi.hoisted(() => ({
@@ -21,7 +21,7 @@ const {
   downloadFile: vi.fn(),
   headFile: vi.fn(),
   deleteFile: vi.fn(),
-  extractPdfTextForModel: vi.fn(),
+  readPdfTextForModel: vi.fn(),
   extractDocxBodyText: vi.fn(),
   getFileStreamSource: vi.fn(),
 }));
@@ -38,7 +38,7 @@ vi.mock("../../../lib/storage", async (original) => ({
   headFile,
   deleteFile,
 }));
-vi.mock("../../../lib/pdfText", () => ({ extractPdfTextForModel }));
+vi.mock("../../../lib/pdfText", () => ({ readPdfTextForModel }));
 vi.mock("../../../lib/docxTrackedChanges", () => ({ extractDocxBodyText }));
 vi.mock("../../documents/documents.service", async (original) => ({
   ...(await original<typeof import("../../documents/documents.service")>()), getFileStreamSource,
@@ -161,7 +161,7 @@ beforeEach(() => {
   deleteFile.mockResolvedValue(undefined);
   headFile.mockResolvedValue({ size: 1200, etag: null, contentType: null });
   downloadFile.mockResolvedValue(new ArrayBuffer(1200));
-  extractPdfTextForModel.mockResolvedValue("Retention: seven years.\u0000");
+  readPdfTextForModel.mockResolvedValue("Retention: seven years.\u0000");
   extractDocxBodyText.mockResolvedValue("Template clause text.");
   completeText.mockResolvedValue(
     JSON.stringify({ summary: "Reviewed", findings: [] }),

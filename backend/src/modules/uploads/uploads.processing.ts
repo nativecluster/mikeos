@@ -37,6 +37,7 @@ import {
 } from "../../lib/observability/pollFailureGate";
 import { asReportableError, withResponseStatus } from "../../lib/httpError";
 import { shouldConvertToPdf } from "../../lib/documentTypes";
+import { isPdfPasswordError } from "../../lib/pdfText";
 import { uploadJobWallClockMs } from "../../lib/runtimeConfig";
 import {
   copyFile,
@@ -114,6 +115,7 @@ const TERMINAL_UPLOAD_ERROR_CODES = new Set([
   "size_mismatch",
   "content_type_mismatch",
   "invalid_pdf_file",
+  "pdf_password_protected",
   "invalid_docx_package",
   "document_too_large",
   // The destination document no longer exists. Retrying cannot make it exist
@@ -158,6 +160,7 @@ class UnreadableFileError extends AppError {
   constructor(
     readonly code:
       | "invalid_pdf_file"
+      | "pdf_password_protected"
       | "document_too_large"
       | "processing_failed",
     cause?: unknown,
@@ -168,7 +171,10 @@ class UnreadableFileError extends AppError {
 }
 
 /** Refusals that are the file's alone: not reported as failures of ours. */
-const USER_FILE_CODES: ReadonlySet<string> = new Set(["invalid_pdf_file"]);
+const USER_FILE_CODES: ReadonlySet<string> = new Set([
+  "invalid_pdf_file",
+  "pdf_password_protected",
+]);
 
 /** What an upload keeps of a PDF it has read. */
 type PdfFacts = { pageCount: number; textlessPageCount: number };
@@ -224,7 +230,8 @@ async function validateDocxFile(artifact: SealedFileArtifact): Promise<void> {
  * pdf.js decides, never the header: it opens files without one, and refuses
  * some with one (garbage after "%PDF-", a truncated file, a structure nested
  * past what it can follow). A PDF it cannot read is refused in words here
- * (invalid_pdf_file); one past the reader's bounds is document_too_large.
+ * (invalid_pdf_file, or pdf_password_protected); one past the reader's
+ * bounds is document_too_large.
  */
 async function readUploadedPdf(artifact: SealedFileArtifact): Promise<PdfFacts> {
   if (artifact.size > MAX_UPLOAD_SIZE_BYTES) throw new UnreadableFileError("document_too_large");
@@ -244,6 +251,7 @@ async function readUploadedPdf(artifact: SealedFileArtifact): Promise<PdfFacts> 
     if (error instanceof ExtractionLimitError || isAllocationFailure(error)) {
       throw new UnreadableFileError("document_too_large", error);
     }
+    if (isPdfPasswordError(error)) throw new UnreadableFileError("pdf_password_protected", error);
     if (error instanceof ExtractionParseError) throw new UnreadableFileError("invalid_pdf_file", error);
     // The parser could not run, or failed for itself: retryable.
     throw new UnreadableFileError("processing_failed", error);
