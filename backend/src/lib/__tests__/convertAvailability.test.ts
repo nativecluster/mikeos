@@ -51,6 +51,7 @@ const MAC_BUNDLE_SOFFICE = "/Applications/LibreOffice.app/Contents/MacOS/soffice
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   spawnMock.mockReset();
 });
 
@@ -105,5 +106,30 @@ describe("soffice discovery", () => {
     });
     expect(failure.message).toContain("SOFFICE_BINARY_PATH");
     expect(failure.message).not.toContain("Railway");
+  });
+});
+
+// In NativeCluster's app sandbox a process may signal only itself: a
+// LibreOffice the app started could not be stopped at its deadline. The app
+// has none, and must never start one, even where this Mac has one installed.
+describe("in Mike's NativeCluster app (MIKE_NC_APP=1)", () => {
+  it("never looks for or starts LibreOffice, and says it is unavailable", async () => {
+    vi.stubEnv("MIKE_NC_APP", "1");
+    vi.stubEnv("SOFFICE_BINARY_PATH", MAC_BUNDLE_SOFFICE);
+    const access = vi.spyOn(fs, "accessSync").mockImplementation(() => {});
+    spawnMock.mockImplementation((binary: string) => fakeChildThatCannotStart(binary));
+    const { docxToPdf, officeFileToPdf } = await freshConverter();
+
+    for (const failure of [
+      await officeFileToPdf("source.docx", tmpdir()).catch((error: unknown) => error),
+      await docxToPdf(Buffer.from("PK synthetic docx")).catch((error: unknown) => error),
+    ]) {
+      expect(diagnosticErrorTags(failure)).toEqual({
+        error_kind: "conversion.unavailable",
+        failure_code: "conversion_unavailable",
+      });
+    }
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(access).not.toHaveBeenCalled();
   });
 });

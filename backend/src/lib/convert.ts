@@ -71,6 +71,12 @@ function executablePath(filePath: string) {
 }
 
 function resolveSofficeBinaryPaths(): string[] {
+  // Mike's NativeCluster app (MIKE_NC_APP=1) has no LibreOffice, and must
+  // never start one: its sandbox runs only the package's programs and
+  // Apple's, and lets a process signal only itself, so a wedged soffice
+  // could not be stopped at its deadline. Office files are kept there
+  // without a PDF rendition, as on any host without LibreOffice.
+  if (process.env.MIKE_NC_APP?.trim() === "1") return [];
   if (_sofficeBinaryPaths) return _sofficeBinaryPaths;
 
   const candidates = new Set<string>();
