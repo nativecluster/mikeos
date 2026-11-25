@@ -12,6 +12,7 @@
 
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { requireAuth, requireMfaIfEnrolled } from "../../middleware/auth";
+import { sharingWritesOffInNcApp } from "../../middleware/ncApp";
 import { asyncRoute, routerErrorHandler } from "../../middleware/asyncRoute";
 import { createServerSupabase } from "../../lib/supabase";
 import { sendOrgFailure } from "../../lib/orgFailure";
@@ -58,6 +59,14 @@ import { deleteOrgData, isOrgDataKind } from "../../application/organizations/pu
 import { normalizeApiKeyProvider } from "../../lib/providerCredentials/index";
 
 export const orgsRouter = Router();
+
+// The NativeCluster app has one organization for each person, their own,
+// made with their account, which no route here reaches (refusePersonalOrg).
+// Every write here makes, joins or changes an organization, or what someone
+// may reach in one: creating one, inviting, members' roles and private
+// content, departures' hand-overs. All are refused there, before anything
+// is read (middleware/ncApp.ts, review M1); reads answer as before.
+orgsRouter.use(sharingWritesOffInNcApp);
 
 // A person's own organization is behind the scenes: it has no settings,
 // roster, invitations, keys or logo to reach, and it is neither renamed nor

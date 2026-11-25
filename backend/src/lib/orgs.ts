@@ -31,6 +31,7 @@
 import type { OrgMemberHandover } from "@mike/contracts";
 import { listOrgPrivateContentAccess } from "./orgPrivateContent";
 import type { Db } from "./supabase";
+import { ncAppSharingRefusal } from "./authApp";
 import { selectAllByKey, selectInBatches } from "./batchedQuery";
 import { INTERNAL_ERROR_MESSAGE } from "./httpError";
 import { safeError } from "./safeError";
@@ -185,6 +186,9 @@ export async function createOrg(
     db: Db,
     params: { userId: string; name: unknown; userEmail?: string | null },
 ): Promise<OrgResult<{ org: Record<string, unknown> }>> {
+    // The NativeCluster app makes no organization but each person's own,
+    // with their account (review M1).
+    if (ncAppSharingRefusal()) return { ok: false, kind: "forbidden" };
     const name = typeof params.name === "string" ? params.name.trim() : "";
     if (!name)
         return { ok: false, kind: "validation", detail: "name is required" };
@@ -546,6 +550,8 @@ export async function updateMember(
         role: unknown;
     },
 ): Promise<OrgResult<{ member: Record<string, unknown> }>> {
+    // In the NativeCluster app no one's standing in an organization changes (review M1).
+    if (ncAppSharingRefusal()) return { ok: false, kind: "forbidden" };
     const actorRole = await getOrgRole(params.actorId, params.orgId, db);
     if (!actorRole) return { ok: false, kind: "not_found" };
     if (!isOrgAdmin(actorRole)) return { ok: false, kind: "forbidden" };
@@ -908,6 +914,8 @@ export async function createInvitation(
         role: unknown;
     },
 ): Promise<OrgResult<{ invitation: Record<string, unknown> }>> {
+    // The NativeCluster app invites no one (review M1).
+    if (ncAppSharingRefusal()) return { ok: false, kind: "forbidden" };
     const actorRole = await getOrgRole(params.actorId, params.orgId, db);
     if (!actorRole) return { ok: false, kind: "not_found" };
     if (!isOrgAdmin(actorRole)) return { ok: false, kind: "forbidden" };
@@ -1159,6 +1167,8 @@ export async function resendInvitation(
         invitationId: string;
     },
 ): Promise<OrgResult<{ invitation: Record<string, unknown> }>> {
+    // The NativeCluster app invites no one (review M1).
+    if (ncAppSharingRefusal()) return { ok: false, kind: "forbidden" };
     const actorRole = await getOrgRole(params.actorId, params.orgId, db);
     if (!actorRole) return { ok: false, kind: "not_found" };
     if (!isOrgAdmin(actorRole)) return { ok: false, kind: "forbidden" };
@@ -1312,6 +1322,8 @@ export async function acceptInvitation(
         invitationId: string;
     },
 ): Promise<OrgResult<{ org_id: string; role: OrgRole }>> {
+    // In the NativeCluster app no one joins another's organization (review M1).
+    if (ncAppSharingRefusal()) return { ok: false, kind: "forbidden" };
     const loaded = await loadAnswerableInvitation(db, params);
     if (!loaded.ok) return loaded;
     const invite = loaded.invitation;

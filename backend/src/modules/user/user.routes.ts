@@ -28,7 +28,7 @@ import { ConnectorSetupError } from "../../lib/mcp/errors";
 import crypto from "crypto";
 import { Router, type Request, type Response } from "express";
 import { requireAuth, requireMfaIfEnrolled } from "../../middleware/auth";
-import { unavailableInNcApp } from "../../middleware/ncApp";
+import { sharingOffInNcApp, unavailableInNcApp } from "../../middleware/ncApp";
 import { asyncRoute, routerErrorHandler } from "../../middleware/asyncRoute";
 import { createServerSupabase, type Db } from "../../lib/supabase";
 import { sendInternalError } from "../../lib/httpError";
@@ -351,8 +351,10 @@ userRouter.get("/invitations", requireAuth, asyncRoute(async (_req, res) => {
 }));
 
 // POST /user/invitations/:invitationId/accept — join the organization.
+// Off in the NativeCluster app (middleware/ncApp.ts, review M1).
 userRouter.post(
     "/invitations/:invitationId/accept",
+    sharingOffInNcApp,
     requireAuth,
     asyncRoute(async (req, res) => {
         const userId = res.locals.userId as string;

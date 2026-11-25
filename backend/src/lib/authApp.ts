@@ -21,6 +21,19 @@ export function ncAppMode(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.MIKE_NC_APP?.trim() === "1";
 }
 
+/**
+ * Sharing, organizations and invitations are off in the app: each person's
+ * work is their own (middleware/ncApp.ts sharingOffInNcApp, and the writers
+ * of every grant).
+ */
+export const NC_APP_SHARING_OFF_DETAIL =
+  "Sharing is off in Mike on NativeCluster: what each person makes stays their own.";
+
+/** The refusal's words when sharing is off here (the app), or null. */
+export function ncAppSharingRefusal(env: NodeJS.ProcessEnv = process.env): string | null {
+  return ncAppMode(env) ? NC_APP_SHARING_OFF_DETAIL : null;
+}
+
 /** The NativeCluster person the launcher names, `p_…`, or empty for nobody. */
 export const NC_PERSON_HEADER = "x-nc-person";
 /** Their email and name, sent only when the manifest asks people.read. */

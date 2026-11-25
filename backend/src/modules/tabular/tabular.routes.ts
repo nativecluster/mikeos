@@ -14,6 +14,7 @@ import { BACKEND_REPORTING_OWNER } from "../../lib/reportedUpstreamCodes";
 import { Router, type Response } from "express";
 import { randomUUID } from "node:crypto";
 import { requireAuth } from "../../middleware/auth";
+import { sharingOffInNcApp } from "../../middleware/ncApp";
 import {
     attachStreamRunSse,
     getActiveStreamRun,
@@ -339,7 +340,8 @@ tabularRouter.get("/:reviewId/access", requireAuth, asyncRoute(async (req, res) 
 }));
 
 // POST /tabular-review/:reviewId/access — grant or re-role one recipient.
-tabularRouter.post("/:reviewId/access", requireAuth, asyncRoute(async (req, res) => {
+// Off in the NativeCluster app (middleware/ncApp.ts, review M1).
+tabularRouter.post("/:reviewId/access", sharingOffInNcApp, requireAuth, asyncRoute(async (req, res) => {
     const result = await grantTabularReviewAccess(createServerSupabase(), {
         reviewId: req.params.reviewId,
         userId: res.locals.userId as string,
