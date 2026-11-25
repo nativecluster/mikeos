@@ -17,7 +17,11 @@ import {
 } from "@/app/components/popups/MfaVerificationPopup";
 import { WarningPopup } from "@/app/components/popups/WarningPopup";
 import { deleteAccount, isMfaRequiredError } from "@/app/lib/mikeApi";
-import { isNcApp } from "@/app/lib/ncApp";
+import {
+  isNcApp,
+  NC_APP_LICENSE_URL,
+  NC_APP_SOURCE_URL,
+} from "@/app/lib/ncApp";
 import { authMessages } from "@/app/lib/authMessages";
 import {
   describeError,
@@ -335,6 +339,44 @@ export default function SettingsPage() {
             <p className="text-base font-medium text-gray-500 capitalize">
               {profile?.tier || "Free"}
             </p>
+          </SettingsRow>
+        </GlassCardUI>
+      </section>
+      )}
+
+      {/* About: the NativeCluster app is a modified Mike, conveyed under
+          the AGPL, so it says so and offers its source (AGPL-3.0 §5, §6,
+          §13). A link leaves the app window for the default browser. */}
+      {ncApp && (
+      <section className="space-y-3">
+        <SettingsHeading id="about">About</SettingsHeading>
+        <GlassCardUI>
+          <SettingsRow layout="stacked">
+            <div className="min-w-0 space-y-1">
+              <SettingsDescription>
+                Mike is free software by Open Legal Products, adapted to run on
+                NativeCluster. It is licensed under the{" "}
+                <a
+                  href={NC_APP_LICENSE_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline"
+                >
+                  GNU Affero General Public License v3.0
+                </a>
+                , with no warranty.
+              </SettingsDescription>
+              <SettingsDescription>
+                <a
+                  href={NC_APP_SOURCE_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline"
+                >
+                  Source code
+                </a>
+              </SettingsDescription>
+            </div>
           </SettingsRow>
         </GlassCardUI>
       </section>

@@ -6,6 +6,7 @@
 #
 # The stage holds, and nothing else (a package holds no link):
 #   mike, nc-app.json, assets/icon.png   the program, its manifest and icon
+#   LICENSE, NOTICE                      Mike's AGPL-3.0, and this build's commit and source
 #   runtime/bin/node                     official Node 24, darwin-arm64, SHA-256 pinned
 #   launcher/                            main.mjs, pglite-server.mjs, lib/, its node_modules
 #                                        (PGlite, pglite-socket, pg), local/ (desktop/src/local's
@@ -133,6 +134,16 @@ cp "$REPO/nativecluster/nc-app.json" "$REPO/nativecluster/mike" "$OUT/"
 chmod 755 "$OUT/mike"
 mkdir -p "$OUT/assets"
 cp "$REPO/nativecluster/assets/icon.png" "$OUT/assets/icon.png"
+
+# Mike's licence, and a notice saying this build is modified and where its
+# exact source is (AGPL-3.0 §4, §5(a), §6): the commit it was built from,
+# marked when the tree had uncommitted changes (sign.sh refuses such a build).
+cp "$REPO/LICENSE" "$OUT/LICENSE"
+version=$(sed -n 's/^  "version": "\(.*\)",$/\1/p' "$REPO/nativecluster/nc-app.json")
+commit=$(git -C "$REPO" rev-parse HEAD)
+if [ -n "$(git -C "$REPO" status --porcelain --untracked-files=no)" ]; then commit="$commit, with uncommitted changes"; fi
+sed -e "s|@VERSION@|$version|" -e "s|@DATE@|$(date -u +%Y-%m-%d)|" -e "s|@COMMIT@|$commit|" \
+  "$REPO/nativecluster/NOTICE.in" > "$OUT/NOTICE"
 
 # The schema version: what the schema step installs. A start whose version
 # differs from the data folder's runs the step again (lib/stack.mjs).

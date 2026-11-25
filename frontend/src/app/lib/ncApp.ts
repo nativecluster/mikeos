@@ -16,6 +16,13 @@ export function isNcApp(): boolean {
     return process.env.NEXT_PUBLIC_MIKE_NC_APP === "1";
 }
 
+/**
+ * Where the app's own source is published (AGPL-3.0 §6 and §13): the exact
+ * source of every package NativeCluster's Store ships, kept public there.
+ */
+export const NC_APP_SOURCE_URL = "https://github.com/pablothe/mikeos";
+export const NC_APP_LICENSE_URL = "https://www.gnu.org/licenses/agpl-3.0.html";
+
 /** The one line Settings shows where sharing would be. */
 export const NC_APP_SHARING_UNAVAILABLE =
     "Sharing with your group isn't available in the NativeCluster app yet.";

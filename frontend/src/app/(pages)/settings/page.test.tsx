@@ -117,6 +117,27 @@ describe("SettingsPage Google email changes", () => {
         expect(screen.getByText("Free")).toBeInTheDocument();
     });
 
+    it("offers the app's source and licence in the NativeCluster app, and nothing of it elsewhere", () => {
+        vi.stubEnv("NEXT_PUBLIC_MIKE_NC_APP", "1");
+        try {
+            const { unmount } = render(<SettingsPage />);
+            expect(screen.getByRole("heading", { name: "About" })).toBeInTheDocument();
+            expect(screen.getByRole("link", { name: "Source code" })).toHaveAttribute(
+                "href",
+                "https://github.com/pablothe/mikeos",
+            );
+            expect(
+                screen.getByRole("link", { name: "GNU Affero General Public License v3.0" }),
+            ).toHaveAttribute("href", "https://www.gnu.org/licenses/agpl-3.0.html");
+            unmount();
+        } finally {
+            vi.unstubAllEnvs();
+        }
+        render(<SettingsPage />);
+        expect(screen.queryByRole("heading", { name: "About" })).not.toBeInTheDocument();
+        expect(screen.queryByRole("link", { name: "Source code" })).not.toBeInTheDocument();
+    });
+
     it("keeps onboarding organisation out of account settings and places the photo below the name", () => {
         render(<SettingsPage />);
         expect(screen.queryByLabelText("Organisation")).not.toBeInTheDocument();
