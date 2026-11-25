@@ -7,8 +7,7 @@ import crypto from "node:crypto";
 import { createServerSupabase, type Db } from "../../lib/supabase";
 import { downloadFile, headFile, uploadFile } from "../../lib/storage";
 import { removePlaybookObjects } from "./playbooks.reporting";
-import { extractDocxBodyText } from "../../lib/docxTrackedChanges";
-import { extractPdfTextForModel } from "../../lib/pdfText";
+import { ExtractionBusyError, ExtractionLimitError, runIsolatedExtraction } from "../../lib/extraction/isolated";
 import { getFileStreamSource } from "../documents/documents.service";
 import { editablePlaybook, getPlaybook, PlaybookRequestError } from "./playbooks.operations";
 import { type Playbook } from "./playbooks.types";
@@ -101,13 +100,18 @@ async function extractSourceText(
 ): Promise<string> {
   let text: string;
   try {
-    text =
-      fileType === "pdf"
-        ? await extractPdfTextForModel(bytes)
-        : await extractDocxBodyText(Buffer.from(bytes));
+    // In the bounded document reader, as every uploaded document is read.
+    text = await runIsolatedExtraction(
+      fileType === "pdf" ? "pdfForModel" : "docxBodyText",
+      async () => bytes,
+    );
   } catch (cause) {
+    // The reader is busy, not the file at fault: not a 400.
+    if (cause instanceof ExtractionBusyError) throw cause;
     throw new PlaybookRequestError(
-      "The document could not be read. Check that it is a valid .docx or .pdf file.",
+      cause instanceof ExtractionLimitError
+        ? "The document is too large or complex to read."
+        : "The document could not be read. Check that it is a valid .docx or .pdf file.",
       400,
       { cause },
     );

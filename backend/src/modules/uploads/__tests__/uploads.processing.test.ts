@@ -16,6 +16,8 @@ import { EXTRACTION_OPS } from "../../../lib/extraction/ops";
 import { ExtractionBusyError, ExtractionLimitError, withExtractionRequest, withExtractionSlot } from "../../../lib/extraction/isolated";
 import { Document, Packer, Paragraph } from "docx";
 import { diagnosticErrorTags } from "../../../lib/observability/sentryPrivacy";
+import { PDF_MAX_DECODED_STREAM_BYTES } from "../../../lib/pdfjs";
+import { bombPdf, writePdf } from "../../../lib/__tests__/hostilePdfs";
 
 const mocks = vi.hoisted(() => ({
   maxUploadBytes: 100 * 1024 * 1024,
@@ -244,7 +246,8 @@ function scriptedDb(results: QueryResult[]) {
   };
 }
 
-const pdfBytes = Buffer.from("%PDF-1.7\n");
+// A real PDF: an upload is read in full, so a header alone is not one.
+const pdfBytes = buildOnePagePdf();
 
 /** The smallest PDF pdf.js opens: one empty page, a cross-reference table, a trailer. */
 function buildOnePagePdf(): Buffer {
@@ -439,6 +442,10 @@ describe("upload processing", () => {
     ["a ZIP container", "PK\u0003\u0004Office bytes"],
     ["a signature missing its dash", "%PDF"],
     ["whitespace only", " \uFEFF\n"],
+    // A header and nothing a reader can open behind it (D1: these listed as
+    // ready and read as nothing).
+    ["a bare header", "%PDF-1.7\n"],
+    ["a header and then garbage", "%PDF-1.7\n" + "\u0001\u00ff garbage ".repeat(200)],
     // The signature search misses and pdf.js has nothing to parse either.
     ["a bare header past 1024 bytes with no document behind it", "x".repeat(1024 - "%PDF-".length + 1) + "%PDF-1.7"],
   ])(
@@ -458,6 +465,39 @@ describe("upload processing", () => {
       expect(await readdir(processingTempRoot)).toEqual([]);
     },
   );
+
+  // X1: the upload's page count and textless count were pdf.js run here, in
+  // the upload worker, outside every bound: one 1.9 MB PDF inflating to
+  // 1.9 GiB held gigabytes and the upload for minutes. They are one read in
+  // the bounded reader now, which refuses it as too large.
+  it("refuses a PDF that inflates past the reader's limit as document_too_large, before destination writes", async () => {
+    const bytes = await bombPdf(PDF_MAX_DECODED_STREAM_BYTES / (1024 * 1024) + 64, 10);
+    mocks.createFileReadStream.mockImplementation(() => Readable.from([bytes]));
+    const db = fakeDb();
+    const started = Date.now();
+    await expect(processUploadFile(db as never, baseSession, {
+      ...baseFile, expected_size_bytes: bytes.length,
+    })).rejects.toMatchObject({ code: "document_too_large" });
+    expect(Date.now() - started).toBeLessThan(15_000);
+    expect(db.from).not.toHaveBeenCalled();
+    expect(mocks.copyFile).not.toHaveBeenCalled();
+    expect(await readdir(processingTempRoot)).toEqual([]);
+  }, 60_000);
+
+  it("records a PDF's page count and textless pages from the one bounded read", async () => {
+    const bytes = writePdf([
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>",
+    ]);
+    mocks.createFileReadStream.mockImplementation(() => Readable.from([bytes]));
+    const db = fakeDb({ documents: [{ data: { id: baseFile.resource_id } }] });
+    await processUploadFile(db as never, baseSession, { ...baseFile, expected_size_bytes: bytes.length });
+    expect(db.rpc).toHaveBeenCalledWith("create_document_version", expect.objectContaining({
+      p_version: expect.objectContaining({ page_count: 2, textless_page_count: 2 }),
+    }));
+  });
 
   it.each([false, true])("keeps invalid PDFs terminal when already failed=%s", async (alreadyFailed) => {
     const bytes = Buffer.from("not a PDF");

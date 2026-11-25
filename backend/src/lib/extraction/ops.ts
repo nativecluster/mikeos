@@ -5,7 +5,7 @@
 import { validateDocxPackage } from "../docxpackagevalidation";
 import { extractDocxBodyText } from "../docxTrackedChanges";
 import { extractPresentationText } from "../officeText";
-import { extractLegacyOfficeText, extractPdfTextForModel } from "../pdfText";
+import { extractLegacyOfficeText, extractPdfText, extractPdfTextForModel, readPdfFacts } from "../pdfText";
 import { spreadsheetToLLMText } from "../spreadsheet";
 import { extractDocumentMarkdown } from "./documentMarkdown";
 import { extractDocumentText } from "./documentText";
@@ -23,12 +23,18 @@ export const EXTRACTION_OPS = {
   /** Tabular review source markdown. */
   documentMarkdown: (bytes: ArrayBuffer, fileType: string) =>
     extractDocumentMarkdown(bytes, fileType),
+  /** An uploaded PDF's page count and textless pages, read in full; unreadable throws. */
+  pdfFacts: (bytes: ArrayBuffer) => readPdfFacts(bytes),
   /** read_document views, one per file type. */
   pdfForModel: (bytes: ArrayBuffer) => extractPdfTextForModel(bytes),
+  /** A PDF's page text, "" when it cannot be read (a playbook's import). */
+  pdfText: (bytes: ArrayBuffer) => extractPdfText(bytes),
   // The same accepted view the edit_document matcher anchors against, with
   // mammoth as the fallback when it comes back empty.
   docxText: async (bytes: ArrayBuffer) =>
     (await extractDocxBodyText(Buffer.from(bytes))) || mammothRawText(bytes),
+  /** The accepted view alone (a playbook's source). */
+  docxBodyText: (bytes: ArrayBuffer) => extractDocxBodyText(Buffer.from(bytes)),
   spreadsheet: async (bytes: ArrayBuffer) =>
     spreadsheetToLLMText(Buffer.from(bytes)),
   presentation: (bytes: ArrayBuffer) =>

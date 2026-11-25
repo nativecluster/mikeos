@@ -21,6 +21,8 @@ import {
 } from "../isolated";
 import type { ExtractionOp } from "../ops";
 import { diagnosticErrorTags } from "../../observability/sentryPrivacy";
+import { PDF_MAX_DECODED_STREAM_BYTES } from "../../pdfjs";
+import { arrayBufferOf, bombPdf, textPdf } from "../../__tests__/hostilePdfs";
 
 const threads = vi.hoisted(() => ({
   created: [] as Array<{ entry: string; options?: WorkerOptions; exited: Promise<number> }>,
@@ -250,6 +252,16 @@ describe("the parser as a worker thread (MIKE_NC_APP=1)", () => {
     await expect(runIsolatedExtraction("spreadsheet", async () => new ArrayBuffer(EXTRACTION_MAX_BYTES + 1))).rejects.toBeInstanceOf(ExtractionLimitError);
     await expect(runIsolatedExtraction("spreadsheet", async () => workbook())).resolves.toContain("Rent");
   });
+
+  // X1: pdf.js runs bounded inside the thread too, not only in-process: the
+  // bomb is refused there as too large, and the thread reads on.
+  it("refuses a PDF that inflates past its limit inside the thread, then reads the next one", async () => {
+    const bomb = arrayBufferOf(await bombPdf(PDF_MAX_DECODED_STREAM_BYTES / (1024 * 1024) + 64));
+    await expect(runIsolatedExtraction("pdfFacts", async () => bomb)).rejects.toBeInstanceOf(ExtractionLimitError);
+    await expect(runIsolatedExtraction("pdfFacts", async () => arrayBufferOf(textPdf(2))))
+      .resolves.toEqual({ text: "", pageCount: 2, textlessPageCount: 0 });
+    expect(vi.mocked(spawn)).not.toHaveBeenCalled();
+  }, 60_000);
 
   // As a child whose parsers fail to load exits without a result.
   it("reports a thread that ended without a reply as the child's exit, and starts the next one", async () => {
