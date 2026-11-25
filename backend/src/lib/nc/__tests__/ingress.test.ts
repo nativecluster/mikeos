@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { currentNcScope, ncOriginFor } from "../context";
 import { ncIngress, ncIngressEnabled } from "../ingress";
 import {
+  applyLaunchConfigSecrets,
   internalSecretMatches,
   launchSecrets,
   ncAppCredential,
@@ -24,6 +25,59 @@ afterEach(() => {
 });
 
 describe("the launcher's secrets on stdin", () => {
+  // Review M3: the stack's keys were in the backend's environment, which any
+  // program of the same macOS user reads (KERN_PROCARGS2, `ps -E`).
+  it("carries the stack's keys too, into this process's memory alone", async () => {
+    const line = {
+      app_credential: CREDENTIAL,
+      internal_secret: SECRET,
+      supabase_publishable_key: "anon.jwt",
+      supabase_secret_key: "service-role.jwt",
+      download_signing_secret: "d".repeat(64),
+      user_api_keys_encryption_secret: "u".repeat(64),
+    };
+    const input = new PassThrough();
+    const reading = readLaunchSecrets(input);
+    input.write(JSON.stringify(line) + "\n");
+    await expect(reading).resolves.toMatchObject({ appCredential: CREDENTIAL, internalSecret: SECRET });
+    const env: NodeJS.ProcessEnv = { SUPABASE_SECRET_KEY: "from the environment" };
+    expect(applyLaunchConfigSecrets(env).sort()).toEqual([
+      "DOWNLOAD_SIGNING_SECRET",
+      "SUPABASE_PUBLISHABLE_KEY",
+      "SUPABASE_SECRET_KEY",
+      "USER_API_KEYS_ENCRYPTION_SECRET",
+    ]);
+    expect(env).toEqual({
+      SUPABASE_PUBLISHABLE_KEY: "anon.jwt",
+      SUPABASE_SECRET_KEY: "service-role.jwt",
+      DOWNLOAD_SIGNING_SECRET: "d".repeat(64),
+      USER_API_KEYS_ENCRYPTION_SECRET: "u".repeat(64),
+    });
+    input.end();
+  });
+
+  it("refuses a stack key that is empty or not a string, without saying it", () => {
+    for (const bad of ["", 42, null]) {
+      const line = JSON.stringify({ app_credential: CREDENTIAL, internal_secret: SECRET, supabase_secret_key: bad });
+      expect(() => parseLaunchSecrets(line)).toThrow(/supabase_secret_key/);
+    }
+    const line = JSON.stringify({ app_credential: CREDENTIAL, internal_secret: SECRET, supabase_secret_key: "" });
+    try {
+      parseLaunchSecrets(line);
+    } catch (err) {
+      expect(String(err)).not.toContain(SECRET);
+    }
+  });
+
+  it("sets nothing before the line is read, or when it carries no keys", () => {
+    const env: NodeJS.ProcessEnv = {};
+    expect(applyLaunchConfigSecrets(env)).toEqual([]);
+    expect(parseLaunchSecrets(JSON.stringify({ app_credential: CREDENTIAL, internal_secret: SECRET }))).toEqual({
+      appCredential: CREDENTIAL,
+      internalSecret: SECRET,
+    });
+  });
+
   it("reads one JSON line, keeps it in memory, and drops what follows", async () => {
     const input = new PassThrough();
     const reading = readLaunchSecrets(input);

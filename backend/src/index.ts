@@ -33,6 +33,7 @@ import {
 import { log, tpl } from "./lib/log";
 import { listNativeClusterModels } from "./lib/llm/nativecluster";
 import {
+  applyLaunchConfigSecrets,
   internalSecretFromStdinEnabled,
   ncAppCredential,
   readLaunchSecrets,
@@ -208,6 +209,9 @@ async function main(): Promise<void> {
   if (internalSecretFromStdinEnabled()) {
     try {
       await readLaunchSecrets(process.stdin, () => void shutdown("stdin closed"));
+      // The stack's keys, into this process's memory before anything reads
+      // its configuration (never in the environment it started with).
+      applyLaunchConfigSecrets();
     } catch (err) {
       await failBoot(err, "launch-secrets");
       return;

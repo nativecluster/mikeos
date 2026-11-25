@@ -8,9 +8,21 @@
 // the launcher puts in X-NC-Internal on each request it passes on, and the
 // backend answers nothing without it (lib/nc/ingress.ts).
 //
+// The same line carries the stack's keys (the 2026-11-24 security review,
+// M3): the anon and service-role keys, DOWNLOAD_SIGNING_SECRET and
+// USER_API_KEYS_ENCRYPTION_SECRET. A process's environment as it started is
+// readable by any other program of the same macOS user (sysctl
+// KERN_PROCARGS2, `ps -E`), so the launcher puts none of them there. The
+// backend sets them into its own process.env (applyLaunchConfigSecrets)
+// before its configuration loads: that changes only this process's memory,
+// never what it started with, and the code that reads them reads them as
+// on any other deployment. Its children are given environments of their
+// own that hold none of them (the parsers', lib/extraction and
+// integrations/googleDriveExtract).
+//
 // Worker threads share no memory with the API thread: index.ts hands them
 // the app credential in workerData (an in-memory copy), never the
-// environment.
+// environment; their process.env is a copy of this thread's, in memory.
 //
 // The launcher keeps stdin open for the backend's life. Its end means the
 // launcher is gone: the backend shuts down by itself (an app cannot signal
@@ -22,7 +34,19 @@ import type { Readable } from "node:stream";
 export type LaunchSecrets = {
   appCredential: string;
   internalSecret: string;
+  /** The stack's keys the line carried, by the variable each configures. */
+  config?: Partial<Record<LaunchConfigSecret, string>>;
 };
+
+/** The line's keys for the stack's secrets, and the variable each configures. */
+export const LAUNCH_CONFIG_SECRETS = {
+  supabase_publishable_key: "SUPABASE_PUBLISHABLE_KEY",
+  supabase_secret_key: "SUPABASE_SECRET_KEY",
+  download_signing_secret: "DOWNLOAD_SIGNING_SECRET",
+  user_api_keys_encryption_secret: "USER_API_KEYS_ENCRYPTION_SECRET",
+} as const;
+
+export type LaunchConfigSecret = (typeof LAUNCH_CONFIG_SECRETS)[keyof typeof LAUNCH_CONFIG_SECRETS];
 
 let secrets: LaunchSecrets | null = null;
 let hostCredential: string | null = null;
@@ -70,7 +94,30 @@ export function parseLaunchSecrets(line: string): LaunchSecrets {
   if (typeof internalSecret !== "string" || internalSecret.length < 32) {
     throw new Error("the launcher's secrets line has no internal_secret of at least 32 characters");
   }
-  return { appCredential, internalSecret };
+  const config: Partial<Record<LaunchConfigSecret, string>> = {};
+  for (const [key, name] of Object.entries(LAUNCH_CONFIG_SECRETS) as Array<[string, LaunchConfigSecret]>) {
+    const value = record[key];
+    if (value === undefined) continue;
+    // Never echo the value: it is a secret.
+    if (typeof value !== "string" || !value) throw new Error(`the launcher's secrets line has an empty or non-string ${key}`);
+    config[name] = value;
+  }
+  return Object.keys(config).length ? { appCredential, internalSecret, config } : { appCredential, internalSecret };
+}
+
+/**
+ * Puts the stack's keys the launcher's line carried into this process's
+ * own environment, in memory, over anything there, before the configuration
+ * loads. Answers the names it set. Nothing before the line is read.
+ */
+export function applyLaunchConfigSecrets(env: NodeJS.ProcessEnv = process.env): LaunchConfigSecret[] {
+  const config = secrets?.config ?? {};
+  const set: LaunchConfigSecret[] = [];
+  for (const [name, value] of Object.entries(config) as Array<[LaunchConfigSecret, string]>) {
+    env[name] = value;
+    set.push(name);
+  }
+  return set;
 }
 
 const MAX_LINE_BYTES = 64 * 1024;

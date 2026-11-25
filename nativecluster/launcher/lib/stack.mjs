@@ -22,6 +22,14 @@
 // retrying for ever (measured on PGlite: 31 ms after PGlite closed; with the
 // channel off it never left, a request after included). The host's ending
 // of the app's process group is then only the last resort.
+//
+// No secret is in any child's environment or arguments, where another
+// program of the same macOS user reads it (sysctl KERN_PROCARGS2, `ps -E`;
+// the app sandbox allows sysctl-read; the 2026-11-24 security review, M3):
+// the backend takes its keys on its stdin line (backendLaunchLine),
+// PostgREST its JWT secret in a config file on a pipe it reads once
+// (postgrestConfig, `postgrest /dev/fd/3`), and `gotrue migrate`, which
+// signs nothing, a throwaway secret of its own.
 
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -97,7 +105,7 @@ export function pgliteEnv() {
 export const OFF_SWITCHES = ["LB_MIKE_COURTLISTENER", "LB_MIKE_WEBSEARCH", "LB_MIKE_MCP"];
 
 /** The backend's environment (STAGE2-BRIEF.md, "What the finished branches require from the launcher"). */
-export function backendEnv({ paths, dataDir, socketsDir, hostSocket, secrets, logDir, version }) {
+export function backendEnv({ paths, dataDir, socketsDir, hostSocket, logDir, version }) {
   const switches = Object.fromEntries(OFF_SWITCHES.filter((n) => process.env[n] !== undefined).map((n) => [n, process.env[n]]));
   return {
     ...baseEnv(),
@@ -111,10 +119,8 @@ export function backendEnv({ paths, dataDir, socketsDir, hostSocket, secrets, lo
     LB_HOST_SOCKET: hostSocket,
     MIKE_REST_SOCKET: paths.restSocket,
     SUPABASE_URL: "http://mike.internal",
-    SUPABASE_PUBLISHABLE_KEY: secrets.anonKey,
-    SUPABASE_SECRET_KEY: secrets.serviceRoleKey,
-    DOWNLOAD_SIGNING_SECRET: secrets.downloadSigningSecret,
-    USER_API_KEYS_ENCRYPTION_SECRET: secrets.userApiKeysEncryptionSecret,
+    // The anon and service-role keys, DOWNLOAD_SIGNING_SECRET and
+    // USER_API_KEYS_ENCRYPTION_SECRET come on stdin (backendLaunchLine).
     STORAGE_DRIVER: "fs",
     STORAGE_FS_ROOT: paths.storage,
     // The filesystem driver's upload and download links (/download/signed/
@@ -140,6 +146,38 @@ export function backendEnv({ paths, dataDir, socketsDir, hostSocket, secrets, lo
     RATE_LIMIT_EXPORT_MAX: "100",
     RATE_LIMIT_UPLOAD_MAX: "500",
   };
+}
+
+/**
+ * The backend's one stdin line: the host's credential and the launcher's
+ * internal secret, and the stack's keys, which the backend reads into its
+ * own memory before its configuration loads
+ * (backend/src/lib/nc/launchSecrets.ts). Never in its environment or argv.
+ */
+export function backendLaunchLine({ credential, internalSecret, secrets }) {
+  return {
+    app_credential: credential,
+    internal_secret: internalSecret,
+    supabase_publishable_key: secrets.anonKey,
+    supabase_secret_key: secrets.serviceRoleKey,
+    download_signing_secret: secrets.downloadSigningSecret,
+    user_api_keys_encryption_secret: secrets.userApiKeysEncryptionSecret,
+  };
+}
+
+/**
+ * PostgREST's configuration file, written to a pipe it opens as
+ * /dev/fd/3 (measured on PostgREST 14.12 and PGlite, 2026-11-24, plain and
+ * under the app sandbox): its JWT secret alone; every other setting stays
+ * in its environment. The pipe is read once, at start, and nothing is on
+ * disk. In-database configuration is off (PGRST_DB_CONFIG=false; Mike sets
+ * none): with it on PostgREST reads the file again after the database
+ * answers, and a pipe read twice is empty. With it off a `reload config`
+ * notification reads nothing, and the secret stays the one it started with.
+ */
+export function postgrestConfig(jwtSecret) {
+  if (!/^[0-9a-f]{64,}$/.test(jwtSecret)) throw new Error("the stack's JWT secret is not one the launcher made");
+  return `jwt-secret = "${jwtSecret}"\n`;
 }
 
 export function createStack({ pkgDir, dataDir, socketsDir, hostSocket, credential, secrets, internalSecret, log, logDir, version, onFatal }) {
@@ -168,13 +206,19 @@ export function createStack({ pkgDir, dataDir, socketsDir, hostSocket, credentia
     }
   }
 
-  function startChild(name, file, args, { env, cwd, stdin = "ignore", onExit, oneShot = false } = {}) {
+  // `fd3`: what a child reads once on its fd 3, a pipe (PostgREST's
+  // configuration), written and closed as it starts.
+  function startChild(name, file, args, { env, cwd, stdin = "ignore", fd3 = null, onExit, oneShot = false } = {}) {
     const fd = openLogFd(logDir, name);
     let proc;
     try {
-      proc = spawn(file, args, { env, cwd, stdio: [stdin, fd, fd] });
+      proc = spawn(file, args, { env, cwd, stdio: [stdin, fd, fd, ...(fd3 === null ? [] : ["pipe"])] });
     } finally {
       closeSync(fd);
+    }
+    if (fd3 !== null) {
+      proc.stdio[3].on("error", () => {}); // a child gone before it read
+      proc.stdio[3].end(fd3);
     }
     const c = { name, proc, exit: null };
     children.set(name, c);
@@ -284,9 +328,11 @@ export function createStack({ pkgDir, dataDir, socketsDir, hostSocket, credentia
             GOTRUE_DB_DATABASE_URL: `postgres://supabase_auth_admin@/postgres?host=${encodeURIComponent(socketsDir)}&sslmode=disable`,
             GOTRUE_DB_MIGRATIONS_PATH: paths.gotrueMigrations,
             // Migrate serves nothing; its configuration still wants these.
+            // It signs nothing either, so its JWT secret is a throwaway, never
+            // the stack's (review M3).
             API_EXTERNAL_URL: "https://mike.invalid",
             GOTRUE_SITE_URL: "https://mike.invalid",
-            GOTRUE_JWT_SECRET: secrets.jwtSecret,
+            GOTRUE_JWT_SECRET: randomBytes(32).toString("hex"),
             GOTRUE_JWT_EXP: "3600",
             GOTRUE_JWT_AUD: "authenticated",
             GOTRUE_JWT_ADMIN_ROLES: "service_role",
@@ -316,8 +362,9 @@ export function createStack({ pkgDir, dataDir, socketsDir, hostSocket, credentia
   let restRestarts = [];
   function startPostgrest() {
     rmSync(paths.restSocket, { force: true });
-    return startChild("postgrest", paths.postgrest, [], {
+    return startChild("postgrest", paths.postgrest, ["/dev/fd/3"], {
       cwd: dataDir,
+      fd3: postgrestConfig(secrets.jwtSecret),
       onExit: () => {
         if (stopping || !state.ready) return;
         const now = Date.now();
@@ -335,7 +382,8 @@ export function createStack({ pkgDir, dataDir, socketsDir, hostSocket, credentia
         PGRST_DB_URI: `postgres://authenticator@/postgres?host=${encodeURIComponent(socketsDir)}&sslmode=disable`,
         PGRST_DB_SCHEMAS: "public",
         PGRST_DB_ANON_ROLE: "anon",
-        PGRST_JWT_SECRET: secrets.jwtSecret,
+        // The JWT secret is in the configuration on fd 3 (postgrestConfig).
+        PGRST_DB_CONFIG: "false",
         PGRST_SERVER_UNIX_SOCKET: paths.restSocket,
         PGRST_SERVER_UNIX_SOCKET_MODE: "600",
         // Every pooled connection would be PGlite's same session: one
@@ -356,7 +404,7 @@ export function createStack({ pkgDir, dataDir, socketsDir, hostSocket, credentia
   }
 
   function startBackend() {
-    const env = backendEnv({ paths, dataDir, socketsDir, hostSocket, secrets, logDir, version });
+    const env = backendEnv({ paths, dataDir, socketsDir, hostSocket, logDir, version });
     const c = startChild("backend-stdio", paths.node, [path.join(paths.backendDir, "dist", "index.js")], {
       cwd: paths.backendDir,
       env,
@@ -380,7 +428,7 @@ export function createStack({ pkgDir, dataDir, socketsDir, hostSocket, credentia
     });
     // The secrets line; stdin stays open for the backend's life (its end
     // shuts the backend down).
-    c.proc.stdin.write(`${JSON.stringify({ app_credential: credential, internal_secret: internalSecret })}\n`);
+    c.proc.stdin.write(`${JSON.stringify(backendLaunchLine({ credential, internalSecret, secrets }))}\n`);
     return c;
   }
 
