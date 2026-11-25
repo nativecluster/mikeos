@@ -15,7 +15,7 @@ function env(extra = {}) {
   Object.assign(process.env, { LB_APP_SOCKET: "/x/app.sock", LB_SECRETS_STDIN: "1", NC_APP_BASE: "/" }, extra);
   try {
     const paths = stackPaths("/pkg", "/data", "/socks");
-    return backendEnv({ paths, dataDir: "/data", socketsDir: "/socks", hostSocket: "/host.sock", logDir: "/data/logs", version: "2.1.0-nc.1" });
+    return backendEnv({ paths, dataDir: "/data", socketsDir: "/socks", hostSocket: "/host.sock", logDir: "/data/logs", version: "2.1.0.1" });
   } finally {
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
     Object.assign(process.env, saved);

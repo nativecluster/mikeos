@@ -2,7 +2,7 @@
   "format": "nc-app.v1",
   "id": "mike",
   "name": "Mike",
-  "version": "2.1.0-nc.1",
+  "version": "2.1.0.1",
   "min_host": "0.4.23",
   "program": "mike",
   "icon": "assets/icon.png",
