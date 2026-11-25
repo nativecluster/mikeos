@@ -42,6 +42,11 @@ import { currentNcPerson } from "./lib/nc/context";
 import { startNcAppConnectors } from "./lib/mcp/ncAppStartup";
 import { sweepOrphanHostSecrets } from "./lib/mcp/hostSecretSweep";
 import { createServerSupabase } from "./lib/supabase";
+import {
+  recoverTabularRuns,
+  resumeTabularRuns,
+  stopTabularRunsForShutdown,
+} from "./modules/tabular/tabular.service";
 
 const PORT = process.env.PORT ?? 3001;
 const HOST = process.env.HOST?.trim() || undefined;
@@ -203,6 +208,24 @@ async function sweepNativeClusterSecrets(): Promise<void> {
   }
 }
 
+/**
+ * A NativeCluster app: before Mike serves anything, the tabular runs the last
+ * start left behind (a crash, or a stop that handed them over) release their
+ * leases and their cells go back to pending, so Run works at once; the runs
+ * that were going are answered, to resume once the backend listens
+ * (modules/tabular/tabular.syncRun.ts). A failure is logged and the start
+ * goes on: the leases then lapse on their own.
+ */
+async function recoverNativeClusterTabularRuns(): Promise<Awaited<ReturnType<typeof recoverTabularRuns>>> {
+  try {
+    return await recoverTabularRuns(createServerSupabase());
+  } catch (err) {
+    reportError(err, { tags: { component: "boot", stage: "tabular-recovery" } });
+    log.warn("startup", "the tabular runs of the last start were not recovered", { error: err });
+    return [];
+  }
+}
+
 async function main(): Promise<void> {
   // A NativeCluster app's launcher hands its secrets over on stdin before
   // anything else, and keeps stdin open: its end means the launcher is gone.
@@ -236,6 +259,7 @@ async function main(): Promise<void> {
   // cost of gating is one round trip of boot latency, never a crash loop.
   await enforceDocumentLifecycleMigration();
   if (ncAppMode()) await sweepNativeClusterSecrets();
+  const tabularResumes = ncAppMode() ? await recoverNativeClusterTabularRuns() : [];
   // Read NativeCluster's model list before the first request, so a chat
   // turn knows its model's window (contextWindowFor). A no-op unless
   // NativeCluster is configured; it never delays or fails the boot.
@@ -263,6 +287,7 @@ async function main(): Promise<void> {
       // WORKERS_MODE === "none": a standalone worker process owns background
       // work (node dist/worker.js).
       if (ncAppMode()) startNativeClusterBeat();
+      if (tabularResumes.length) void resumeTabularRuns(createServerSupabase(), tabularResumes);
     },
     undefined,
     HOST,
@@ -304,8 +329,15 @@ async function stopBackgroundWork(): Promise<void> {
 
 const shutdown = createShutdown({
   // Set before anything stops so the worker threads' exits are not respawned.
+  // In the app a tabular run stops first: its model calls end, its cells go
+  // back to pending and its lease is released inside the drain, and the next
+  // start resumes it (modules/tabular/tabular.syncRun.ts). Otherwise the
+  // drain waits on its stream and the forced exit leaves it stuck.
   onStart: () => {
     shuttingDown = true;
+    if (!ncAppMode()) return;
+    const stopped = stopTabularRunsForShutdown();
+    if (stopped) log.info("shutdown", "tabular runs handed to the next start", { runs: stopped });
   },
   closeServer: () => closeHttpServer(server),
   stopBackgroundWork,

@@ -20,3 +20,9 @@ export { handleExtractionExtract, markExtractionJobFailed } from "./tabular.extr
 export { sweepStaleGeneratingCells } from "./tabular.maintenance";
 
 export { runExtractionJob, markExtractionFailed, extractionJobOperation, isRefusalShownToUser } from "./tabular.extraction";
+export {
+    recoverTabularRuns,
+    resumeTabularRuns,
+    stopTabularRunsForShutdown,
+    tabularRunMarkers,
+} from "./tabular.syncRun";
