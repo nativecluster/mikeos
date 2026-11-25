@@ -86,8 +86,9 @@ in OpenAI's chat shapes, streamed or whole. It speaks Mike's protocols:
 - the upstream e2e fixture's two scripts: `Reply with exactly: X`, and `Read test.pdf and quote its first line.` through `read_document`;
 - with tools offered, one harmless read-only tool call (`list_workflows`, else `list_documents`), then words naming its result.
 
-A test can steer it with `[[fake:say …]]`, `[[fake:tool name {args}]]` and
-`[[fake:no-tools]]` in a message, or by queuing answers, including a 409
+A test can steer it with `[[fake:say …]]`, `[[fake:tool name {args}]]`,
+`[[fake:no-tools]]` and `[[fake:slow <ms>]]` (a piece of the answer every
+<ms>, for a turn still streaming when a test stops it) in a message, or by queuing answers, including a 409
 `X-NC-Stopped` or a 503 `Retry-After`, with `POST /.harness/models/script`.
 
 `--models nativecluster` forwards each model call to this Mac's NativeCluster
@@ -167,7 +168,7 @@ HARNESS_SANDBOX=1 …  # every test's app under the sandbox
 - Nothing listens on TCP (lsof on the app's process tree and group). Its sockets' paths fit.
 - A restart keeps the data: what was at the top of `NC_APP_DATA` remains, and the app's hook checks its own record. For Mike: alice's project is still there, bob doesn't see it, and nobody gets 403 "Sign in to NativeCluster to use Mike.".
 - SIGTERM ends the app within the grace, exit 0, with nothing left 3 s later and nothing escaped.
-- Every line wait has exactly one release.
+- Every line wait has exactly one release. For Mike (its hook's `drive`), a chat turn is stopped with its Stop while its answer streams, and every grant it took is given back once; a second is left streaming, its reader gone, when the test stops the app (SIGTERM), and the ledger holds after that too.
 - Under the sandbox, the app writes nothing outside `NC_APP_DATA`. The kernel's refusals of native programs (gotrue, postgrest, sh) come from the unified log. Node's write attempts come from a preload: **macOS logs no sandbox refusal for a Node process** (measured: sh, touch, Python and Postgres are logged, node never). The preload (`fakehost/fswatch.mjs`, set through `NODE_OPTIONS` for this one test) records every write, create, rename or remove outside the allowed folders. A positive control first proves that the runner confines (writes in data and `TMPDIR` only; no loopback TCP, no NativeCluster ports, no listening).
 
 Per-app hooks (`contract/apps/<id>.mjs`, `mike.mjs` for any manifest that
