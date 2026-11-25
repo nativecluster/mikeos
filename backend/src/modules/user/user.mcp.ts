@@ -7,6 +7,8 @@
 
 import {
     ConnectorSetupError,
+    HostSecretLimitError,
+    McpConnectorNotFoundError,
     createUserMcpConnector,
     deleteUserMcpConnector,
     getUserMcpConnector,
@@ -112,6 +114,7 @@ export async function createMcpConnector(
 ): Promise<
     | { ok: true; connector: unknown; oauthRequired: boolean }
     | { ok: false; kind: "setup"; code: string; detail: string }
+    | { ok: false; kind: "limit"; code: string; detail: string }
     | {
           ok: false;
           kind: "cleanup";
@@ -182,6 +185,11 @@ export async function createMcpConnector(
                 detail: err.message,
             };
         }
+        // App mode: a key too large to keep, or the person's share of
+        // NativeCluster's store used up, said in words (review M2).
+        if (err instanceof HostSecretLimitError) {
+            return { ok: false, kind: "limit", code: err.code, detail: err.message };
+        }
         const failure = reportMcpFailure(
             "[user/mcp-connectors] create failed",
             mcpFailure("mcp.setup_failed", "connector creation failed", err),
@@ -196,7 +204,12 @@ export async function updateMcpConnector(
     userId: string,
     connectorId: string,
     updates: Parameters<typeof updateUserMcpConnector>[2],
-): Promise<{ ok: true; connector: unknown } | { ok: false; error: unknown }> {
+): Promise<
+    | { ok: true; connector: unknown }
+    | { ok: false; kind: "not_found" }
+    | { ok: false; kind: "limit"; code: string; detail: string }
+    | { ok: false; kind?: undefined; error: unknown }
+> {
     try {
         const connector = await updateUserMcpConnector(
             userId,
@@ -206,6 +219,11 @@ export async function updateMcpConnector(
         );
         return { ok: true, connector };
     } catch (err) {
+        // App mode: not the caller's connector, refused before anything is
+        // kept (review M2).
+        if (err instanceof McpConnectorNotFoundError) return { ok: false, kind: "not_found" };
+        if (err instanceof HostSecretLimitError)
+            return { ok: false, kind: "limit", code: err.code, detail: err.message };
         const failure = reportMcpFailure(
             "[user/mcp-connectors] update failed",
             mcpFailure("mcp.setup_failed", "connector update failed", err),

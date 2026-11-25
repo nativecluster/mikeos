@@ -160,8 +160,10 @@ describe("Google in the app with a Google OAuth client", () => {
         expect(row.access_token_iv).toBe(HOST_SECRET_IV);
         expect(JSON.stringify(row)).not.toContain("g-access");
         expect(JSON.stringify(row)).not.toContain("g-refresh");
-        expect([...store.values.values()].sort()).toEqual(["g-access", "g-refresh"]);
-        expect([...store.values.keys()].every((k) => k.startsWith("mike:p_alice:gdrive:"))).toBe(true);
+        // Beside them, only alice's count of what she keeps (hostSecretIndex.ts).
+        const values = [...store.values].filter(([k]) => k !== "mike:p_alice:index");
+        expect(values.map(([, v]) => v).sort()).toEqual(["g-access", "g-refresh"]);
+        expect(values.every(([k]) => k.startsWith("mike:p_alice:gdrive:"))).toBe(true);
 
         // Read back after a restart; then disconnecting deletes what the host kept.
         forgetResolvedHostSecrets();
@@ -177,7 +179,7 @@ describe("Google in the app with a Google OAuth client", () => {
             ).toBe("g-access");
             await disconnectGoogleDrive(personalConnectorOwner("u1"), drive.db);
         });
-        expect(store.values.size).toBe(0);
+        expect([...store.values.keys()].filter((k) => k !== "mike:p_alice:index")).toEqual([]);
     });
 
     it("asks for drive.readonly too only when the app is set to", async () => {

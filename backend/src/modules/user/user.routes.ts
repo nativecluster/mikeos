@@ -671,7 +671,7 @@ userRouter.post(
             headers,
         });
         if (!result.ok) {
-            if (result.kind === "setup")
+            if (result.kind === "setup" || result.kind === "limit")
                 return void res
                     .status(400)
                     .json({ code: result.code, detail: result.detail });
@@ -741,10 +741,15 @@ userRouter.patch(
                     : {}),
             },
         );
-        if (!result.ok)
+        if (!result.ok) {
+            if (result.kind === "not_found")
+                return void res.status(404).json({ code: "connector_not_found", detail: "Connector not found." });
+            if (result.kind === "limit")
+                return void res.status(400).json({ code: result.code, detail: result.detail });
             return void res.status(400).json({
                 detail: "Connector settings are invalid or the server could not be reached.",
             });
+        }
         res.json(result.connector);
     }),
 );

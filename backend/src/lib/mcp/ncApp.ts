@@ -18,6 +18,7 @@
 //   ticket check), never a linked account.
 
 import { AsyncLocalStorage } from "node:async_hooks";
+import { ncPersonIdOf } from "../nc/personId";
 import type { HostSecrets } from "./ncSecrets";
 
 export function isNcAppMode(): boolean {
@@ -72,13 +73,12 @@ export function ncAppSecrets(): HostSecrets {
 
 const personContext = new AsyncLocalStorage<{ person: string | null }>();
 
-/** A ticket's person id is the host's opaque id for this app: `p_` and hex. */
-const PERSON_RE = /^p_[A-Za-z0-9]{1,64}$/;
-
+/**
+ * A ticket's person id, the host's opaque id for this app (`p_` and hex), by
+ * the one rule every part of Mike reads it with (lib/nc/personId.ts).
+ */
 export function normalizeNcPerson(value: unknown): string | null {
-    if (typeof value !== "string") return null;
-    const trimmed = value.trim();
-    return PERSON_RE.test(trimmed) ? trimmed : null;
+    return ncPersonIdOf(value);
 }
 
 /** Runs `fn` as work of `person` (the ticket's, from `X-NC-Person`). */
@@ -106,6 +106,40 @@ export function currentNcPerson(): string | null {
     const scoped = personContext.getStore();
     if (scoped) return scoped.person;
     return normalizeNcPerson(personResolver?.() ?? null);
+}
+
+export class NcPersonUnknownError extends Error {
+    code = "nc_person_unknown";
+    constructor() {
+        super("Mike could not tell which NativeCluster person this connection is for.");
+        this.name = "NcPersonUnknownError";
+    }
+}
+
+/**
+ * App mode: the person of the work in hand, to save with something only they
+ * may finish (a sign-in's state): throws when none is known, so nothing is
+ * ever saved for no one. Elsewhere null (nothing is saved for a person).
+ */
+export function ncPersonToSave(): string | null {
+    if (!isNcAppMode()) return null;
+    const person = currentNcPerson();
+    if (!person) throw new NcPersonUnknownError();
+    return person;
+}
+
+/**
+ * Whether the work in hand may use what was saved for `saved` (a sign-in's
+ * state). App mode: only that same person, and never something saved with
+ * no person, or used by no one: "no person" is never a wildcard (the
+ * 2026-11-24 security review, L3). Elsewhere states carry no person, and one
+ * that does is held to it as before.
+ */
+export function ncPersonMayUse(saved: unknown): boolean {
+    const person = typeof saved === "string" && saved ? saved : null;
+    if (!isNcAppMode()) return !person || currentNcPerson() === person;
+    const asking = currentNcPerson();
+    return person !== null && asking !== null && asking === person;
 }
 
 // ---------------------------------------------------------------------------

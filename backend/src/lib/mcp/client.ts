@@ -18,6 +18,7 @@ import {
     resolveHostColumns,
     sealHostColumns,
 } from "./hostSecretColumns";
+import { HostSecretLimitError } from "./hostSecretIndex";
 import { isNcAppMode } from "./ncApp";
 import {
     HEADER_NAME_RE,
@@ -444,6 +445,34 @@ export function validateCustomHeaders(
         headers[trimmedKey] = value;
     }
     return headers;
+}
+
+/** App mode: the most a pasted key, and a connector's headers together, may hold. */
+export const PASTED_AUTH_MAX_BYTES = 8 * 1024;
+
+/**
+ * App mode: refuses, in words and before anything is kept, a pasted key or
+ * custom headers larger than PASTED_AUTH_MAX_BYTES (the 2026-11-24 security
+ * review, M2: each value goes to NativeCluster's store, one for the whole
+ * app). Elsewhere the limits are validateCustomHeaders' alone.
+ */
+export function assertPastedAuthFits(config: McpConnectorAuthConfig): void {
+    if (!isNcAppMode()) return;
+    const bearer = Buffer.byteLength(config.bearerToken ?? "", "utf8");
+    const headers = Object.entries(config.headers ?? {}).reduce(
+        (sum, [name, value]) => sum + Buffer.byteLength(name, "utf8") + Buffer.byteLength(String(value), "utf8"),
+        0,
+    );
+    if (bearer > PASTED_AUTH_MAX_BYTES)
+        throw new HostSecretLimitError(
+            "connector_secret_too_large",
+            `The key is longer than Mike keeps (${PASTED_AUTH_MAX_BYTES / 1024} KiB). Check what you pasted.`,
+        );
+    if (headers > PASTED_AUTH_MAX_BYTES)
+        throw new HostSecretLimitError(
+            "connector_secret_too_large",
+            `The custom headers hold more than Mike keeps (${PASTED_AUTH_MAX_BYTES / 1024} KiB together). Remove the ones the server does not need.`,
+        );
 }
 
 export function authConfigPatch(config: McpConnectorAuthConfig): Record<string, unknown> {

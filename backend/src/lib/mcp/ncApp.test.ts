@@ -9,6 +9,9 @@ import {
     ncAppSecrets,
     NcAppNotConfiguredError,
     ncPersonContext,
+    ncPersonMayUse,
+    NcPersonUnknownError,
+    ncPersonToSave,
     parsePastedAuthorization,
     resetNcAppConnectors,
     withNcPerson,
@@ -92,6 +95,32 @@ describe("the person", () => {
             inside = currentNcPerson();
         });
         expect(inside).toBe("p_1");
+    });
+
+    // Review L3: a sign-in's state saved with no person was finished by
+    // anyone, and one was started for no one.
+    it("saves nothing for no one, and lets only its own person use a saved state", () => {
+        vi.stubEnv("MIKE_NC_APP", "1");
+        expect(() => ncPersonToSave()).toThrow(NcPersonUnknownError);
+        withNcPerson("p_alice", () => expect(ncPersonToSave()).toBe("p_alice"));
+        withNcPerson("p_alice", () => {
+            expect(ncPersonMayUse("p_alice")).toBe(true);
+            expect(ncPersonMayUse("p_bob")).toBe(false);
+            expect(ncPersonMayUse(undefined)).toBe(false);
+            expect(ncPersonMayUse("")).toBe(false);
+        });
+        expect(ncPersonMayUse("p_alice")).toBe(false);
+        expect(ncPersonMayUse(undefined)).toBe(false);
+        // Elsewhere states carry no person, as before.
+        vi.stubEnv("MIKE_NC_APP", "");
+        expect(ncPersonToSave()).toBeNull();
+        expect(ncPersonMayUse(undefined)).toBe(true);
+    });
+
+    it("is read by the one rule for a person id", () => {
+        withNcPerson("p_al.ice", () => expect(currentNcPerson()).toBeNull());
+        withNcPerson("p_al-ice", () => expect(currentNcPerson()).toBeNull());
+        withNcPerson(" p_7f3a ", () => expect(currentNcPerson()).toBe("p_7f3a"));
     });
 
     it("falls back to the wired resolver outside a request", () => {

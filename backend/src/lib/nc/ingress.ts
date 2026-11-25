@@ -18,6 +18,7 @@
 import type { NextFunction, Request, RequestHandler, Response } from "express";
 import { ncTaskForPath, runInNcRequest } from "./context";
 import { internalSecretFromStdinEnabled, internalSecretMatches, launchSecrets } from "./launchSecrets";
+import { ncPersonIdOf } from "./personId";
 import { ncAppMode, ncTickPath, runNcTick } from "./tick";
 
 export const NC_INTERNAL_HEADER = "x-nc-internal";
@@ -29,13 +30,21 @@ export function ncIngressEnabled(env: NodeJS.ProcessEnv = process.env): boolean 
   return internalSecretFromStdinEnabled(env);
 }
 
-// An id the host made: letters, digits and a few separators, never words.
+// A request id the host made: letters, digits and a few separators, never words.
 const ID = /^[A-Za-z0-9._:~-]{1,200}$/;
 
+function headerValue(value: string | string[] | undefined): string {
+  return (Array.isArray(value) ? value[0] : value)?.trim() ?? "";
+}
+
 function headerId(value: string | string[] | undefined): string {
-  const raw = Array.isArray(value) ? value[0] : value;
-  const trimmed = raw?.trim() ?? "";
+  const trimmed = headerValue(value);
   return ID.test(trimmed) ? trimmed : "";
+}
+
+/** The person by the one rule (lib/nc/personId.ts), or "" for nobody. */
+function headerPerson(value: string | string[] | undefined): string {
+  return ncPersonIdOf(headerValue(value)) ?? "";
 }
 
 function forbidden(res: Response): void {
@@ -72,7 +81,7 @@ export function ncIngress(
       req.headers["x-forwarded-for"] = "127.0.0.1";
     }
 
-    const person = headerId(req.headers[NC_PERSON_HEADER]);
+    const person = headerPerson(req.headers[NC_PERSON_HEADER]);
     const request = headerId(req.headers[NC_REQUEST_HEADER]);
     runInNcRequest({ person, request, at: Date.now(), task: ncTaskForPath(req.path) }, () => next());
   };

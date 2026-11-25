@@ -1,5 +1,6 @@
 import type { Request } from "express";
 import { requestOriginIsTrusted } from "./origins";
+import { ncPersonIdOf } from "./nc/personId";
 
 /**
  * Mike packaged as a NativeCluster app (MIKE_NC_APP=1, set by the app's
@@ -26,7 +27,6 @@ export const NC_PERSON_HEADER = "x-nc-person";
 export const NC_PERSON_EMAIL_HEADER = "x-nc-person-email";
 export const NC_PERSON_NAME_HEADER = "x-nc-person-name";
 
-const NC_PERSON_PATTERN = /^p_[A-Za-z0-9._-]{1,128}$/;
 const EMAIL_PATTERN = /^[^@\s]+@[^@\s]+$/;
 
 type HeaderSource = Pick<Request, "get">;
@@ -36,8 +36,7 @@ type HeaderSource = Pick<Request, "get">;
  * or "" when nobody is (or the header is not one the launcher would send).
  */
 export function ncPersonOf(req: HeaderSource): string {
-  const value = req.get(NC_PERSON_HEADER)?.trim() ?? "";
-  return NC_PERSON_PATTERN.test(value) ? value : "";
+  return ncPersonIdOf(req.get(NC_PERSON_HEADER)) ?? "";
 }
 
 /** The person's email from NativeCluster, lowercased, or "" without one. */

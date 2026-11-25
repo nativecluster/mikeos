@@ -21,6 +21,7 @@ import {
     mcpConnectionFingerprint,
     resolveConnectorSecrets,
     sealAuthConfig,
+    assertPastedAuthFits,
     validateCustomHeaders,
     validateRemoteMcpUrl,
 } from "./client";
@@ -29,6 +30,7 @@ import {
     MCP_AUTH_FIELDS,
     MCP_TOKEN_FIELDS,
     releaseHostColumns,
+    withHostSecretWrite,
 } from "./hostSecretColumns";
 import { isNcAppMode } from "./ncApp";
 import {
@@ -239,37 +241,55 @@ export async function createUserMcpConnector(
     },
     db: Db = createServerSupabase(),
 ): Promise<McpConnectorSummary> {
+    // App mode: an MCP plane NativeCluster turned off is refused before
+    // the server's name is looked up or the key kept (review L1).
+    if (isNcAppMode()) assertNetPlaneOn("mcp");
     const name = input.name.trim().slice(0, 80);
     if (!name) throw new Error("Connector name is required.");
     const serverUrl = await validateRemoteMcpUrl(input.serverUrl.trim());
     const headers = validateCustomHeaders(input.headers);
-    // In app mode the row's id is chosen here, so the pasted key can be kept
-    // in NativeCluster's store under it before the row exists.
-    const id = isNcAppMode() ? crypto.randomUUID() : undefined;
-    const auth = await sealAuthConfig(id ?? "", {
+    const config: McpConnectorAuthConfig = {
         ...(input.bearerToken?.trim()
             ? { bearerToken: input.bearerToken.trim() }
             : {}),
         headers,
+    };
+    assertPastedAuthFits(config);
+    // In app mode the row's id is chosen here, so the pasted key can be kept
+    // in NativeCluster's store under it before the row exists; if the row
+    // is not saved, the key is deleted again.
+    const id = isNcAppMode() ? crypto.randomUUID() : undefined;
+    const data = await withHostSecretWrite(async () => {
+        const auth = await sealAuthConfig(id ?? "", config);
+        const { data, error } = await db
+            .from("user_mcp_connectors")
+            .insert({
+                ...(id ? { id } : {}),
+                user_id: owner.userId,
+                org_id: owner.orgId,
+                name,
+                transport: "streamable_http",
+                server_url: serverUrl,
+                auth_type: input.bearerToken?.trim() ? "bearer" : "none",
+                enabled: true,
+                tool_policy: {},
+                ...auth,
+            })
+            .select("*")
+            .single();
+        if (error) throw error;
+        return data;
     });
-    const { data, error } = await db
-        .from("user_mcp_connectors")
-        .insert({
-            ...(id ? { id } : {}),
-            user_id: owner.userId,
-            org_id: owner.orgId,
-            name,
-            transport: "streamable_http",
-            server_url: serverUrl,
-            auth_type: input.bearerToken?.trim() ? "bearer" : "none",
-            enabled: true,
-            tool_policy: {},
-            ...auth,
-        })
-        .select("*")
-        .single();
-    if (error) throw error;
     return toConnectorSummary(data as ConnectorRow);
+}
+
+/** The connector named is not one of the caller's (app mode, review M2). */
+export class McpConnectorNotFoundError extends Error {
+    code = "connector_not_found";
+    constructor() {
+        super("Connector not found.");
+        this.name = "McpConnectorNotFoundError";
+    }
 }
 
 export async function updateUserMcpConnector(
@@ -286,6 +306,14 @@ export async function updateUserMcpConnector(
     },
     db: Db = createServerSupabase(),
 ): Promise<McpConnectorSummary> {
+    // App mode: the connector must be the caller's before anything else is
+    // done for it, a host secret written above all (review M2), and an MCP
+    // plane that is off refuses before any name is looked up (review L1).
+    let owned: ConnectorRow | null = null;
+    if (isNcAppMode()) {
+        assertNetPlaneOn("mcp");
+        owned = await loadOwnedConnector(userId, connectorId, db);
+    }
     const update: Record<string, unknown> = {
         updated_at: new Date().toISOString(),
     };
@@ -304,13 +332,14 @@ export async function updateUserMcpConnector(
     if (typeof input.requireWriteApproval === "boolean") {
         update.require_write_approval = input.requireWriteApproval;
     }
-    if ("bearerToken" in input || "headers" in input) {
-        const current = await loadConnector(userId, connectorId, db).catch(
-            () => null,
-        );
-        const nextConfig: McpConnectorAuthConfig = current
-            ? decryptAuthConfig(current)
-            : {};
+    const sealsAuth = "bearerToken" in input || "headers" in input;
+    let current: ConnectorRow | null = null;
+    let nextConfig: McpConnectorAuthConfig = {};
+    if (sealsAuth) {
+        current =
+            owned ??
+            (await loadConnector(userId, connectorId, db).catch(() => null));
+        nextConfig = current ? decryptAuthConfig(current) : {};
         if ("bearerToken" in input) {
             if (input.bearerToken?.trim()) {
                 nextConfig.bearerToken = input.bearerToken.trim();
@@ -321,22 +350,45 @@ export async function updateUserMcpConnector(
         if ("headers" in input) {
             nextConfig.headers = validateCustomHeaders(input.headers);
         }
-        Object.assign(update, await sealAuthConfig(connectorId, nextConfig, current));
+        assertPastedAuthFits(nextConfig);
         if (nextConfig.bearerToken?.trim()) update.auth_type = "bearer";
         else if (current?.auth_type !== "oauth") update.auth_type = "none";
     }
 
-    const { data, error } = await db
-        .from("user_mcp_connectors")
-        .update(update)
-        .eq("user_id", userId)
-        .eq("id", connectorId)
-        .select("*")
-        .single();
-    if (error) throw error;
+    const data = await withHostSecretWrite(async () => {
+        if (sealsAuth)
+            Object.assign(update, await sealAuthConfig(connectorId, nextConfig, current));
+        const { data, error } = await db
+            .from("user_mcp_connectors")
+            .update(update)
+            .eq("user_id", userId)
+            .eq("id", connectorId)
+            .select("*")
+            .single();
+        if (error) throw error;
+        return data;
+    });
     return getUserMcpConnector(userId, connectorId, db).catch(() =>
         toConnectorSummary(data as ConnectorRow),
     );
+}
+
+/** The caller's own connector, or McpConnectorNotFoundError (app mode). */
+async function loadOwnedConnector(
+    userId: string,
+    connectorId: string,
+    db: Db,
+): Promise<ConnectorRow> {
+    const { data, error } = await db
+        .from("user_mcp_connectors")
+        .select("*")
+        .eq("user_id", userId)
+        .eq("id", connectorId)
+        .maybeSingle();
+    if (error) throw error;
+    if (!data) throw new McpConnectorNotFoundError();
+    await resolveConnectorSecrets(data as ConnectorRow);
+    return data as ConnectorRow;
 }
 
 export async function completeUserMcpConnectorOAuth(

@@ -185,6 +185,30 @@ describe("the backend's door", () => {
     expect(playbook.body.origin.task).toBe("playbook");
   });
 
+  // Review L3: one rule for a person id. The ingress took any id of
+  // `[A-Za-z0-9._:~-]`, the sign-in `p_` and `[A-Za-z0-9._-]`, the
+  // connectors `p_` and letters and digits: an id one read as a person
+  // another read as no one.
+  it("reads a person by the one rule every part of Mike reads it with", async () => {
+    for (const [sent, kept] of [
+      ["p_7f3a", "p_7f3a"],
+      ["p_" + "a".repeat(64), "p_" + "a".repeat(64)],
+      ["p_" + "a".repeat(65), ""],
+      ["p_al.ice", ""],
+      ["p_al-ice", ""],
+      ["p_a:b", ""],
+      ["alice", ""],
+      ["p_", ""],
+    ]) {
+      const res = await request(appBehindTheDoor())
+        .get("/echo/x")
+        .set("X-NC-Internal", SECRET)
+        .set("X-NC-Person", sent)
+        .set("X-NC-Request", "r_7");
+      expect(res.body.scope.request.person, sent).toBe(kept);
+    }
+  });
+
   it("keeps a person or request id that is not an id out of the scope", async () => {
     const res = await request(appBehindTheDoor())
       .get("/echo/x")

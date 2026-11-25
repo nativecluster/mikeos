@@ -32,6 +32,11 @@ describe("NativeCluster app mode", () => {
     expect(ncPersonOf(headers({}))).toBe("");
     expect(ncPersonOf(headers({ "X-NC-Person": "lawyer@example.test" }))).toBe("");
     expect(ncPersonOf(headers({ "X-NC-Person": "p_a,p_b" }))).toBe("");
+    // Review L3: one rule for a person id (lib/nc/personId.ts). These used to
+    // sign in here and read as no person to the connectors.
+    expect(ncPersonOf(headers({ "X-NC-Person": "p_al.ice" }))).toBe("");
+    expect(ncPersonOf(headers({ "X-NC-Person": "p_al-ice" }))).toBe("");
+    expect(ncPersonOf(headers({ "X-NC-Person": "p_" + "a".repeat(65) }))).toBe("");
   });
 
   it("reads the person's email and name when NativeCluster gives them", () => {

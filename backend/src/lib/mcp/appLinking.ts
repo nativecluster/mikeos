@@ -37,7 +37,7 @@ import {
     oauthClientEnvFor,
     storeOAuthToken,
 } from "./oauth";
-import { currentNcPerson, parsePastedAuthorization } from "./ncApp";
+import { ncPersonMayUse, ncPersonToSave, parsePastedAuthorization } from "./ncApp";
 import { OAUTH_STATE_TTL_MS, type ConnectorRow, type Db, type OAuthStateConfig } from "./types";
 
 export const DEVICE_CODE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
@@ -239,7 +239,8 @@ export async function startMcpDeviceAuthorization(
             ? Math.min(answer.body.expires_in, OAUTH_STATE_TTL_MS / 1000)
             : OAUTH_STATE_TTL_MS / 1000;
     const state = base64Url(crypto.randomBytes(32));
-    const person = currentNcPerson();
+    // App mode: no sign-in for no one (review L3).
+    const person = ncPersonToSave();
     const config: DeviceStateConfig = {
         codeVerifier: "",
         redirectUri,
@@ -301,7 +302,7 @@ async function loadOwnState(userId: string, connectorId: string, state: string, 
     const decrypted = decryptString(row.encrypted_state_config, row.state_config_iv, row.state_config_tag);
     if (!decrypted) return null;
     const config = JSON.parse(decrypted) as Partial<DeviceStateConfig>;
-    if (config.person && currentNcPerson() !== config.person) return null;
+    if (!ncPersonMayUse(config.person)) return null;
     return { row, config };
 }
 

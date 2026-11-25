@@ -9,6 +9,7 @@ export { sameMcpServerUrl } from "./mcp/types";
 export { McpOAuthRequiredError } from "./mcp/oauth";
 export { mcpConnectorSetupInstructions, mcpProvidersNeedingSetup } from "./mcp/oauth";
 export { ConnectorSetupError } from "./mcp/errors";
+export { HostSecretLimitError } from "./mcp/hostSecretIndex";
 export {
     buildUserMcpTools,
     completeUserMcpConnectorOAuth,
@@ -19,6 +20,7 @@ export {
     executeMcpToolOnServer,
     getUserMcpConnector,
     listUserMcpConnectors,
+    McpConnectorNotFoundError,
     planMcpToolCall,
     refreshUserMcpConnectorTools,
     setUserMcpToolEnabled,

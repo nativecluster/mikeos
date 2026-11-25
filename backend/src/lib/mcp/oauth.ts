@@ -28,8 +28,9 @@ import {
     releaseHostColumns,
     resolveHostColumns,
     sealHostColumns,
+    withHostSecretWrite,
 } from "./hostSecretColumns";
-import { currentNcPerson, isNcAppMode } from "./ncApp";
+import { isNcAppMode, ncPersonMayUse, ncPersonToSave } from "./ncApp";
 import {
     mcpOAuthProviderFor,
     mcpOAuthProviders,
@@ -417,39 +418,62 @@ export async function storeOAuthToken(
           )
         : null;
     const clientSecret = config.clientSecret;
-    const row = {
-        connector_id: connectorId,
-        ...(options.newGrant ? { grant_id: crypto.randomUUID() } : {}),
-        ...(await sealTokenField(connectorId, "access_token", accessToken, existing)),
-        ...(await sealTokenField(connectorId, "refresh_token", refreshToken ?? existingRefresh, existing)),
-        token_type:
-            typeof token.token_type === "string" ? token.token_type : "Bearer",
-        scope: typeof token.scope === "string" ? token.scope : config.scope ?? null,
-        expires_at: expiresIn
-            ? new Date(Date.now() + expiresIn * 1000).toISOString()
-            : null,
-        authorization_server: config.authorizationServer,
-        token_endpoint: config.tokenEndpoint,
-        client_id: config.clientId,
-        ...(await sealTokenField(connectorId, "client_secret", clientSecret, existing)),
-        resource: config.resource,
-        updated_at: new Date().toISOString(),
-    };
-    const { error } = await db
-        .from("user_mcp_oauth_tokens")
-        .upsert(row, { onConflict: "connector_id" });
-    if (error) throw error;
-    const { error: connectorError } = await db
-        .from("user_mcp_connectors")
-        .update({
-            auth_type: "oauth",
-            encrypted_auth_config: null,
-            auth_config_iv: null,
-            auth_config_tag: null,
+    // App mode: a token kept in NativeCluster's store whose row is then not
+    // saved is deleted again, or put back as it was (review M2).
+    await withHostSecretWrite(async () => {
+        const row = {
+            connector_id: connectorId,
+            ...(options.newGrant ? { grant_id: crypto.randomUUID() } : {}),
+            ...(await sealTokenField(connectorId, "access_token", accessToken, existing)),
+            ...(await sealTokenField(connectorId, "refresh_token", refreshToken ?? existingRefresh, existing)),
+            token_type:
+                typeof token.token_type === "string" ? token.token_type : "Bearer",
+            scope: typeof token.scope === "string" ? token.scope : config.scope ?? null,
+            expires_at: expiresIn
+                ? new Date(Date.now() + expiresIn * 1000).toISOString()
+                : null,
+            authorization_server: config.authorizationServer,
+            token_endpoint: config.tokenEndpoint,
+            client_id: config.clientId,
+            ...(await sealTokenField(connectorId, "client_secret", clientSecret, existing)),
+            resource: config.resource,
             updated_at: new Date().toISOString(),
-        })
-        .eq("id", connectorId);
-    if (connectorError) throw connectorError;
+        };
+        const { error } = await db
+            .from("user_mcp_oauth_tokens")
+            .upsert(row, { onConflict: "connector_id" });
+        if (error) throw error;
+        // App mode: a pasted key the connector kept in NativeCluster's
+        // store goes with it, once the row no longer points to it.
+        const previousAuth = isNcAppMode()
+            ? (
+                  await db
+                      .from("user_mcp_connectors")
+                      .select("encrypted_auth_config, auth_config_iv, auth_config_tag")
+                      .eq("id", connectorId)
+                      .maybeSingle()
+              ).data
+            : null;
+        const { error: connectorError } = await db
+            .from("user_mcp_connectors")
+            .update({
+                auth_type: "oauth",
+                ...(previousAuth
+                    ? await sealHostColumns("auth_config", null, {
+                          kind: "mcp-auth",
+                          rowKey: connectorId,
+                          previous: previousAuth as Record<string, unknown>,
+                      })
+                    : {
+                          encrypted_auth_config: null,
+                          auth_config_iv: null,
+                          auth_config_tag: null,
+                      }),
+                updated_at: new Date().toISOString(),
+            })
+            .eq("id", connectorId);
+        if (connectorError) throw connectorError;
+    });
 }
 
 /**
@@ -609,16 +633,18 @@ export class DbMcpOAuthProvider implements OAuthClientProvider {
         const existing = isNcAppMode()
             ? await loadOAuthToken(this.connector.id, this.db)
             : null;
-        const row = {
-            connector_id: this.connector.id,
-            client_id: info.client_id,
-            ...(await sealTokenField(this.connector.id, "client_secret", clientSecret, existing)),
-            updated_at: new Date().toISOString(),
-        };
-        const { error } = await this.db
-            .from("user_mcp_oauth_tokens")
-            .upsert(row, { onConflict: "connector_id" });
-        if (error) throw error;
+        await withHostSecretWrite(async () => {
+            const row = {
+                connector_id: this.connector.id,
+                client_id: info.client_id,
+                ...(await sealTokenField(this.connector.id, "client_secret", clientSecret, existing)),
+                updated_at: new Date().toISOString(),
+            };
+            const { error } = await this.db
+                .from("user_mcp_oauth_tokens")
+                .upsert(row, { onConflict: "connector_id" });
+            if (error) throw error;
+        });
     }
 
     async tokens(): Promise<OAuthTokens | undefined> {
@@ -661,53 +687,55 @@ export class DbMcpOAuthProvider implements OAuthClientProvider {
         const clientInfo = await this.clientInformation();
         const expiresIn =
             typeof tokens.expires_in === "number" ? tokens.expires_in : null;
-        const row = {
-            connector_id: this.connector.id,
-            ...(this.mode === "initiate" ? { grant_id: crypto.randomUUID() } : {}),
-            ...(await sealTokenField(this.connector.id, "access_token", tokens.access_token, existing)),
-            ...(await sealTokenField(
-                this.connector.id,
-                "refresh_token",
-                tokens.refresh_token ?? existingRefresh,
-                existing,
-            )),
-            token_type: tokens.token_type ?? "Bearer",
-            scope: tokens.scope ?? env.scope ?? null,
-            expires_at: expiresIn
-                ? new Date(Date.now() + expiresIn * 1000).toISOString()
-                : null,
-            client_id: clientInfo?.client_id ?? null,
-            ...(await sealTokenField(
-                this.connector.id,
-                "client_secret",
-                "client_secret" in (clientInfo ?? {}) &&
-                    typeof clientInfo?.client_secret === "string"
-                    ? clientInfo.client_secret
-                    : undefined,
-                existing,
-            )),
-            resource: new URL(this.connector.server_url).toString(),
-            updated_at: new Date().toISOString(),
-        };
-        const { error } = await this.db
-            .from("user_mcp_oauth_tokens")
-            .upsert(row, { onConflict: "connector_id" });
-        if (error) throw error;
-        const authConfig = decryptAuthConfig(this.connector);
-        const { error: connectorError } = await this.db
-            .from("user_mcp_connectors")
-            .update({
-                auth_type: "oauth",
-                ...(await sealAuthConfig(
+        await withHostSecretWrite(async () => {
+            const row = {
+                connector_id: this.connector.id,
+                ...(this.mode === "initiate" ? { grant_id: crypto.randomUUID() } : {}),
+                ...(await sealTokenField(this.connector.id, "access_token", tokens.access_token, existing)),
+                ...(await sealTokenField(
                     this.connector.id,
-                    { headers: authConfig.headers },
-                    this.connector,
+                    "refresh_token",
+                    tokens.refresh_token ?? existingRefresh,
+                    existing,
                 )),
+                token_type: tokens.token_type ?? "Bearer",
+                scope: tokens.scope ?? env.scope ?? null,
+                expires_at: expiresIn
+                    ? new Date(Date.now() + expiresIn * 1000).toISOString()
+                    : null,
+                client_id: clientInfo?.client_id ?? null,
+                ...(await sealTokenField(
+                    this.connector.id,
+                    "client_secret",
+                    "client_secret" in (clientInfo ?? {}) &&
+                        typeof clientInfo?.client_secret === "string"
+                        ? clientInfo.client_secret
+                        : undefined,
+                    existing,
+                )),
+                resource: new URL(this.connector.server_url).toString(),
                 updated_at: new Date().toISOString(),
-            })
-            .eq("id", this.connector.id)
-            .eq("user_id", this.userId);
-        if (connectorError) throw connectorError;
+            };
+            const { error } = await this.db
+                .from("user_mcp_oauth_tokens")
+                .upsert(row, { onConflict: "connector_id" });
+            if (error) throw error;
+            const authConfig = decryptAuthConfig(this.connector);
+            const { error: connectorError } = await this.db
+                .from("user_mcp_connectors")
+                .update({
+                    auth_type: "oauth",
+                    ...(await sealAuthConfig(
+                        this.connector.id,
+                        { headers: authConfig.headers },
+                        this.connector,
+                    )),
+                    updated_at: new Date().toISOString(),
+                })
+                .eq("id", this.connector.id)
+                .eq("user_id", this.userId);
+            if (connectorError) throw connectorError;
+        });
     }
 
     async redirectToAuthorization(authorizationUrl: URL) {
@@ -726,7 +754,9 @@ export class DbMcpOAuthProvider implements OAuthClientProvider {
     }
 
     async saveCodeVerifier(codeVerifier: string) {
-        const person = isNcAppMode() ? currentNcPerson() : null;
+        // App mode: the person who starts the sign-in, and no sign-in for no
+        // one (review L3).
+        const person = ncPersonToSave();
         const origin = isNcAppMode() ? new URL(this.redirectUri).origin : null;
         const encrypted = encryptString(
             JSON.stringify({
@@ -1046,7 +1076,7 @@ export async function completeMcpConnectorOAuthAuthorization(
     const config = JSON.parse(decrypted) as OAuthStateConfig;
     // App mode: the authorization finishes only for the NativeCluster person
     // who started it (the ticket's), whichever way the code came back.
-    if (config.person && currentNcPerson() !== config.person)
+    if (!ncPersonMayUse(config.person))
         throw new Error("OAuth state belongs to another person.");
     // ...and only on the app's origin it was started on (the port differs
     // per computer), so a code is never finished anywhere else.

@@ -12,12 +12,13 @@ import {
   stateHash,
 } from "../mcp/client";
 import { googleDriveOAuthEnv } from "./googleDrive";
-import { currentNcPerson, isNcAppMode } from "../mcp/ncApp";
+import { isNcAppMode, ncPersonMayUse, ncPersonToSave } from "../mcp/ncApp";
 import {
   GOOGLE_TOKEN_FIELDS,
   releaseHostColumns,
   resolveHostColumns,
   sealHostColumns,
+  withHostSecretWrite,
 } from "../mcp/hostSecretColumns";
 import {
   googleServiceUnavailableMessage,
@@ -341,7 +342,8 @@ export async function startWorkspaceOAuth(
         verifier,
         redirectUri,
         // App mode: the NativeCluster person and the app origin that started it.
-        ...(isNcAppMode() && currentNcPerson() ? { person: currentNcPerson() } : {}),
+        // No sign-in for no one (review L3).
+        ...(isNcAppMode() ? { person: ncPersonToSave() } : {}),
         ...(isNcAppMode() ? { origin: new URL(redirectUri).origin } : {}),
       }),
     ),
@@ -425,7 +427,7 @@ export async function completeWorkspaceOAuth(
     origin?: string;
   };
   if (
-    (config.person && currentNcPerson() !== config.person) ||
+    !ncPersonMayUse(config.person) ||
     (config.origin && options.origin !== config.origin)
   )
     throw new GoogleWorkspaceError(
@@ -463,45 +465,50 @@ export async function completeWorkspaceOAuth(
     userId: completingUserId,
     orgId: typeof data.org_id === "string" ? data.org_id : null,
   };
-  const patch = await sealedTokenPatch(
-    owner,
-    token,
-    provider,
-    isNcAppMode() ? await loadWorkspaceGrant(db, owner, provider) : null,
-  );
-  const identityResponse = await workspaceRequest(
-    "https://openidconnect.googleapis.com/v1/userinfo",
-    { headers: { Authorization: `Bearer ${token.access_token}` } },
-  );
-  const identity = (await identityResponse.json()) as Record<string, unknown>;
-  if (
-    !identityResponse.ok ||
-    identity.email_verified !== true ||
-    typeof identity.email !== "string" ||
-    typeof identity.sub !== "string"
-  )
-    throw new GoogleWorkspaceError(
-      "Could not verify the selected Google account. Connect again.",
-      { kind: identityResponse.status >= 500 ? "google.api_failed" : "google.auth_failed", cause: { status: identityResponse.status } },
+  // App mode: tokens kept in NativeCluster's store whose grant is then not
+  // saved (an account Google would not verify, an expired state) are
+  // deleted again, or put back as they were (review M2).
+  await withHostSecretWrite(async () => {
+    const patch = await sealedTokenPatch(
+      owner,
+      token,
+      provider,
+      isNcAppMode() ? await loadWorkspaceGrant(db, owner, provider) : null,
     );
-  const { data: saved, error: saveError } = await db.rpc(
-    "complete_google_workspace_oauth",
-    {
-      p_state_hash: stateHash(state),
-      p_provider: provider,
-      p_tokens: {
-        ...patch,
-        account_email: identity.email,
-        account_id: identity.sub,
+    const identityResponse = await workspaceRequest(
+      "https://openidconnect.googleapis.com/v1/userinfo",
+      { headers: { Authorization: `Bearer ${token.access_token}` } },
+    );
+    const identity = (await identityResponse.json()) as Record<string, unknown>;
+    if (
+      !identityResponse.ok ||
+      identity.email_verified !== true ||
+      typeof identity.email !== "string" ||
+      typeof identity.sub !== "string"
+    )
+      throw new GoogleWorkspaceError(
+        "Could not verify the selected Google account. Connect again.",
+        { kind: identityResponse.status >= 500 ? "google.api_failed" : "google.auth_failed", cause: { status: identityResponse.status } },
+      );
+    const { data: saved, error: saveError } = await db.rpc(
+      "complete_google_workspace_oauth",
+      {
+        p_state_hash: stateHash(state),
+        p_provider: provider,
+        p_tokens: {
+          ...patch,
+          account_email: identity.email,
+          account_id: identity.sub,
+        },
       },
-    },
-  );
-  if (saveError) throw saveError;
-  if (!saved)
-    throw new GoogleWorkspaceError(
-      "Authorization expired or was cancelled. Connect again.",
-      { kind: "google.user_error" },
     );
+    if (saveError) throw saveError;
+    if (!saved)
+      throw new GoogleWorkspaceError(
+        "Authorization expired or was cancelled. Connect again.",
+        { kind: "google.user_error" },
+      );
+  });
 }
 export async function cancelWorkspaceOAuth(
   db: Db,
