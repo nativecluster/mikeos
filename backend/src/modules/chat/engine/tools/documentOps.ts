@@ -1229,21 +1229,28 @@ const isDocxReview = (fileType: string | null | undefined) =>
 
 /**
  * The tracked changes and comments of a stored .docx revision, as docxText
- * gives them after its body; "" when it has none or they cannot be read
- * (the stored text is still served: they are additions to it).
+ * gives them before (`lead`) and after (`review`) its body; "" when it has
+ * none or they cannot be read (the stored text is still served: they are
+ * additions to it).
  */
-async function docxReviewNotes(db: Db, documentId: string, versionId: string): Promise<string> {
+async function docxReviewNotes(
+  db: Db,
+  documentId: string,
+  versionId: string,
+): Promise<{ lead: string; review: string }> {
+  const none = { lead: "", review: "" };
   try {
     const current = await loadCurrentVersionBytes(documentId, db, versionId);
-    if (!current) return "";
+    if (!current) return none;
     const bytes = current.bytes.buffer.slice(
       current.bytes.byteOffset,
       current.bytes.byteOffset + current.bytes.byteLength,
     ) as ArrayBuffer;
-    return await withExtractionRequest((extract) => extract("docxReview", bytes));
+    const notes = await withExtractionRequest((extract) => extract("docxReview", bytes));
+    return { lead: notes.lead, review: notes.text };
   } catch (error) {
     devLog(`[read_document] review notes unavailable`, error);
-    return "";
+    return none;
   }
 }
 
@@ -1354,14 +1361,16 @@ export async function readDocumentContent(
       // A .docx's stored text is its accepted view alone (search and tabular
       // review keep it so); the model's read adds the tracked changes and
       // comments, read from the same revision's file.
-      const review = isDocxReview(docInfo.file_type)
+      const { lead, review } = isDocxReview(docInfo.file_type)
         ? await docxReviewNotes(db, documentId, versionId)
-        : "";
+        : { lead: "", review: "" };
       emitDocRead();
       const notice = stored.textless_page_count
         ? `[${stored.textless_page_count} page(s) have no text layer and need OCR. Search coverage is incomplete.]\n\n`
         : "";
-      return remember(notice + (stored.text ?? "") + (review ? `\n\n${review}` : ""));
+      return remember(
+        notice + (lead ? `${lead}\n\n` : "") + (stored.text ?? "") + (review ? `\n\n${review}` : ""),
+      );
     }
 
     if (readIdentity && cached?.key === readIdentity.key) {
