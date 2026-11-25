@@ -3,6 +3,7 @@
  * host's front door (nativecluster/test/fakehost/front.mjs).
  *
  *   HARNESS_PKG=<package dir> npx playwright test -c nativecluster/test/e2e
+ *   HARNESS_BROWSER=webkit …  # the same in WebKit (default Chromium)
  *
  * starts the fake host (fake models) on 127.0.0.1:43900 and stops it after.
  * HARNESS_FRONT=<url> uses a door already running instead (run-all.sh starts
@@ -16,7 +17,8 @@
  *   Mike: upstream (Mike's own specs, unchanged, staged by stage.ts),
  *         upstream-synthetic (upstream's browser-mocked specs),
  *         harness (people, chat and tabular with fake models, the door,
- *                  Settings → Connectors against the real services),
+ *                  Settings → Connectors against the real services, the
+ *                  pages under their enforced CSP),
  *         real (HARNESS_REAL_MODELS=1 only).
  */
 import fs from "fs";
@@ -49,7 +51,10 @@ const models = process.env.HARNESS_MODELS ?? "fake";
 const real = process.env.HARNESS_REAL_MODELS === "1";
 if (isMain && !process.env.HARNESS_STATE) process.env.HARNESS_STATE = path.join(runs, `e2e-${sandbox ? "sandboxed" : "plain"}-${models}-${Date.now()}`);
 
-const chrome = { ...devices["Desktop Chrome"] };
+// HARNESS_BROWSER=webkit runs every project in WebKit (Safari's engine, the
+// one NativeCluster's own window uses) instead of Chromium.
+const browserName = process.env.HARNESS_BROWSER === "webkit" ? "webkit" : "chromium";
+const chrome = { ...(browserName === "webkit" ? devices["Desktop Safari"] : devices["Desktop Chrome"]) };
 
 const projects: PlaywrightTestConfig["projects"] =
     app === "probe"
@@ -60,7 +65,7 @@ const projects: PlaywrightTestConfig["projects"] =
               {
                   name: "harness",
                   testDir: path.join(HERE, "specs"),
-                  testMatch: [/people\.spec\.ts/, /chat-fake\.spec\.ts/, /tabular-fake\.spec\.ts/, /door\.spec\.ts/, /connectors\.spec\.ts/],
+                  testMatch: [/people\.spec\.ts/, /chat-fake\.spec\.ts/, /tabular-fake\.spec\.ts/, /door\.spec\.ts/, /connectors\.spec\.ts/, /csp\.spec\.ts/],
                   use: chrome,
               },
               ...(real ? [{ name: "real", testDir: path.join(HERE, "specs"), testMatch: [/real-models\.spec\.ts/], use: chrome }] : []),

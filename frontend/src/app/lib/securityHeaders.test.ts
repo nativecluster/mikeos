@@ -88,7 +88,7 @@ describe("web app security headers", () => {
     it("names no font CDN in the NativeCluster app, whose pages load nothing from outside", async () => {
         vi.stubEnv("NODE_ENV", "production");
         vi.stubEnv("NEXT_PUBLIC_MIKE_NC_APP", "1");
-        const policy = (await pageHeaders())["Content-Security-Policy-Report-Only"];
+        const policy = (await pageHeaders())["Content-Security-Policy"];
         const fontSrc = policy
             .split(";")
             .map((directive) => directive.trim())
@@ -97,6 +97,42 @@ describe("web app security headers", () => {
         expect(fontSrc).toBe("font-src 'self' data: blob:");
         expect(policy).not.toContain("unpkg.com");
         expect(policy).not.toContain("cdn.jsdelivr.net");
+    });
+
+    // Review L6: the app's policy was report-only, so an injected script or a
+    // document renderer's bug could still send a document anywhere.
+    it("enforces the whole policy in the NativeCluster app: nothing leaves the app's origin", async () => {
+        vi.stubEnv("NODE_ENV", "production");
+        vi.stubEnv("NEXT_PUBLIC_MIKE_NC_APP", "1");
+        const headers = await pageHeaders();
+        expect(headers["Content-Security-Policy-Report-Only"]).toBeUndefined();
+        const directives = Object.fromEntries(
+            headers["Content-Security-Policy"]
+                .split(";")
+                .map((d) => d.trim().split(/\s+/))
+                .map(([name, ...sources]) => [name, sources]),
+        );
+        expect(directives["default-src"]).toEqual(["'self'"]);
+        expect(directives["connect-src"]).toEqual(["'self'"]);
+        expect(directives["img-src"]).toEqual(["'self'", "data:", "blob:"]);
+        expect(directives["script-src"]).toEqual(["'self'", "'unsafe-inline'", "'wasm-unsafe-eval'"]);
+        expect(directives["style-src"]).toEqual(["'self'", "'unsafe-inline'"]);
+        expect(directives["form-action"]).toEqual(["'self'"]);
+        expect(directives["frame-ancestors"]).toEqual(["'none'"]);
+        expect(directives["object-src"]).toEqual(["'none'"]);
+        expect(directives["base-uri"]).toEqual(["'self'"]);
+        // Nothing outside the app's own origin, in any directive.
+        expect(headers["Content-Security-Policy"]).not.toMatch(/https?:|\*/);
+    });
+
+    it("keeps the report-only policy everywhere else", () => {
+        const headers = securityHeaders(true, false);
+        expect(headers.find((h) => h.key === "Content-Security-Policy")?.value).toBe(
+            "frame-ancestors 'none'; base-uri 'self'; object-src 'none'",
+        );
+        expect(headers.find((h) => h.key === "Content-Security-Policy-Report-Only")?.value).toContain(
+            "connect-src 'self' blob: data: https:",
+        );
     });
 
     it("keeps the font CDNs everywhere else", () => {

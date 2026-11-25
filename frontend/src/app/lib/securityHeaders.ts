@@ -16,6 +16,11 @@
  * full policy below ships as Content-Security-Policy-Report-Only: browsers
  * log what it would block without blocking it. Only the low-risk directives
  * are enforced.
+ *
+ * The NativeCluster app enforces its whole policy (ncAppCsp): its pages load
+ * nothing from outside, so the policy stops an injected script, or a
+ * document's renderer, from sending anything anywhere but the app's own
+ * origin (the 2026-11-24 security review, L6).
  */
 
 import { isNcApp } from "./ncApp";
@@ -79,6 +84,44 @@ function reportOnlyCsp(production: boolean, ncApp: boolean): string {
 }
 
 /**
+ * The NativeCluster app's policy, enforced. Its pages load nothing from
+ * outside (no Google Picker, no font CDN, uploads and downloads on the
+ * app's own /api), so every source is 'self' but what the pages make in
+ * the browser:
+ * - script-src 'unsafe-inline': Next's inline bootstrap and flight scripts
+ *   (no nonces: the app has no middleware); 'wasm-unsafe-eval': the DOCX
+ *   editor's HarfBuzz text shaper, compiled from a bundled .wasm.
+ * - style-src 'unsafe-inline': React's style attributes and the editors'
+ *   own <style> elements.
+ * - img-src, font-src, media-src data: blob:: document previews and the
+ *   DOCX editor's packaged fonts.
+ * - worker-src blob:, frame-src blob:: the pdf.js worker and document
+ *   previews made in the page.
+ * - connect-src 'self' alone: nothing a page sends leaves the app's origin.
+ * Checked under the harness's e2e in Chromium and WebKit, pages, PDF and
+ * DOCX views included (nativecluster/test/e2e/specs/csp.spec.ts).
+ */
+export function ncAppCsp(production: boolean): string {
+    return [
+        "default-src 'self'",
+        [
+            "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'",
+            // React's development build evaluates code for fast refresh.
+            ...(production ? [] : ["'unsafe-eval'"]),
+        ].join(" "),
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data: blob:",
+        "font-src 'self' data: blob:",
+        "connect-src 'self'",
+        "media-src 'self' blob: data:",
+        "worker-src 'self' blob:",
+        "frame-src 'self' blob:",
+        "form-action 'self'",
+        ENFORCED_CSP,
+    ].join("; ");
+}
+
+/**
  * `ncApp`: built for the NativeCluster app (NEXT_PUBLIC_MIKE_NC_APP=1, read
  * when next.config.ts computes the headers at build time).
  */
@@ -87,11 +130,15 @@ export function securityHeaders(
     ncApp: boolean = isNcApp(),
 ): HeaderEntry[] {
     return [
-        { key: "Content-Security-Policy", value: ENFORCED_CSP },
-        {
-            key: "Content-Security-Policy-Report-Only",
-            value: reportOnlyCsp(production, ncApp),
-        },
+        ...(ncApp
+            ? [{ key: "Content-Security-Policy", value: ncAppCsp(production) }]
+            : [
+                  { key: "Content-Security-Policy", value: ENFORCED_CSP },
+                  {
+                      key: "Content-Security-Policy-Report-Only",
+                      value: reportOnlyCsp(production, ncApp),
+                  },
+              ]),
         // For browsers that predate frame-ancestors.
         { key: "X-Frame-Options", value: "DENY" },
         { key: "X-Content-Type-Options", value: "nosniff" },
