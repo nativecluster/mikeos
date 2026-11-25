@@ -12,6 +12,9 @@
 #                 review on this Mac's NativeCluster (the only real model calls)
 #
 # Every step runs whatever failed before it, and the end says which passed.
+# The contract and e2e steps fail on the app's own logs too: a RangeError, a
+# worker thread that died or was respawned, an uncaught exception, or a
+# forced exit (fakehost/log-check.mjs).
 # Each run's state (ledgers, app output, data, sandbox.sb, Playwright's
 # results) is kept in nativecluster/test/.runs/all-<time>/.
 #
@@ -90,6 +93,20 @@ e2e() {
 		status=1
 	fi
 	node "$here/fakehost/ledger-check.mjs" "$state" || status=1
+	# The app's own logs: no RangeError, no dead or respawned worker thread,
+	# no uncaught exception, no forced exit.
+	node "$here/fakehost/log-check.mjs" "$state" || status=1
+	return $status
+}
+
+# A contract step, then the app's own logs of every test in it (log-check.mjs).
+# $1 label, $2 its state folder, then the environment for node --test.
+contract() {
+	label=$1 dir=$2
+	shift 2
+	status=0
+	env "$@" HARNESS_PKG="$pkg" HARNESS_RUN_DIR="$dir" node --test --test-concurrency=1 "$here/contract/" || status=1
+	node "$here/fakehost/log-check.mjs" "$dir" || status=1
 	return $status
 }
 
@@ -106,7 +123,7 @@ fi
 
 if want contract; then
 	echo "== 2. contract tests (plain)"
-	if HARNESS_PKG="$pkg" HARNESS_RUN_DIR="$run/contract" node --test --test-concurrency=1 "$here/contract/"; then note "ok    contract (plain)"; else note "FAIL  contract (plain)"; failed=1; fi
+	if contract plain "$run/contract"; then note "ok    contract (plain)"; else note "FAIL  contract (plain)"; failed=1; fi
 fi
 
 if want e2e; then
@@ -117,7 +134,7 @@ fi
 if want sandbox && [ $sandbox = 1 ]; then
 	echo "== 4. contract tests and e2e under NativeCluster's app sandbox"
 	if node "$here/../dev/sandbox/check-installed.mjs"; then :; else note "WARN  the sandbox profile differs from the installed NativeCluster's"; fi
-	if HARNESS_PKG="$pkg" HARNESS_SANDBOX=1 HARNESS_RUN_DIR="$run/contract-sandboxed" node --test --test-concurrency=1 "$here/contract/"; then note "ok    contract (sandboxed)"; else note "FAIL  contract (sandboxed)"; failed=1; fi
+	if contract sandboxed "$run/contract-sandboxed" HARNESS_SANDBOX=1; then note "ok    contract (sandboxed)"; else note "FAIL  contract (sandboxed)"; failed=1; fi
 	if e2e e2e-sandboxed "$here/../dev/sandboxed.mjs" fake "$fake_projects"; then note "ok    e2e (sandboxed, fake models)"; else note "FAIL  e2e (sandboxed, fake models)"; failed=1; fi
 fi
 

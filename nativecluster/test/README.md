@@ -27,6 +27,12 @@ the fake host's `ledger.json`, the app's output (`app-output.log`), its data
 folder, the rendered `sandbox.sb`, and Playwright's results. The end of the
 run says which steps passed, and the script exits non-zero if any failed.
 
+Every contract and e2e step also reads the app's own logs (`logs/*.log` in
+each data folder, and `app-output.log`) with `fakehost/log-check.mjs`, and
+fails on a RangeError, a worker thread that died or was respawned, an
+uncaught exception, or a forced exit, whatever the tests said:
+`node nativecluster/test/fakehost/log-check.mjs <state dir>...` runs it alone.
+
 Setup, once: `npm ci` at the repository root (for `@playwright/test`) and
 `npx playwright install chromium`. The front door uses 127.0.0.1:43900
 (`HARNESS_PORT`), never Stage 1's 42810-42815.
