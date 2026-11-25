@@ -176,6 +176,13 @@ export interface ShutdownOptions {
   stopBackgroundWork: () => Promise<void>;
   /** Called once, before anything is stopped (e.g. to silence respawns). */
   onStart?: () => void;
+  /**
+   * Called when the drain outlives `timeoutMs`, before the forced exit, and
+   * awaited at most `forcedExitGraceMs`: what must not be left behind even
+   * then (a NativeCluster app's grants in the host's line).
+   */
+  onForcedExit?: () => Promise<unknown>;
+  forcedExitGraceMs?: number;
   timeoutMs?: number;
   effects?: LifecycleEffects;
 }
@@ -191,6 +198,8 @@ export function createShutdown({
   closeServer,
   stopBackgroundWork,
   onStart,
+  onForcedExit,
+  forcedExitGraceMs = 2_000,
   timeoutMs = 15_000,
   effects = processEffects,
 }: ShutdownOptions): (signal: string) => Promise<void> {
@@ -202,7 +211,18 @@ export function createShutdown({
     effects.logInfo(`Shutting down gracefully (${signal})`);
     const forceExit = setTimeout(() => {
       effects.logError("Graceful shutdown timed out — forcing exit");
-      effects.exit(1);
+      if (!onForcedExit) {
+        effects.exit(1);
+        return;
+      }
+      const grace = setTimeout(() => effects.exit(1), forcedExitGraceMs);
+      grace.unref?.();
+      void onForcedExit()
+        .catch(() => {})
+        .finally(() => {
+          clearTimeout(grace);
+          effects.exit(1);
+        });
     }, timeoutMs);
     forceExit.unref();
     let stage = "shutdown-http";

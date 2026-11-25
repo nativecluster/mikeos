@@ -223,14 +223,63 @@ async function releaseGrant(grant: Grant, model: string, read: number, written: 
   }
 }
 
+// The grants this thread holds and has not given back, and the releases on
+// their way to the host. A process that leaves while a call streams, or
+// between a grant and its call, gave nothing back: each grant stood in the
+// host's ledger, never released (the models campaign's bug 2, 2026-11-24:
+// a SIGTERM during a turn left its answer's grant and its title's).
+const held = new Map<string, () => void>();
+const sending = new Set<Promise<void>>();
+let leaving = false;
+
 /** Gives one grant back, once, whoever asks first. */
 function releaser(grant: Grant, model: string): (read?: number, written?: number) => void {
   let given = false;
-  return (read = 0, written = 0) => {
+  const give = (read = 0, written = 0) => {
     if (given) return;
     given = true;
-    void releaseGrant(grant, model, read, written);
+    held.delete(grant.id);
+    const sent = releaseGrant(grant, model, read, written);
+    sending.add(sent);
+    void sent.finally(() => sending.delete(sent));
   };
+  held.set(grant.id, () => give());
+  return give;
+}
+
+/**
+ * The process is leaving (its shutdown, a worker thread's): every grant this
+ * thread still holds goes back now, a call under way on it ending with the
+ * process, and every release on its way is awaited, at most `timeoutMs`.
+ * A grant the line gives after this goes back at once and its call is not
+ * made. Answers how many grants were still held.
+ */
+export async function releaseHeldGrants(timeoutMs = 2_000): Promise<number> {
+  leaving = true;
+  const gives = [...held.values()];
+  for (const give of gives) give();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    Promise.allSettled([...sending]),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, timeoutMs);
+      timer.unref?.();
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
+  return gives.length;
+}
+
+/** How many grants this thread holds now. */
+export function heldGrantCount(): number {
+  return held.size;
+}
+
+/** Test seam: a thread that is not leaving, holding nothing. */
+export function resetHeldGrantsForTests(): void {
+  leaving = false;
+  held.clear();
+  sending.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -530,6 +579,11 @@ export async function hostLineFetch(input: RequestInfo | URL, init?: RequestInit
     }
     const used = grant.model || model;
     const give = releaser(grant, used);
+    if (leaving) {
+      // The process is on its way out: the grant goes back, unused.
+      give();
+      throw new DOMException("the app is stopping", "AbortError");
+    }
     const callHeaders = new Headers(headers);
     callHeaders.set("x-nc-grant", grant.id);
     const callBody = { ...body, model: used, ...(grant.cacheKey ? { cache_key: grant.cacheKey } : {}) };

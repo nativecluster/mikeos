@@ -39,6 +39,7 @@ import {
   readLaunchSecrets,
 } from "./lib/nc/launchSecrets";
 import { currentNcPerson } from "./lib/nc/context";
+import { releaseHeldGrants } from "./lib/nc/hostLine";
 import { startNcAppConnectors } from "./lib/mcp/ncAppStartup";
 import { sweepOrphanHostSecrets } from "./lib/mcp/hostSecretSweep";
 import { createServerSupabase } from "./lib/supabase";
@@ -308,6 +309,7 @@ async function stopBackgroundWork(): Promise<void> {
     // Inline jobs make tool calls too; log what they counted while stopping.
     flushToolActivity();
     await drainStdout();
+    await releaseHeldGrants();
     return;
   }
   await drainStdout();
@@ -325,6 +327,10 @@ async function stopBackgroundWork(): Promise<void> {
         }),
     ),
   );
+  // A NativeCluster app: a grant of this thread's still held (a turn whose
+  // reader had gone, a title between its grant and its call) goes back
+  // before the process ends; each thread gives back its own.
+  await releaseHeldGrants();
 }
 
 const shutdown = createShutdown({
@@ -341,6 +347,8 @@ const shutdown = createShutdown({
   },
   closeServer: () => closeHttpServer(server),
   stopBackgroundWork,
+  // A drain that outlives its time still gives this thread's grants back.
+  onForcedExit: () => releaseHeldGrants(1_500),
 });
 
 process.on("SIGTERM", () => void shutdown("SIGTERM"));

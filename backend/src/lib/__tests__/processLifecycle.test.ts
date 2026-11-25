@@ -239,6 +239,39 @@ describe("graceful shutdown (MIKE-BACKEND-7)", () => {
     await expect(closeHttpServer(broken)).rejects.toThrow("boom");
   });
 
+  // The models campaign's bug 2: a drain that outlived its time exited
+  // with the app's grants in the host's line never given back.
+  it("gives what must not be left behind its moment before a forced exit, and no longer", async () => {
+    const effects = fakeEffects();
+    const order: string[] = [];
+    effects.exit.mockImplementation((code) => void order.push(`exit ${code}`));
+    const shutdown = createShutdown({
+      closeServer: () => new Promise(() => {}), // a stream that never drains
+      stopBackgroundWork: async () => {},
+      onForcedExit: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        order.push("grants given back");
+      },
+      timeoutMs: 30,
+      effects,
+    });
+    void shutdown("SIGTERM");
+    await vi.waitFor(() => expect(order).toEqual(["grants given back", "exit 1"]));
+
+    const stuck = fakeEffects();
+    const late = createShutdown({
+      closeServer: () => new Promise(() => {}),
+      stopBackgroundWork: async () => {},
+      onForcedExit: () => new Promise(() => {}), // never answers
+      forcedExitGraceMs: 30,
+      timeoutMs: 20,
+      effects: stuck,
+    });
+    void late("SIGTERM");
+    await vi.waitFor(() => expect(stuck.exit).toHaveBeenCalledWith(1));
+    expect(stuck.exit).toHaveBeenCalledTimes(1);
+  });
+
   it("runs once when a second signal arrives mid-shutdown", async () => {
     const effects = fakeEffects();
     let release!: () => void;
