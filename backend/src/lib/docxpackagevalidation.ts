@@ -116,7 +116,8 @@ type BoundedZipEntryStream = {
   resume(): void;
 };
 
-async function readZipEntryBounded(
+/** One zip entry's text, refused past `maxBytes` before it is inflated further. */
+export async function readZipEntryBounded(
   entry: JSZip.JSZipObject,
   maxBytes: number,
 ): Promise<string> {

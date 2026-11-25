@@ -1223,6 +1223,29 @@ export function clearTurnReadsForDocument(
 // Lifetime is one turn's DocStore; retain only the latest read per label.
 const turnDocumentTexts = new WeakMap<DocStore, Map<string, { key: string; text: string }>>();
 
+const isDocxReview = (fileType: string | null | undefined) =>
+  (fileType ?? "").toLowerCase() === "docx";
+
+/**
+ * The tracked changes and comments of a stored .docx revision, as docxText
+ * gives them after its body; "" when it has none or they cannot be read
+ * (the stored text is still served: they are additions to it).
+ */
+async function docxReviewNotes(db: Db, documentId: string, versionId: string): Promise<string> {
+  try {
+    const current = await loadCurrentVersionBytes(documentId, db, versionId);
+    if (!current) return "";
+    const bytes = current.bytes.buffer.slice(
+      current.bytes.byteOffset,
+      current.bytes.byteOffset + current.bytes.byteLength,
+    ) as ArrayBuffer;
+    return await withExtractionRequest((extract) => extract("docxReview", bytes));
+  } catch (error) {
+    devLog(`[read_document] review notes unavailable`, error);
+    return "";
+  }
+}
+
 export async function readDocumentContent(
   docLabel: string,
   docStore: DocStore,
@@ -1327,18 +1350,27 @@ export async function readDocumentContent(
         emitDocRead();
         return "Document could not be read.";
       }
+      // A .docx's stored text is its accepted view alone (search and tabular
+      // review keep it so); the model's read adds the tracked changes and
+      // comments, read from the same revision's file.
+      const review = isDocxReview(docInfo.file_type)
+        ? await docxReviewNotes(db, documentId, versionId)
+        : "";
       emitDocRead();
       const notice = stored.textless_page_count
         ? `[${stored.textless_page_count} page(s) have no text layer and need OCR. Search coverage is incomplete.]\n\n`
         : "";
-      return remember(notice + (stored.text ?? ""));
+      return remember(notice + (stored.text ?? "") + (review ? `\n\n${review}` : ""));
     }
 
     if (readIdentity && cached?.key === readIdentity.key) {
       emitDocRead();
       return cached.text;
     }
-    if (db && documentId && versionId) {
+    // A .docx is read from its file (below), not from its stored text: the
+    // stored text is the accepted view alone, and the model's read adds the
+    // tracked changes and comments that view cannot show (docxText).
+    if (db && documentId && versionId && !isDocxReview(docInfo.file_type)) {
       const stored = await loadVersionTextState(db, documentId, versionId, readIdentity?.storagePath);
       if (stored?.text !== null && stored?.text !== undefined) {
         emitDocRead();
