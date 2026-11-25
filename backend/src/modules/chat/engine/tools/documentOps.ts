@@ -1,4 +1,5 @@
 import { loadVersionTextState, cachedTextForModel } from "../../../../lib/documentTextCache";
+import { citedPageAt, pageStartsFor } from "./pageMarkers";
 import {
   applyTrackedEditsToDocument,
   createDocumentVersion,
@@ -1694,6 +1695,11 @@ export type TextMatch = {
   index: number;
   excerpt: string;
   context: string;
+  /**
+   * The "[Page N]" page the match is on ("41-42" across a break), for a
+   * citation; only for a paged text (see pageMarkers.ts).
+   */
+  page?: number | string;
 };
 
 export function findTextMatches(params: {
@@ -1704,8 +1710,11 @@ export function findTextMatches(params: {
   startIndex?: number;
   /** Precomputed `normalizeWithMap(text)`, e.g. from `normalizedTextFor`. */
   normalized?: NormalizedText;
+  /** The text's page starts (pageStarts): each hit then says its page. */
+  pageStarts?: readonly number[];
 }): { hits: TextMatch[]; totalMatches: number } {
   const { text, query, maxResults, contextChars, startIndex = 0 } = params;
+  const starts = params.pageStarts ?? [];
   const { norm, origIdx } = params.normalized ?? normalizeWithMap(text);
   const needle = normalizeQuery(query);
   const hits: TextMatch[] = [];
@@ -1725,6 +1734,7 @@ export function findTextMatches(params: {
     if (hits.length < maxResults) {
       const ctxStart = Math.max(0, origStart - contextChars);
       const ctxEnd = Math.min(text.length, origEnd + contextChars);
+      const page = starts.length ? citedPageAt(starts, origStart, origEnd) : null;
       hits.push({
         index: startIndex + hits.length,
         excerpt: text.slice(origStart, origEnd),
@@ -1732,6 +1742,7 @@ export function findTextMatches(params: {
           (ctxStart > 0 ? "…" : "") +
           text.slice(ctxStart, ctxEnd).replace(/\s+/g, " ").trim() +
           (ctxEnd < text.length ? "…" : ""),
+        ...(page === null ? {} : { page }),
       });
     }
     totalMatches++;
@@ -1906,12 +1917,15 @@ export async function findInDocumentContent(params: {
   }
 
   // Probes are short and many by design; normalize the text once per turn.
+  // Each hit of a paged text (a PDF's) says its page, so a quote found by
+  // search alone is cited where it is, not on page 1.
   const { hits, totalMatches } = findTextMatches({
     text,
     query,
     maxResults,
     contextChars,
     normalized: normalizedTextFor(docInfo, text),
+    pageStarts: pageStartsFor(docInfo, text),
   });
 
   write(

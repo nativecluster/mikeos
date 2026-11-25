@@ -22,10 +22,20 @@ import {
 } from "./tabular.parts";
 import { formatPromptSuffix } from "./tabular.prompt";
 import { type CellResult, type Column } from "./tabular.shared";
+import { withInlineCitationPagesFound } from "../chat/chat.service";
 
 // ---------------------------------------------------------------------------
 // LLM extraction helpers
 // ---------------------------------------------------------------------------
+
+/** A cell's citations on the pages their quotes are on in its document. */
+function withPagesFound(result: CellResult, documentText: string): CellResult {
+    return {
+        ...result,
+        summary: withInlineCitationPagesFound(result.summary, documentText),
+        reasoning: withInlineCitationPagesFound(result.reasoning, documentText),
+    };
+}
 
 const EXTRACTION_SYSTEM = `You are a legal document analyst. Return ONLY valid JSON:
 {"summary": string, "flag": "green"|"grey"|"yellow"|"red", "reasoning": string}
@@ -105,7 +115,7 @@ export async function queryTabularCell(
             answerTokens: CELL_MAX_TOKENS,
         });
         if (parts) {
-            return await answerCellInParts({
+            const answer = await answerCellInParts({
                 model,
                 filename,
                 parts,
@@ -116,6 +126,7 @@ export async function queryTabularCell(
                 apiKeys,
                 parse: parseCellResult,
             });
+            return answer && withPagesFound(answer, documentText);
         }
         raw = await completeText({
             model,
@@ -140,7 +151,8 @@ export async function queryTabularCell(
         reportModelFailure(failure, {}, "[queryTabularCell] completion failed");
         return null;
     }
-    return parseCellResult(raw);
+    const result = parseCellResult(raw);
+    return result && withPagesFound(result, documentText);
 }
 
 export async function generateChatTitle(
@@ -305,12 +317,14 @@ export async function queryTabularAllColumns(
     filename: string,
     documentText: string,
     columns: Column[],
-    onResult: (columnIndex: number, result: CellResult) => Promise<void>,
+    onResultAsWritten: (columnIndex: number, result: CellResult) => Promise<void>,
     apiKeys?: UserApiKeys,
     abortSignal?: AbortSignal,
     onActivity?: () => void,
     reportFailure: boolean | ((error: unknown) => boolean) = true,
 ): Promise<void> {
+    const onResult = (columnIndex: number, result: CellResult) =>
+        onResultAsWritten(columnIndex, withPagesFound(result, documentText));
     const columnsDesc = columns
         .map((col) => `Column ${col.index} — "${col.name}": ${columnInstruction(col)}`)
         .join("\n");

@@ -79,6 +79,7 @@ export {
   withoutEmptyAssistantReservations,
 } from "./engine/index";
 export { generateAssistantChatTitle, logChatTitleFailure } from "./chat.title";
+export { withInlineCitationPagesFound } from "./engine/verifyCitations";
 
 export {
   persistWordDocumentEdits,
