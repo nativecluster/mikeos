@@ -147,24 +147,37 @@ export function ncPersonMayUse(saved: unknown): boolean {
 // ---------------------------------------------------------------------------
 
 /**
- * The hosts the app's origin may have: 127.0.0.1 (or localhost) on one of
- * NativeCluster's ten app ports. Anything else is refused, so a redirect URI
- * is never built from a header pointing elsewhere.
+ * The host the app's origin has: 127.0.0.1 on one of NativeCluster's ten
+ * app ports (`https://127.0.0.1:<port>`, NativeCluster's own origin for each
+ * app; never `localhost`). Anything else is refused, so a redirect URI is
+ * never built from a header pointing elsewhere.
  */
-const APP_HOST_RE = /^(?:127\.0\.0\.1|localhost):(849\d)$/;
+const APP_HOST_RE = /^127\.0\.0\.1:(849\d)$/;
 
 /**
  * `https://127.0.0.1:<port>`, the app's origin on this computer, from the
  * request itself: the browser's `Host` (the host passes it on, and so does
- * the launcher), which must be 127.0.0.1 or localhost on one of
- * NativeCluster's app ports. An `Origin` the browser sent must be that same
- * origin; one that is not is never trusted. Null otherwise.
+ * the launcher), which must be 127.0.0.1 on one of NativeCluster's app
+ * ports. An `Origin` the browser sent must be that same origin; one that is
+ * not is never trusted. Null otherwise.
+ *
+ * `requireOrigin`: the request must also carry the browser's `Origin`, and
+ * it must be the Host's. A sign-in's start asks for it (ncAppRedirectUri):
+ * the way back is then the origin of the page that asked, which a browser
+ * never lets a page set, and not merely the Host a client could write as
+ * another app's port (the 2026-11-24 security review, L7). The app is told
+ * no port of its own by NativeCluster, so the request's own origin is the
+ * one both headers name.
  */
-export function ncAppOrigin(req: { get(name: string): string | undefined }): string | null {
+export function ncAppOrigin(
+    req: { get(name: string): string | undefined },
+    options: { requireOrigin?: boolean } = {},
+): string | null {
     const host = req.get("host")?.trim().toLowerCase();
     if (!host || !APP_HOST_RE.test(host)) return null;
     const origin = `https://${host}`;
     const sent = req.get("origin")?.trim().toLowerCase();
+    if (options.requireOrigin) return sent === origin ? origin : null;
     if (sent && sent !== "null" && sent !== origin) return null;
     return origin;
 }
@@ -186,7 +199,7 @@ export function ncAppRedirectUri(
     req: { get(name: string): string | undefined },
     path: string,
 ): string {
-    const origin = ncAppOrigin(req);
+    const origin = ncAppOrigin(req, { requireOrigin: true });
     if (!origin) throw new NcAppOriginUnknownError();
     return `${origin}/api${path}`;
 }

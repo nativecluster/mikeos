@@ -152,15 +152,20 @@ async function connectorOwner(
     };
 }
 
-function backendPublicUrl(req: {
-    protocol: string;
-    get(name: string): string | undefined;
-}) {
+function backendPublicUrl(
+    req: {
+        protocol: string;
+        get(name: string): string | undefined;
+    },
+    /** A sign-in's start: its way back must be the asking page's origin. */
+    starting = false,
+) {
     // Mike's NativeCluster app: the backend is served under /api on the app's
     // own origin, whose port differs per computer, so connector redirects are
-    // built from the request (its Host; never an Origin that differs).
+    // built from the request (its Host; never an Origin that differs, and at
+    // a start the browser's own Origin, review L7).
     if (isNcAppMode()) {
-        const origin = ncAppOrigin(req);
+        const origin = ncAppOrigin(req, { requireOrigin: starting });
         if (!origin) throw new NcAppOriginUnknownError();
         return `${origin}/api`;
     }
@@ -940,7 +945,7 @@ userRouter.post(
         const owner = await connectorOwner(req, res);
         if (!owner) return;
         try {
-            const redirectUri = `${backendPublicUrl(req)}/user/integrations/google-drive/oauth/callback`;
+            const redirectUri = `${backendPublicUrl(req, true)}/user/integrations/google-drive/oauth/callback`;
             const result = await startGoogleDriveOAuth(
                 owner,
                 redirectUri,
@@ -1247,8 +1252,8 @@ userRouter.post(
 // Gmail and Calendar are explicit integrations, independent of sign-in.
 for (const provider of ["gmail", "google-calendar"] as const) {
     const path = `/integrations/${provider}`;
-    const callback = (req: Parameters<typeof backendPublicUrl>[0]) =>
-        `${backendPublicUrl(req)}/user${path}/oauth/callback`;
+    const callback = (req: Parameters<typeof backendPublicUrl>[0], starting = false) =>
+        `${backendPublicUrl(req, starting)}/user${path}/oauth/callback`;
     const operation = provider === "gmail" ? "google.gmail" : "google.calendar";
     /** The user's answer: the integration's own fixed text, or a generic one. */
     const message = (error: unknown) =>
@@ -1305,7 +1310,7 @@ for (const provider of ["gmail", "google-calendar"] as const) {
                         createServerSupabase(),
                         owner,
                         provider,
-                        callback(req),
+                        callback(req, true),
                     ),
                 );
             } catch (error) {
