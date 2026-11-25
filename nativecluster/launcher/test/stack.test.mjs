@@ -137,6 +137,10 @@ test("every request limit the backend reads is lifted for one person's computer,
   for (const value of Object.values(APP_RATE_LIMITS)) assert.ok(Number(value) <= 100000, "still a guard against a runaway loop");
 });
 
+test("the backend's allocator gives freed large blocks back, as PGlite's does", () => {
+  assert.equal(env().MallocLargeCache, "0");
+});
+
 test("the context window stays the host's: a test override of it is not passed on", () => {
   assert.equal(env({ MIKE_CONTEXT_WINDOW_TOKENS: "16384" }).MIKE_CONTEXT_WINDOW_TOKENS, undefined);
 });

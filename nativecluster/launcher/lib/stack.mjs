@@ -135,6 +135,10 @@ export function backendEnv({ paths, dataDir, socketsDir, hostSocket, logDir, ver
     MIKE_LOG_DIR: logDir,
     QUEUE_DRIVER: "postgres",
     ...(version ? { MIKE_VERSION: version } : {}),
+    // The backend's allocator, as PGlite's (pgliteEnv): freed large blocks
+    // go back to macOS at once instead of staying resident in libmalloc's
+    // large cache (a document read or a long answer frees hundreds of MB).
+    MallocLargeCache: "0",
     ...APP_RATE_LIMITS,
     // MIKE_CONTEXT_WINDOW_TOKENS is not passed on, even when set: the
     // window is the host's, from the catalog for this Mac's hardware
