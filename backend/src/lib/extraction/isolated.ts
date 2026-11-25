@@ -48,13 +48,34 @@ const PARSER_UNAVAILABLE_MESSAGE =
   "backend Docker image and backend/nixpacks.toml include it, see " +
   "docs/deployment.md). No restart is needed once it is on PATH.";
 
+// child.kill() emits "error" synchronously when the signal is refused (EPERM:
+// in NativeCluster's app sandbox a process may signal only itself), and that
+// "error" retires the parser, which kills it again: without a guard the loop
+// overflows the stack. One kill at a time per child.
+const killing = new WeakSet<ChildProcess>();
+
+function guardedKill(child: ChildProcess, kill: () => void): void {
+  if (killing.has(child)) return;
+  killing.add(child);
+  try { kill(); } finally { killing.delete(child); }
+}
+
 function killParser(child: ChildProcess): void {
-  if (!child.pid) return;
+  const pid = child.pid;
+  if (!pid) return;
   if (process.platform === "win32") {
-    execFile("taskkill", ["/pid", String(child.pid), "/T", "/F"], () => { child.kill("SIGKILL"); });
+    guardedKill(child, () => {
+      execFile("taskkill", ["/pid", String(pid), "/T", "/F"], () => guardedKill(child, () => { child.kill("SIGKILL"); }));
+    });
   } else {
     // Includes LibreOffice descendants, including after the parser has exited.
-    try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); }
+    guardedKill(child, () => {
+      try { process.kill(-pid, "SIGKILL"); } catch {
+        // Refused: closing the channel makes the parser end its own group
+        // (process.ts), which a process may always do to itself.
+        if (!child.kill("SIGKILL") && child.connected) child.disconnect();
+      }
+    });
   }
 }
 
@@ -65,15 +86,23 @@ type Parser = {
   started: boolean;
   files: number;
   idle?: ReturnType<typeof setTimeout>;
+  retiring?: boolean;
 };
 let parser: Parser | null = null;
 const RECYCLE_AFTER_FILES = 200;
 const IDLE_SHUTDOWN_MS = 60_000;
 
 function retire(p: Parser): void {
-  if (parser === p) parser = null;
-  clearTimeout(p.idle);
-  killParser(p.child);
+  // A refused kill's "error" event lands here again, inside the kill.
+  if (p.retiring) return;
+  p.retiring = true;
+  try {
+    if (parser === p) parser = null;
+    clearTimeout(p.idle);
+    killParser(p.child);
+  } finally {
+    p.retiring = false;
+  }
 }
 
 /** Also used at test boundaries so no warm process outlives its configuration. */
@@ -173,8 +202,10 @@ async function extractInChild<K extends ExtractionOp>(op: K, bytes: ArrayBuffer,
       resolve(reply.result as Result<K>);
     };
     // Before "spawn" the launcher itself failed; its errno stays on the cause.
+    // The first failure names the outcome: a deadline stays a deadline when
+    // the kill it ordered is refused and reported as an "error".
     const onError = (error: Error) => {
-      failure = p.started ? error : new AppError("extraction.parser_unavailable", PARSER_UNAVAILABLE_MESSAGE, { cause: error });
+      failure ??= p.started ? error : new AppError("extraction.parser_unavailable", PARSER_UNAVAILABLE_MESSAGE, { cause: error });
       retire(p);
     };
     const onClose = (_code: number | null, signal: NodeJS.Signals | null) => {
