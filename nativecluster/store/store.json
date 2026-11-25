@@ -1,6 +1,6 @@
 {
   "by": "Open Legal Products",
   "tagline": "Open-source AI for legal work.",
-  "about": "Mike is the open-source legal AI platform by Open Legal Products. Ask questions of your contracts and get answers with citations, draft and redline Word documents with tracked changes, run tabular reviews across many documents at once, and check documents against your playbooks. On NativeCluster every model call runs on your group's own Macs, and your documents stay on your own computer. Source: github.com/pablothe/mikeos (AGPL-3.0).",
+  "about": "MikeOS is the open-source legal AI platform by Open Legal Products. Ask questions of your contracts and get answers with citations, draft and redline Word documents with tracked changes, run tabular reviews across many documents at once, and check documents against your playbooks. On NativeCluster every model call runs on your group's own Macs, and your documents stay on your own computer. Source: github.com/pablothe/mikeos (AGPL-3.0).",
   "icon": "store-icon.png"
 }

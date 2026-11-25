@@ -1,7 +1,7 @@
 {
   "format": "nc-app.v1",
   "id": "mike",
-  "name": "Mike",
+  "name": "MikeOS",
   "version": "2.1.0.1",
   "min_host": "0.4.23",
   "program": "mike",
@@ -38,7 +38,7 @@
     }
   ],
   "triggers": [
-    { "id": "upkeep", "kind": "time", "name": "tidying up Mike's old exports and stalled work" }
+    { "id": "upkeep", "kind": "time", "name": "tidying up MikeOS's old exports and stalled work" }
   ],
   "storage": [
     { "kind": "documents", "label": "your documents and their text", "place": "cluster" },
