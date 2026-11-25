@@ -119,6 +119,7 @@ difference from an app fault.
 | the person | `X-Harness-Person` | `nc_harness_person` | a label (`alice`, `bob`, …) that maps to one stable `p_…` id; `nobody` |
 | the ticket | `X-Harness-Ticket` | `nc_harness_ticket` | `valid`, `none`, `bad` (another key), `stale` (5 min old) |
 | nobody's ticket passed on | `X-Harness-Pass-Nobody: 1` | `nc_harness_pass_nobody` | for the app's own answer to nobody |
+| the app's origin | `X-Harness-App-Origin` | `nc_harness_app_origin` | `https://127.0.0.1:849x`: the request reaches the app with that Host, as the real origin passes it (`origin.go` `rewriteFor`), and the door's own Origin and Referer rewritten to it; a Location on it comes back as the door's. Without it the app sees the door's Host (127.0.0.1:43900), and Mike's connectors, which build a sign-in's way back from the Host, refuse to start one |
 
 The ticket carries email and name (`<label>@harness.local`, `Alice`) only when
 the manifest asks for `people.read`, as the real host's does.
@@ -188,9 +189,24 @@ worker.
 |---|---|
 | `upstream` | Mike's own specs, copied by `stage.ts` into `.upstream/` beside the harness's stand-ins for `fixtures.ts`, `users.ts` and `onboarding.ts` (`shim/`), **unchanged** but for one step: where `helpers.ts` (`createProject`), tabular-reviews (`createReview`) and workflows-settings walk Details → Access, they go past Access only where the page shows it (`lib/wizard.ts`), since the app skips it (accounts are per computer). Staging fails if any of the three no longer matches exactly once. Included: project-management, tabular-reviews, workflows-settings, settings-search, accessibility, critical-path. auth-flows is not staged. |
 | `upstream-synthetic` | upstream's browser-mocked specs, unchanged |
-| `harness` | `people` (separate projects and documents for two people; nobody's 403 in words; data kept across a restart), `chat-fake` (an answer streams; `read_document` shows and answers; lane P; one release per grant), `tabular-fake` (the cells fill; lane B jobs), `door` |
+| `harness` | `people` (separate projects and documents for two people; nobody's 403 in words; data kept across a restart), `chat-fake` (an answer streams; `read_document` shows and answers; lane P; one release per grant), `tabular-fake` (the cells fill; lane B jobs), `door`, `connectors` (every button on Settings → Connectors opens a dialog that works, against the real services; below) |
 | `real` | `HARNESS_REAL_MODELS=1` only: one short chat and one tiny tabular review |
 | `probe` | for the Node probe package: its page, Next in-process, client fetches through the door, and the door's refusals |
+
+**Connectors.** `connectors.spec.ts` reaches the real services, as the
+app's own internet does in NativeCluster, through the door as from
+`https://127.0.0.1:8494`. Slack (no dynamic client registration, and no
+Slack app in the package) and Google are not offered. Each preset Mike
+offers (Notion, Airtable, Linear, Lawve, Legal Data Hunter) registers Mike
+as a client and opens the Connect dialog: its sign-in link goes to the
+service with the way back on the app's origin, and the box takes the
+address the browser lands on. CourtListener's key form saves and it is
+installed. A custom server with a token (DeepWiki, which takes one and needs
+none) connects with its tools; a custom one that signs in (Sentry) opens the
+same dialog, refuses an address that is not its sign-in's in words, and
+Cancel goes back to the form. No sign-in is ever completed and no person's
+data is sent; each run registers a client at those six services.
+`HARNESS_NO_INTERNET=1` skips it.
 
 **Set aside.** Upstream tests of what the app does not have are not run
 (`stage.ts` `SET_ASIDE`, each with its reason, printed at the start of a
