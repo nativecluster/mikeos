@@ -77,6 +77,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { tableDb } from "../../../__tests__/helpers/tableDb";
 import { resetStreamRunsForTests, startStreamRun } from "../../../lib/streamRuns";
+import { createNcUnitsReporter, setNcUnitsReporter, type NcUnitsReport } from "../../../lib/nc/units";
 import { claimTabularGeneration } from "../tabular.generate";
 import {
     MAX_TABULAR_RUN_RESUMES,
@@ -296,6 +297,27 @@ describe("the next start", () => {
         expect(await recoverTabularRuns(w.db)).toEqual([]);
         expect(w.review().active_generation_id).toBe("dead-gen");
         expect(w.cells()["r2:0"]).toEqual({ status: "generating", stamped: true });
+    });
+});
+
+// The robustness campaign's U1 and the models campaign's bug 3: a review ran
+// on the main thread, outside the DB-job runner, and the host was never told:
+// only a cell waiting in line kept Mike from looking idle.
+describe("a review's run, to the host", () => {
+    afterEach(() => setNcUnitsReporter(null));
+
+    it("is one of the app's units from its first cell to its last", async () => {
+        const posted: NcUnitsReport[] = [];
+        setNcUnitsReporter(createNcUnitsReporter({ post: async (r) => void posted.push(r), queued: async () => ({ due: false }), recheckMs: 0 }));
+        const w = world();
+        model.hold.add("Row 2");
+        const asked = new Promise<void>((resolve) => (model.heldAsked = resolve));
+        const { run, done } = await startRun(w);
+        await asked;
+        expect(posted).toEqual([{ waiting: true }]);
+        run.stop();
+        await done;
+        await vi.waitFor(() => expect(posted).toEqual([{ waiting: true }, { waiting: false }]));
     });
 });
 

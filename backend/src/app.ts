@@ -41,6 +41,8 @@ import { envInt } from "./lib/runtimeConfig";
 import { stripApiPathPrefix } from "./middleware/apiPathPrefix";
 import { requestDiagnostics } from "./middleware/requestDiagnostics";
 import { ncIngress, ncIngressEnabled } from "./lib/nc/ingress";
+import { ncAppMode } from "./lib/nc/tick";
+import { refreshNcUnitsAfterWrites } from "./lib/nc/units";
 import { requireAuthInNcApp } from "./middleware/ncApp";
 
 export const app = express();
@@ -205,6 +207,8 @@ const authMfaLimiter = makeLimiter({
 app.disable("x-powered-by");
 app.set("trust proxy", envInt("TRUST_PROXY_HOPS", 1));
 if (ncIngressEnabled()) app.use(ncIngress());
+// A NativeCluster app: work a request queued is told to the host (lib/nc/units.ts).
+if (ncAppMode()) app.use(refreshNcUnitsAfterWrites);
 app.use(stripApiPathPrefix(process.env.API_PATH_PREFIX));
 app.use(requestDiagnostics);
 app.use(protectInternalErrorResponses);
