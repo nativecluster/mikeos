@@ -50,3 +50,22 @@ it("kills stalled parsers, caps concurrency and does not pass deployment credent
     children[2].emit("message", { text: "read successfully" });
     await expect(next).resolves.toBe("read successfully");
 });
+
+// A sandbox that lets a process signal only itself refuses the kill: Node
+// emits "error" on the child inside child.kill(). The read settles once, and
+// a child left running whose channel errors later finds a listener still.
+it("settles once when the parser's kill is refused, and survives the child's later errors", async () => {
+    const child = Object.assign(new EventEmitter(), {
+        kill: vi.fn(() => {
+            child.emit("error", Object.assign(new Error("kill EPERM"), { code: "EPERM" }));
+            return false;
+        }),
+        send: vi.fn(),
+    });
+    forkMock.mockImplementation(() => child);
+    const read = extractGoogleDriveBinary("/tmp/test-file", "application/pdf");
+    child.emit("message", { text: "read successfully" });
+    await expect(read).resolves.toBe("read successfully");
+    expect(child.kill).toHaveBeenCalledTimes(1);
+    expect(() => child.emit("error", new Error("channel closed"))).not.toThrow();
+});

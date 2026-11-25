@@ -1,6 +1,8 @@
-// Only executed in a short-lived, heap-limited child by googleDriveExtract.
+// Only executed in a short-lived, heap-limited child by googleDriveExtract,
+// or, in Mike's NativeCluster app, a short-lived worker thread.
 import { readFile } from "node:fs/promises";
 import type { Readable } from "node:stream";
+import { parentPort } from "node:worker_threads";
 import JSZip from "jszip";
 import { extractPdfText } from "../pdfText";
 
@@ -32,13 +34,14 @@ async function validateDocxExpansion(
     }
 }
 
-process.once(
-    "message",
-    async (message: {
-        filename: string;
-        mimeType: string;
-        expandedBytes: number;
-    }) => {
+type Request = { filename: string; mimeType: string; expandedBytes: number };
+const receive = (handler: (message: Request) => void) =>
+    parentPort ? parentPort.once("message", handler) : process.once("message", handler);
+const reply = (message: { text: string } | { failed: true }) =>
+    parentPort ? parentPort.postMessage(message) : process.send?.(message);
+
+receive(
+    async (message: Request) => {
         try {
             let text: string;
             const bytes = await readFile(message.filename);
@@ -50,9 +53,9 @@ process.once(
                 text = (await mammoth.extractRawText({ buffer: bytes })).value;
             }
             // Include one extra character so the parent can report truncation.
-            process.send?.({ text: text.slice(0, 60_001) });
+            reply({ text: text.slice(0, 60_001) });
         } catch {
-            process.send?.({ failed: true });
+            reply({ failed: true });
         }
     },
 );

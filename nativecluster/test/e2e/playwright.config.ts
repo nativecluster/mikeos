@@ -15,7 +15,8 @@
  *   the Node probe: probe (its page, Next in-process, the door's refusals);
  *   Mike: upstream (Mike's own specs, unchanged, staged by stage.ts),
  *         upstream-synthetic (upstream's browser-mocked specs),
- *         harness (people, chat and tabular with fake models, the door,
+ *         harness (people, chat and tabular with fake models, documents
+ *                  parsed in the app's parser threads, the door,
  *                  Settings → Connectors against the real services),
  *         real (HARNESS_REAL_MODELS=1 only).
  */
@@ -60,7 +61,7 @@ const projects: PlaywrightTestConfig["projects"] =
               {
                   name: "harness",
                   testDir: path.join(HERE, "specs"),
-                  testMatch: [/people\.spec\.ts/, /chat-fake\.spec\.ts/, /tabular-fake\.spec\.ts/, /door\.spec\.ts/, /connectors\.spec\.ts/],
+                  testMatch: [/people\.spec\.ts/, /chat-fake\.spec\.ts/, /tabular-fake\.spec\.ts/, /extraction\.spec\.ts/, /door\.spec\.ts/, /connectors\.spec\.ts/],
                   use: chrome,
               },
               ...(real ? [{ name: "real", testDir: path.join(HERE, "specs"), testMatch: [/real-models\.spec\.ts/], use: chrome }] : []),

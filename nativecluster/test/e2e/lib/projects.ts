@@ -7,7 +7,8 @@
 import { expect, type Page } from "@playwright/test";
 import { nextPastAccess } from "./wizard";
 
-export async function createProject(page: Page, projectName: string, filePath?: string): Promise<void> {
+export async function createProject(page: Page, projectName: string, filePath?: string | string[]): Promise<void> {
+    const files = filePath === undefined ? [] : [filePath].flat();
     await page.goto("/projects");
     const createBtn = page.getByRole("button", { name: "New project" });
     await expect(createBtn).toBeVisible({ timeout: 10_000 });
@@ -19,12 +20,12 @@ export async function createProject(page: Page, projectName: string, filePath?: 
     await nextPastAccess(page);
     await expect(page.getByRole("dialog", { name: "Add Documents" })).toBeVisible();
 
-    if (filePath) {
+    if (files.length) {
         const chooser = page.waitForEvent("filechooser");
         await page.getByRole("button", { name: /^Upload/ }).click();
-        await (await chooser).setFiles(filePath);
-        await expect(page.getByRole("button", { name: /^Upload \(1\)/ })).toBeVisible({ timeout: 5_000 });
+        await (await chooser).setFiles(files);
+        await expect(page.getByRole("button", { name: new RegExp(`^Upload \\(${files.length}\\)`) })).toBeVisible({ timeout: 5_000 });
     }
     await page.getByRole("button", { name: "Create project" }).click();
-    await page.waitForURL(/\/projects\/.+/, { timeout: filePath ? 30_000 : 15_000 });
+    await page.waitForURL(/\/projects\/.+/, { timeout: files.length ? 30_000 : 15_000 });
 }

@@ -42,3 +42,12 @@ export function extractionLauncher(platform: NodeJS.Platform = process.platform)
 export function extractionIsolated(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.EXTRACTION_ISOLATION !== "off";
 }
+
+/**
+ * Mike as a NativeCluster app (MIKE_NC_APP=1): its sandbox lets a process
+ * signal only itself, so a parser child could never be stopped. The parser
+ * runs in a worker thread instead, which terminate() ends without a signal.
+ */
+export function extractionInThread(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.MIKE_NC_APP?.trim() === "1";
+}
