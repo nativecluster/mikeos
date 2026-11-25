@@ -52,6 +52,7 @@ import {
 import { createServerSupabase, type Db } from "../../lib/supabase";
 import { ExtractionBusyError, ExtractionLimitError, ExtractionParseError, withBackgroundExtraction } from "../../lib/extraction/isolated";
 import { isAllocationFailure } from "../../lib/extraction/limits";
+import { legacyTextByTextutil } from "../../lib/extraction/textutil";
 import { MAX_UPLOAD_SIZE_BYTES, UPLOAD_VERIFICATION_LEASE_SECONDS } from "./uploads.manifest";
 
 type UploadSessionRow = {
@@ -117,6 +118,7 @@ const TERMINAL_UPLOAD_ERROR_CODES = new Set([
   "invalid_pdf_file",
   "pdf_password_protected",
   "invalid_docx_package",
+  "document_unreadable",
   "document_too_large",
   // The destination document no longer exists. Retrying cannot make it exist
   // again — it can only put it back, which is the bug this code prevents.
@@ -161,6 +163,7 @@ class UnreadableFileError extends AppError {
     readonly code:
       | "invalid_pdf_file"
       | "pdf_password_protected"
+      | "document_unreadable"
       | "document_too_large"
       | "processing_failed",
     cause?: unknown,
@@ -174,6 +177,7 @@ class UnreadableFileError extends AppError {
 const USER_FILE_CODES: ReadonlySet<string> = new Set([
   "invalid_pdf_file",
   "pdf_password_protected",
+  "document_unreadable",
 ]);
 
 /** What an upload keeps of a PDF it has read. */
@@ -254,6 +258,33 @@ async function readUploadedPdf(artifact: SealedFileArtifact): Promise<PdfFacts> 
     if (isPdfPasswordError(error)) throw new UnreadableFileError("pdf_password_protected", error);
     if (error instanceof ExtractionParseError) throw new UnreadableFileError("invalid_pdf_file", error);
     // The parser could not run, or failed for itself: retryable.
+    throw new UnreadableFileError("processing_failed", error);
+  }
+}
+
+/**
+ * A legacy Office file in Mike's NativeCluster app, which has no LibreOffice:
+ * a .doc is read now by textutil, in the parser, as read_document will read
+ * it, and refused in words if it cannot be; a .ppt has no reader there at
+ * all, so it is refused at once rather than kept as a document that always
+ * reads "could not be read".
+ */
+async function checkLegacyOfficeFile(file: UploadFileRow, artifact: SealedFileArtifact): Promise<void> {
+  if (file.file_type === "ppt") throw new UnreadableFileError("document_unreadable");
+  if (artifact.size > MAX_UPLOAD_SIZE_BYTES) throw new UnreadableFileError("document_too_large");
+  try {
+    await withBackgroundExtraction({ waitMs: PARSER_SLOT_WAIT_MS }, async (extract) => {
+      const bytes = await readFile(artifact.filePath);
+      await extract("legacyOfficeText", bytes.buffer.slice(
+        bytes.byteOffset, bytes.byteOffset + bytes.byteLength,
+      ) as ArrayBuffer);
+    });
+  } catch (error) {
+    if (error instanceof ExtractionBusyError) throw error;
+    if (error instanceof ExtractionLimitError || isAllocationFailure(error)) {
+      throw new UnreadableFileError("document_too_large", error);
+    }
+    if (error instanceof ExtractionParseError) throw new UnreadableFileError("document_unreadable", error);
     throw new UnreadableFileError("processing_failed", error);
   }
 }
@@ -778,6 +809,9 @@ export async function processUploadFile(
   try {
     if (file.file_type === "pdf") artifact.pdf = await readUploadedPdf(artifact);
     if (file.file_type === "docx") await validateDocxFile(artifact);
+    if ((file.file_type === "doc" || file.file_type === "ppt") && legacyTextByTextutil()) {
+      await checkLegacyOfficeFile(file, artifact);
+    }
     switch (session.purpose) {
       case "document_create":
         return await processCreatedDocument(db, session, file, artifact);

@@ -349,6 +349,8 @@ const USER_SIDE_UPLOAD_CODES: ReadonlySet<string> = new Set([
     "invalid_pdf_file",
     // A PDF locked with a password; the user removes it.
     "pdf_password_protected",
+    // A legacy Office file this installation cannot read; the user saves it anew.
+    "document_unreadable",
     // The bytes are not a Word package (a renamed .xlsx, .odt or plain ZIP).
     "invalid_docx_package",
     // Past the parser's budget; the worker reported it when it happened.

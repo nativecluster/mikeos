@@ -18,6 +18,7 @@ import {
   PDF_MAX_PAGES,
   pdfReadBudgetMs,
 } from "./extraction/limits";
+import { legacyTextByTextutil, readLegacyTextWithTextutil } from "./extraction/textutil";
 import { loadPdfjs, PDF_MAX_IMAGE_PIXELS, runWithPdfBudget } from "./pdfjs";
 import { orderTextItemLines } from "./pdfTextOrder";
 
@@ -554,11 +555,15 @@ export async function readPdfTextForModel(buf: ArrayBuffer): Promise<string> {
  * The text read_document derives for the legacy Office types (.doc/.ppt):
  * LibreOffice → PDF → pdfjs. Exported so the document.precompute_text job
  * produces byte-identical text to the inline read path — a cache that can
- * drift from what it caches is worse than no cache.
+ * drift from what it caches is worse than no cache. In Mike's NativeCluster
+ * app, which has no LibreOffice, a .doc (or an RTF saved as .doc) is read by
+ * macOS's own textutil instead (extraction/textutil.ts), and a .ppt cannot
+ * be read.
  */
 export async function extractLegacyOfficeText(
   raw: ArrayBuffer,
 ): Promise<string> {
+  if (legacyTextByTextutil()) return readLegacyTextWithTextutil(raw);
   const pdfBuf = await docxToPdf(Buffer.from(raw));
   return extractPdfText(
     pdfBuf.buffer.slice(

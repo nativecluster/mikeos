@@ -1350,6 +1350,13 @@ describe("failedUploadMessage for a file the worker refused", () => {
         ).toBe("a.pdf, b.pdf are password-protected; remove the passwords and upload them again.");
     });
 
+    // D2: a legacy Office file the app cannot read is refused in words.
+    it("tells the person to save a file it cannot read in a newer format", () => {
+        expect(failedUploadMessage([refused("deck.ppt", "document_unreadable")])).toBe(
+            "deck.ppt could not be read. Save it as .docx, .pptx or PDF and upload it again.",
+        );
+    });
+
     it("falls back to the generic line when the failures have mixed causes", () => {
         expect(
             failedUploadMessage([
@@ -1375,6 +1382,7 @@ describe("uploadOutcomeNeedsRetry", () => {
     it("leaves out a file the server refused as not a PDF, and files that landed", () => {
         expect(uploadOutcomeNeedsRetry(outcome("error", "invalid_pdf_file"))).toBe(false);
         expect(uploadOutcomeNeedsRetry(outcome("error", "pdf_password_protected"))).toBe(false);
+        expect(uploadOutcomeNeedsRetry(outcome("error", "document_unreadable"))).toBe(false);
         expect(uploadOutcomeNeedsRetry(outcome("completed", null))).toBe(false);
     });
 });

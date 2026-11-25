@@ -5,11 +5,13 @@ import {
   readdir,
   rm,
   utimes,
+  writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import JSZip from "jszip";
 import { EXTRACTION_OPS } from "../../../lib/extraction/ops";
@@ -539,6 +541,44 @@ describe("upload processing", () => {
     }));
     expect(db.calls.some((call) => (call.payload as { status?: string })?.status === "queued")).toBe(false);
     expect(db.remaining).toHaveLength(0);
+  });
+
+  // D2: in the app (no LibreOffice) a .doc uploaded, then always read "could
+  // not be read". It is read now, by textutil, and refused in words if not.
+  describe.skipIf(process.platform !== "darwin")("a legacy Office file in the app", () => {
+    beforeEach(() => vi.stubEnv("MIKE_NC_APP", "1"));
+    afterEach(() => vi.unstubAllEnvs());
+    const legacyFile = (filename: string, bytes: Buffer) => ({
+      ...baseFile, filename, file_type: filename.split(".").pop()!,
+      content_type: "application/msword", expected_size_bytes: bytes.length,
+    });
+
+    it("accepts a .doc that textutil reads", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "mike-upload-doc-"));
+      try {
+        await writeFile(join(dir, "lease.txt"), "LEGACY WORD 97 LEASE");
+        execFileSync("/usr/bin/textutil", ["-convert", "doc", "-output", join(dir, "lease.doc"), join(dir, "lease.txt")]);
+        const bytes = await readFile(join(dir, "lease.doc"));
+        mocks.createFileReadStream.mockImplementation(() => Readable.from([bytes]));
+        const db = fakeDb({ documents: [{ data: { id: baseFile.resource_id } }] });
+        await processUploadFile(db as never, baseSession, legacyFile("lease.doc", bytes));
+        expect(mocks.copyFile).toHaveBeenCalledOnce();
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    it.each([
+      ["a .doc textutil cannot read", "broken.doc", Buffer.concat([Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]), Buffer.alloc(2048, 7)])],
+      ["a .ppt, which nothing in the app reads", "deck.ppt", Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1])],
+    ])("refuses %s as document_unreadable before destination writes", async (_label, filename, bytes) => {
+      mocks.createFileReadStream.mockImplementation(() => Readable.from([bytes]));
+      const db = fakeDb();
+      await expect(processUploadFile(db as never, baseSession, legacyFile(filename, bytes)))
+        .rejects.toMatchObject({ code: "document_unreadable" });
+      expect(db.from).not.toHaveBeenCalled();
+      expect(mocks.copyFile).not.toHaveBeenCalled();
+    });
   });
 
   it.each([false, true])("keeps invalid PDFs terminal when already failed=%s", async (alreadyFailed) => {

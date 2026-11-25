@@ -10,6 +10,7 @@ import {
 import { extractPresentationText } from "../officeText";
 import { loadPdfjs, runWithPdfBudget } from "../pdfjs";
 import { ExtractionLimitError } from "./limits";
+import { legacyTextByTextutil, readLegacyTextWithTextutil } from "./textutil";
 import { spreadsheetToLLMText } from "../spreadsheet";
 
 /**
@@ -36,6 +37,8 @@ export async function extractDocumentMarkdown(
         isPresentationDocumentType(normalizedType) ||
         isWordDocumentType(normalizedType)
     ) {
+        // Mike's NativeCluster app has no LibreOffice: textutil reads a .doc.
+        if (legacyTextByTextutil()) return readLegacyTextWithTextutil(buf);
         const pdfBuf = await docxToPdf(Buffer.from(buf));
         const pdfArrayBuffer = pdfBuf.buffer.slice(
             pdfBuf.byteOffset,
