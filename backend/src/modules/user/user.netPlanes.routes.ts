@@ -17,13 +17,19 @@ function under(path: string, prefix: string): boolean {
     return path === prefix || path.startsWith(`${prefix}/`);
 }
 
-/** The plane a user route sends for or configures, or null. Exported for its test. */
-export function netPlaneOfUserRoute(method: string, path: string): NetPlane | null {
+/**
+ * The plane a user route sends for or configures, or null. Exported for its
+ * test. Express matches routes whatever the case of the path
+ * (`/MCP-Connectors` reaches `/mcp-connectors`), so the path is read the
+ * same way here: in lower case (the 2026-11-24 security review, L1).
+ */
+export function netPlaneOfUserRoute(method: string, rawPath: string): NetPlane | null {
+    const path = rawPath.toLowerCase();
     if (under(path, "/mcp-connectors")) return "mcp";
     if (under(path, "/integrations/courtlistener")) return "courtlistener";
-    if (path === "/web-search" && method !== "GET") return "websearch";
-    const key = /^\/api-keys\/([^/]+)$/.exec(path);
-    if (key && method !== "GET" && isWebSearchBackend(key[1].toLowerCase())) return "websearch";
+    if (under(path, "/web-search") && method !== "GET") return "websearch";
+    const key = /^\/api-keys\/([^/]+)\/?$/.exec(path);
+    if (key && method !== "GET" && isWebSearchBackend(key[1])) return "websearch";
     return null;
 }
 
@@ -35,10 +41,11 @@ export function refuseOffNetPlaneRoutes(
     const plane = netPlaneOfUserRoute(req.method, req.path);
     if (!plane || !isNetPlaneOff(plane)) return next();
     res.setHeader("Cache-Control", "private, no-store");
-    if (req.method === "GET" && req.path === "/mcp-connectors") {
+    const path = req.path.toLowerCase().replace(/\/+$/, "");
+    if (req.method === "GET" && path === "/mcp-connectors") {
         return void res.json([]);
     }
-    if (req.method === "GET" && req.path === "/integrations/courtlistener") {
+    if (req.method === "GET" && path === "/integrations/courtlistener") {
         return void res.json({
             enabled: false,
             installed: false,

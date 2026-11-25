@@ -185,6 +185,23 @@ describe("the backend's door", () => {
     expect(playbook.body.origin.task).toBe("playbook");
   });
 
+  // Review L1: Express routes /Tabular-Review/… as /tabular-review/…, and
+  // the task was read from the path as written: long work in lane P.
+  it("names the task by the route whatever the case of its path", async () => {
+    const tabular = await request(appBehindTheDoor())
+      .post("/echo/TABULAR-REVIEW/r1/generate")
+      .set("X-NC-Internal", SECRET)
+      .set("X-NC-Person", "p_1")
+      .set("X-NC-Request", "r_5");
+    expect(tabular.body.origin).toMatchObject({ task: "tabular", lane: "B", job: true });
+    const playbook = await request(appBehindTheDoor())
+      .post("/echo/PlayBooks/p/review")
+      .set("X-NC-Internal", SECRET)
+      .set("X-NC-Person", "p_1")
+      .set("X-NC-Request", "r_6");
+    expect(playbook.body.origin.task).toBe("playbook");
+  });
+
   // Review L3: one rule for a person id. The ingress took any id of
   // `[A-Za-z0-9._:~-]`, the sign-in `p_` and `[A-Za-z0-9._-]`, the
   // connectors `p_` and letters and digits: an id one read as a person
