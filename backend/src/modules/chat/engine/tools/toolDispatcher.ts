@@ -90,7 +90,9 @@ import {
   duplicateReadDocumentResult,
   clearTurnReadsForDocument,
   readDocumentContent,
+  combinedFindResults,
   findInDocumentContent,
+  findInDocumentQueries,
   findTextMatches,
   normalizedTextFor,
   runEditDocument,
@@ -130,6 +132,7 @@ import {
 } from "./documentPages";
 import type { TurnContextBudget } from "../../../../lib/llm/contextBudget";
 import { log } from "../../../../lib/log";
+import { toolFailureResult } from "./toolFailure";
 
 /**
  * Report a server-side tool's failure and return what to log for it. The
@@ -591,14 +594,16 @@ export async function runToolCalls(
   // throws its abort as soon as this returns.
   const stopped = () => options.signal?.aborted === true;
   let connectorOwner: ConnectorOwner | undefined;
-  for (const tc of toolCalls) {
-    if (stopped()) break;
+  // One call, start to finish. Run by the loop below, which turns the call's
+  // own failure into its result; a call that ends early because the turn was
+  // stopped returns, and the loop then starts nothing more.
+  const runCall = async (tc: ToolCall): Promise<void> => {
     // A plane NativeCluster turned off for everyone runs nothing, and the
     // model is told why (lib/nc/netPlanes.ts).
     const offPlane = offNetPlaneToolResult(tc.function.name);
     if (offPlane) {
       toolResults.push({ role: "tool", tool_call_id: tc.id, content: offPlane });
-      continue;
+      return;
     }
     let args: Record<string, unknown> = {};
     try {
@@ -624,7 +629,7 @@ export async function runToolCalls(
         args,
         db,
       );
-      if (stopped()) break;
+      if (stopped()) return;
       if (plan.type === "approval" && options.connectorApprovals) {
         // Nothing runs now. The turn pauses on this item, and the user's
         // decision continues it (see connectorApprovals.ts).
@@ -638,7 +643,7 @@ export async function runToolCalls(
             message: "Waiting for the user's approval. Nothing has run yet.",
           }),
         });
-        continue;
+        return;
       }
       // Native Google tools reuse the MCP event surface so the UI renders
       // them with the existing connector treatment.
@@ -718,7 +723,7 @@ export async function runToolCalls(
           error: event.error,
         })}\n\n`,
       );
-      continue;
+      return;
     }
 
     if (tc.function.name === "create_text_card") {
@@ -738,13 +743,13 @@ export async function runToolCalls(
               },
         ),
       });
-      continue;
+      return;
     }
 
     if (tc.function.name === "ask_inputs") {
       const event = normalizeAskInputsEvent(args);
       if (event.items.length > 0) askInputsEvents.push(event);
-      continue;
+      return;
     }
 
     if (tc.function.name === "read_document") {
@@ -774,12 +779,12 @@ export async function runToolCalls(
         pushResult(
           `Document filename: ${promptFilename}${sourceNotice ? `\n${sourceNotice}` : ""}\n\n${duplicateReadDocumentResult(readIdentity, readBudget ? { offset } : undefined)}`,
         );
-        continue;
+        return;
       }
       const pageTokens = readBudget?.pageTokens() ?? 0;
       if (readBudget && pageTokens === 0) {
         pushResult(contextFullResult(docId));
-        continue;
+        return;
       }
       const content = await readDocumentContent(
         docId,
@@ -794,11 +799,11 @@ export async function runToolCalls(
         : ({ kind: "whole", text: content } as const);
       if (page.kind === "past_end") {
         pushResult(pastEndResult(docId, page.total));
-        continue;
+        return;
       }
       if (page.kind === "full") {
         pushResult(contextFullResult(docId));
-        continue;
+        return;
       }
       const filename = docStore.get(docId)?.filename;
       const documentId = docIndex?.[docId]?.document_id;
@@ -907,7 +912,7 @@ export async function runToolCalls(
         toolResults.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({
           ok: false, ...failure,
         }) });
-        continue;
+        return;
       }
       const matches = result.data.matches.map((match) => {
         // Separate handle per revision: never overwrite an attachment's pinned
@@ -952,9 +957,20 @@ export async function runToolCalls(
             next_required_action: `Call read_document with doc_id "${docId}".`,
           }),
         });
-        continue;
+        return;
       }
-      const query = (args.query as string) ?? "";
+      // One phrase, as the schema asks; a list of phrases (a local model's
+      // habit) is searched one phrase at a time; anything else is answered
+      // in words before the search shows in the timeline.
+      const queries = findInDocumentQueries(args.query);
+      if (!queries.ok) {
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({ ok: false, error: queries.error }),
+        });
+        return;
+      }
       const maxResults =
         typeof args.max_results === "number" ? args.max_results : undefined;
       const contextChars =
@@ -965,38 +981,45 @@ export async function runToolCalls(
         docIndex,
         db,
       });
-      const content = await findInDocumentContent({
-        docLabel: docId,
-        query,
-        maxResults,
-        contextChars,
-        docStore,
-        write,
-        docIndex,
-        db,
-        readIdentity,
-      });
-      const filename = docInfo?.filename;
-      if (filename) {
-        let totalMatches = 0;
-        try {
-          const parsed = JSON.parse(content) as {
-            total_matches?: number;
-          };
-          totalMatches = parsed.total_matches ?? 0;
-        } catch {
-          /* ignore — still record the find attempt */
-        }
-        docsFound.push({
-          filename,
-          document_id:
-            readIdentity?.documentId ?? docIndex?.[docId]?.document_id,
-          version_id: readIdentity?.versionId ?? null,
-          version_number: readIdentity?.versionNumber ?? null,
+      const searches: string[] = [];
+      for (const query of queries.queries) {
+        if (stopped()) return;
+        const searched = await findInDocumentContent({
+          docLabel: docId,
           query,
-          total_matches: totalMatches,
+          maxResults,
+          contextChars,
+          docStore,
+          write,
+          docIndex,
+          db,
+          readIdentity,
         });
+        searches.push(searched);
+        const filename = docInfo?.filename;
+        if (filename) {
+          let totalMatches = 0;
+          try {
+            const parsed = JSON.parse(searched) as {
+              total_matches?: number;
+            };
+            totalMatches = parsed.total_matches ?? 0;
+          } catch {
+            /* ignore — still record the find attempt */
+          }
+          docsFound.push({
+            filename,
+            document_id:
+              readIdentity?.documentId ?? docIndex?.[docId]?.document_id,
+            version_id: readIdentity?.versionId ?? null,
+            version_number: readIdentity?.versionNumber ?? null,
+            query,
+            total_matches: totalMatches,
+          });
+        }
       }
+      const content =
+        searches.length === 1 ? searches[0] : combinedFindResults(searches);
       toolResults.push({
         role: "tool",
         tool_call_id: tc.id,
@@ -1014,7 +1037,14 @@ export async function runToolCalls(
         content: JSON.stringify(list),
       });
     } else if (tc.function.name === "fetch_documents") {
-      const rawDocIds = (args.doc_ids as string[]) ?? [];
+      // A list of ids, as the schema asks; one id given as a string is read
+      // as a list of one, and an id that is not a string is not found.
+      const rawDocIds: string[] =
+        typeof args.doc_ids === "string"
+          ? [args.doc_ids]
+          : Array.isArray(args.doc_ids)
+            ? args.doc_ids.map((id) => (typeof id === "string" ? id : String(id)))
+            : [];
       const labelFor = createDocLabelResolver(docStore, docIndex);
       const docIds = rawDocIds.map((id) => labelFor(id) ?? id);
       const parts: string[] = [];
@@ -1159,7 +1189,7 @@ export async function runToolCalls(
           indexed?.document_id ?? docId,
           options.signal,
         );
-        if (!release) break;
+        if (!release) return;
         try {
           const isDocx = docInfo.file_type === "docx";
           // A Word document is read from its file by the review itself; other
@@ -1170,7 +1200,7 @@ export async function runToolCalls(
                 emitEvents: false,
               });
           // The review saves its suggestions as a new version.
-          if (stopped()) break;
+          if (stopped()) return;
           const run = await reviewWithPlaybook({
             userId,
             userEmail: options.userEmail,
@@ -1255,7 +1285,7 @@ export async function runToolCalls(
           });
         } catch (error) {
           // The review ended because the turn was stopped: not a failure.
-          if (stopped()) break;
+          if (stopped()) return;
           if (error instanceof PlaybookRequestError) fail(error.message);
           else {
             reportToolFailure(error);
@@ -1281,7 +1311,7 @@ export async function runToolCalls(
         content: JSON.stringify(list),
       });
     } else if (tc.function.name === "read_workflow") {
-      const wfId = args.workflow_id as string;
+      const wfId = typeof args.workflow_id === "string" ? args.workflow_id : "";
       // Turn setup loads only active catalog versions; a historical chat
       // can still name a retired one, which is looked up on demand.
       if (workflowStore && !workflowStore.has(wfId) && catalogKeyFromWorkflowId(wfId)) {
@@ -1643,7 +1673,7 @@ export async function runToolCalls(
           tool_call_id: tc.id,
           content: JSON.stringify(payload),
         });
-        continue;
+        return;
       }
 
       const opinions = cachedCaseOpinionTexts(record);
@@ -1739,7 +1769,7 @@ export async function runToolCalls(
           tool_call_id: tc.id,
           content: JSON.stringify(payload),
         });
-        continue;
+        return;
       }
 
       const opinions = cachedCaseOpinionTexts(record);
@@ -1788,7 +1818,7 @@ export async function runToolCalls(
           tool_call_id: tc.id,
           content: JSON.stringify(payload),
         });
-        continue;
+        return;
       }
 
       const event: CourtlistenerToolEvent = {
@@ -2056,7 +2086,7 @@ export async function runToolCalls(
             return edited;
           },
         );
-        if (!result) break;
+        if (!result) return;
 
         if (result.ok) {
           clearTurnReadsForDocument(turnReadState, indexed.document_id);
@@ -2267,7 +2297,7 @@ export async function runToolCalls(
             );
 
             // Nothing is written before this point.
-            if (stopped()) break;
+            if (stopped()) return;
             // Parallel uploads: the doc bytes (and PDF
             // rendition if any) for every new copy.
             const uploadJobs: Promise<unknown>[] = [];
@@ -2556,6 +2586,33 @@ export async function runToolCalls(
         previewFilename,
         "pptx",
       );
+    }
+  };
+
+  for (const tc of toolCalls) {
+    if (stopped()) break;
+    try {
+      await runCall(tc);
+    } catch (error) {
+      // A call that fails as the turn stops ends the turn as stopped, the
+      // outcome its readers were already told.
+      if (stopped()) throw error;
+      // Otherwise the failure is this call's alone: the model reads it as
+      // the call's result and can correct the call, and the turn goes on.
+      // A call that already answered (an edit that saved its version, then
+      // failed after) keeps its answer.
+      reportToolFailure(error);
+      log.warn("run_tools", "tool call failed", {
+        tool: tc.function.name,
+        ...safeError(error),
+      });
+      if (!toolResults.some((row) => (row as { tool_call_id?: string }).tool_call_id === tc.id)) {
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: toolFailureResult(tc.function.name, tc.function.arguments),
+        });
+      }
     }
   }
 

@@ -244,16 +244,17 @@ describe("a stopped turn's tool batch", () => {
 });
 
 describe("a batch where a later call rejects", () => {
+  let toolResults: { tool_use_id: string; content: string }[] = [];
   const editThenConnector = () =>
     streamChatWithTools.mockImplementationOnce(async ({ runTools }) => {
-      await runTools([
+      toolResults = (await runTools([
         {
           id: "edit-1",
           name: "edit_document",
           input: { doc_id: "doc-0", edits: [{ find: "a", replace: "b" }] },
         },
         { id: "mcp-1", name: "mcp_crm_update_record", input: { id: "r1" } },
-      ]);
+      ])) as typeof toolResults;
       return { fullText: "" };
     });
 
@@ -269,7 +270,7 @@ describe("a batch where a later call rejects", () => {
       allowDocumentMutation: true,
       ...(signal ? { signal } : {}),
     }).then(
-      () => null,
+      (result) => result,
       (error: unknown) => error,
     );
 
@@ -278,18 +279,28 @@ describe("a batch where a later call rejects", () => {
       (event) => event.type === "doc_edited",
     );
 
-  it("keeps the edit that saved a version in the failed turn", async () => {
+  beforeEach(() => {
+    toolResults = [];
+  });
+
+  it("keeps the edit that saved a version, and answers the failed call in words: the turn goes on", async () => {
     runEditDocument.mockResolvedValueOnce(editedVersion);
     planConnectorToolCall.mockRejectedValueOnce(new Error("connector planning failed"));
     editThenConnector();
 
     const outcome = await run();
 
-    expect(outcome).toBeInstanceOf(AssistantStreamError);
-    expect(isAbortError(outcome)).toBe(false);
+    expect(outcome).not.toBeInstanceOf(Error);
     expect(editEvents(outcome)).toEqual([
       expect.objectContaining({ document_id: "d1", version_id: "v2" }),
     ]);
+    const connector = toolResults.find((result) => result.tool_use_id === "mcp-1");
+    expect(JSON.parse(connector!.content)).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("mcp_crm_update_record could not complete this call"),
+    });
+    // The error itself stays server-side.
+    expect(connector!.content).not.toContain("connector planning failed");
   });
 
   it("keeps the edit, and ends the turn as stopped, when the rejection comes after a stop", async () => {
@@ -313,7 +324,7 @@ describe("a batch where a later call rejects", () => {
 });
 
 describe("grouped case searches before a rejecting call", () => {
-  it("keeps the searches that finished in the batch result, once", async () => {
+  it("keeps the searches that finished in the batch result, once, and answers the failed call", async () => {
     planConnectorToolCall.mockRejectedValueOnce(new Error("connector planning failed"));
     const results = emptyToolCallBatchResult();
     const { docStore, docIndex } = lease();
@@ -342,7 +353,10 @@ describe("grouped case searches before a rejecting call", () => {
       (error: unknown) => error,
     );
 
-    expect(outcome).toBeInstanceOf(Error);
+    expect(outcome).toBeNull();
+    expect(
+      results.toolResults.map((row) => (row as { tool_call_id: string }).tool_call_id),
+    ).toEqual(["find-1", "find-2", "mcp-1"]);
     const groups = results.courtlistenerEvents.filter(
       (event) => event.type === "courtlistener_find_in_case",
     );

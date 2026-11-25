@@ -8,7 +8,7 @@
 // they were.
 import JSZip from "jszip";
 import { describe, expect, it } from "vitest";
-import { applyTrackedEdits, extractDocxBodyAndReview, extractDocxBodyText } from "../docxTrackedChanges";
+import { applyTrackedEdits, extractDocxBodyAndReview, extractDocxBodyText, reviewLead } from "../docxTrackedChanges";
 import { EXTRACTION_OPS } from "../extraction/ops";
 
 const W_NS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
@@ -41,12 +41,12 @@ const ACCEPTED_VIEW = [
 ].join("\n");
 
 describe("D3: the model reads a DOCX's tracked changes and comments", () => {
-  it("gives the accepted view, then each change and comment with its author", async () => {
+  it("says first that its changes are pending, then gives the accepted view, then each change and comment with its author", async () => {
     const bytes = await reviewed();
     const text = await EXTRACTION_OPS.docxText(Uint8Array.from(bytes).buffer);
-    expect(text).toBe(`${ACCEPTED_VIEW}\n\n${[
+    expect(text).toBe(`${reviewLead(2)}\n\n${ACCEPTED_VIEW}\n\n${[
       "[Tracked changes: 2 not yet accepted or rejected. The text above reads as if each were accepted: its insertions are in it and its deletions are not. Base an edit on the text above.]",
-      '1. Deleted by Harness Reviewer (2026-11-24): "USD 10,000", in "The fee is USD 12,500 a month."',
+      '1. Deleted by Harness Reviewer (2026-11-24): "USD 10,000", where the original reads "The fee is USD 10,000 a month."',
       '2. Inserted by Harness Reviewer (2026-11-24): "USD 12,500", in "The fee is USD 12,500 a month."',
       "",
       "[Comments: 2.]",

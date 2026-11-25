@@ -1,4 +1,5 @@
 import { loadVersionTextState, cachedTextForModel } from "../../../../lib/documentTextCache";
+import { citedPageAt, pageStartsFor } from "./pageMarkers";
 import {
   applyTrackedEditsToDocument,
   createDocumentVersion,
@@ -1228,21 +1229,28 @@ const isDocxReview = (fileType: string | null | undefined) =>
 
 /**
  * The tracked changes and comments of a stored .docx revision, as docxText
- * gives them after its body; "" when it has none or they cannot be read
- * (the stored text is still served: they are additions to it).
+ * gives them before (`lead`) and after (`review`) its body; "" when it has
+ * none or they cannot be read (the stored text is still served: they are
+ * additions to it).
  */
-async function docxReviewNotes(db: Db, documentId: string, versionId: string): Promise<string> {
+async function docxReviewNotes(
+  db: Db,
+  documentId: string,
+  versionId: string,
+): Promise<{ lead: string; review: string }> {
+  const none = { lead: "", review: "" };
   try {
     const current = await loadCurrentVersionBytes(documentId, db, versionId);
-    if (!current) return "";
+    if (!current) return none;
     const bytes = current.bytes.buffer.slice(
       current.bytes.byteOffset,
       current.bytes.byteOffset + current.bytes.byteLength,
     ) as ArrayBuffer;
-    return await withExtractionRequest((extract) => extract("docxReview", bytes));
+    const notes = await withExtractionRequest((extract) => extract("docxReview", bytes));
+    return { lead: notes.lead, review: notes.text };
   } catch (error) {
     devLog(`[read_document] review notes unavailable`, error);
-    return "";
+    return none;
   }
 }
 
@@ -1353,14 +1361,16 @@ export async function readDocumentContent(
       // A .docx's stored text is its accepted view alone (search and tabular
       // review keep it so); the model's read adds the tracked changes and
       // comments, read from the same revision's file.
-      const review = isDocxReview(docInfo.file_type)
+      const { lead, review } = isDocxReview(docInfo.file_type)
         ? await docxReviewNotes(db, documentId, versionId)
-        : "";
+        : { lead: "", review: "" };
       emitDocRead();
       const notice = stored.textless_page_count
         ? `[${stored.textless_page_count} page(s) have no text layer and need OCR. Search coverage is incomplete.]\n\n`
         : "";
-      return remember(notice + (stored.text ?? "") + (review ? `\n\n${review}` : ""));
+      return remember(
+        notice + (lead ? `${lead}\n\n` : "") + (stored.text ?? "") + (review ? `\n\n${review}` : ""),
+      );
     }
 
     if (readIdentity && cached?.key === readIdentity.key) {
@@ -1694,6 +1704,11 @@ export type TextMatch = {
   index: number;
   excerpt: string;
   context: string;
+  /**
+   * The "[Page N]" page the match is on ("41-42" across a break), for a
+   * citation; only for a paged text (see pageMarkers.ts).
+   */
+  page?: number | string;
 };
 
 export function findTextMatches(params: {
@@ -1704,8 +1719,11 @@ export function findTextMatches(params: {
   startIndex?: number;
   /** Precomputed `normalizeWithMap(text)`, e.g. from `normalizedTextFor`. */
   normalized?: NormalizedText;
+  /** The text's page starts (pageStarts): each hit then says its page. */
+  pageStarts?: readonly number[];
 }): { hits: TextMatch[]; totalMatches: number } {
   const { text, query, maxResults, contextChars, startIndex = 0 } = params;
+  const starts = params.pageStarts ?? [];
   const { norm, origIdx } = params.normalized ?? normalizeWithMap(text);
   const needle = normalizeQuery(query);
   const hits: TextMatch[] = [];
@@ -1725,6 +1743,7 @@ export function findTextMatches(params: {
     if (hits.length < maxResults) {
       const ctxStart = Math.max(0, origStart - contextChars);
       const ctxEnd = Math.min(text.length, origEnd + contextChars);
+      const page = starts.length ? citedPageAt(starts, origStart, origEnd) : null;
       hits.push({
         index: startIndex + hits.length,
         excerpt: text.slice(origStart, origEnd),
@@ -1732,6 +1751,7 @@ export function findTextMatches(params: {
           (ctxStart > 0 ? "…" : "") +
           text.slice(ctxStart, ctxEnd).replace(/\s+/g, " ").trim() +
           (ctxEnd < text.length ? "…" : ""),
+        ...(page === null ? {} : { page }),
       });
     }
     totalMatches++;
@@ -1739,6 +1759,70 @@ export function findTextMatches(params: {
   }
 
   return { hits, totalMatches };
+}
+
+/** At most this many phrases are searched when `query` arrives as a list. */
+export const MAX_FIND_QUERIES = 10;
+
+const QUERY_MUST_BE_A_STRING =
+  "query must be a string: the phrase to search for. To look for several phrases, call find_in_document once per phrase.";
+
+/**
+ * find_in_document's `query` as the phrases to search. The schema asks for
+ * one string, and that is the usual case; a local model sometimes sends a
+ * list of strings instead, which is searched one phrase at a time (up to
+ * MAX_FIND_QUERIES, duplicates and blanks dropped). Anything else is
+ * answered in words the model can act on, never thrown.
+ */
+export function findInDocumentQueries(
+  query: unknown,
+): { ok: true; queries: string[] } | { ok: false; error: string } {
+  if (typeof query === "string") return { ok: true, queries: [query] };
+  if (query === undefined || query === null) {
+    return { ok: false, error: "Empty query." };
+  }
+  if (!Array.isArray(query)) return { ok: false, error: QUERY_MUST_BE_A_STRING };
+  if (!query.every((item) => typeof item === "string")) {
+    return { ok: false, error: QUERY_MUST_BE_A_STRING };
+  }
+  const queries = [
+    ...new Set((query as string[]).filter((item) => item.trim() !== "")),
+  ];
+  if (queries.length === 0) return { ok: false, error: "Empty query." };
+  if (queries.length > MAX_FIND_QUERIES) {
+    return {
+      ok: false,
+      error: `${QUERY_MUST_BE_A_STRING} A list of at most ${MAX_FIND_QUERIES} phrases is also searched, one by one.`,
+    };
+  }
+  return { ok: true, queries };
+}
+
+/**
+ * The results of several find_in_document searches of one document, one
+ * per phrase, as one tool result: each search's own result, in order.
+ */
+export function combinedFindResults(results: string[]): string {
+  const searches = results.map((result) => {
+    try {
+      return JSON.parse(result) as Record<string, unknown>;
+    } catch {
+      return { ok: false, error: "The search returned no result." };
+    }
+  });
+  const filename = searches.find((search) => typeof search.filename === "string")
+    ?.filename;
+  return JSON.stringify({
+    ok: searches.some((search) => search.ok === true),
+    ...(filename === undefined ? {} : { filename }),
+    note: "query was a list, so each phrase was searched on its own; pass one string per call.",
+    total_matches: searches.reduce(
+      (sum, search) =>
+        sum + (typeof search.total_matches === "number" ? search.total_matches : 0),
+      0,
+    ),
+    searches: searches.map(({ filename: _filename, ...search }) => search),
+  });
 }
 
 /**
@@ -1767,6 +1851,11 @@ export async function findInDocumentContent(params: {
     db,
   } = params;
 
+  // The argument is the model's: typed as a string, it may arrive as
+  // anything (see findInDocumentQueries).
+  if (typeof query !== "string" && query != null) {
+    return JSON.stringify({ ok: false, error: QUERY_MUST_BE_A_STRING });
+  }
   if (!query || !query.trim()) {
     return JSON.stringify({ ok: false, error: "Empty query." });
   }
@@ -1837,12 +1926,15 @@ export async function findInDocumentContent(params: {
   }
 
   // Probes are short and many by design; normalize the text once per turn.
+  // Each hit of a paged text (a PDF's) says its page, so a quote found by
+  // search alone is cited where it is, not on page 1.
   const { hits, totalMatches } = findTextMatches({
     text,
     query,
     maxResults,
     contextChars,
     normalized: normalizedTextFor(docInfo, text),
+    pageStarts: pageStartsFor(docInfo, text),
   });
 
   write(

@@ -15,11 +15,15 @@ async function mammothRawText(bytes: ArrayBuffer): Promise<string> {
   return (await mammoth.extractRawText({ buffer: Buffer.from(bytes) })).value;
 }
 
-/** A .docx as the model reads it: the accepted view, then its review notes. */
+/**
+ * A .docx as the model reads it: what its tracked changes mean, when it has
+ * any; the accepted view; then its review notes.
+ */
 export async function docxTextForModel(bytes: ArrayBuffer): Promise<string> {
-  const { body, review } = await extractDocxBodyAndReview(Buffer.from(bytes));
+  const { body, review, lead } = await extractDocxBodyAndReview(Buffer.from(bytes));
   const text = body || await mammothRawText(bytes);
-  return review ? `${text}\n\n${review}` : text;
+  const withReview = review ? `${text}\n\n${review}` : text;
+  return lead ? `${lead}\n\n${withReview}` : withReview;
 }
 
 export const EXTRACTION_OPS = {
@@ -40,9 +44,14 @@ export const EXTRACTION_OPS = {
   // mammoth as the fallback when it comes back empty, then the tracked
   // changes and comments that view cannot show.
   docxText: (bytes: ArrayBuffer) => docxTextForModel(bytes),
-  /** A .docx's tracked changes and comments alone, as docxText adds them. */
-  docxReview: async (bytes: ArrayBuffer) =>
-    (await extractDocxBodyAndReview(Buffer.from(bytes))).review,
+  /**
+   * A .docx's tracked changes and comments alone, as docxText adds them:
+   * `text` after its body, `lead` before it.
+   */
+  docxReview: async (bytes: ArrayBuffer) => {
+    const { review, lead } = await extractDocxBodyAndReview(Buffer.from(bytes));
+    return { text: review, lead };
+  },
   /** The accepted view alone (a playbook's source). */
   docxBodyText: (bytes: ArrayBuffer) => extractDocxBodyText(Buffer.from(bytes)),
   spreadsheet: async (bytes: ArrayBuffer) =>

@@ -2,6 +2,7 @@ import type { QuoteVerification } from "./types";
 import { sourceProviderFor } from "../../source-documents/sourceDocuments.service";
 import { quoteOccursVerbatim } from "./tools/externalSources";
 import { normalizeWithMap, type NormalizeOptions } from "./tools/documentOps";
+import { citedPageAt, pageAt, pageStarts } from "./tools/pageMarkers";
 
 // Mirrors the frontend: cross-page quotes join two page segments with this
 // sentinel (see expandDocumentQuoteEntry in
@@ -29,6 +30,15 @@ const UNREADABLE_SOURCES = new Set([
 type QuoteLocation = { start: number; end: number; excerpt: string };
 type QuoteVerificationResult = QuoteVerification & {
   needs_correction: boolean;
+};
+/**
+ * A verification with where in the source the quote was found, first
+ * character to last, its omissions and page breaks included: what a
+ * citation's page is taken from. Never stored: start_char and end_char stay
+ * for contiguous quotes alone.
+ */
+type LocatedVerification = QuoteVerificationResult & {
+  span?: { start: number; end: number };
 };
 
 // Tiers 2 and 3: whitespace + case, then also punctuation-tolerant.
@@ -67,6 +77,11 @@ export function createQuoteVerifier(source: string) {
   return (quote: string) => verifyQuoteAgainstSource(source, quote, prepared);
 }
 
+function createLocatingVerifier(source: string) {
+  const prepared = prepareSource(source);
+  return (quote: string) => locateAndVerifyQuote(source, quote, prepared);
+}
+
 type CaseSource = { opinions: CaseOpinionSource[]; completeCaseText: string };
 
 /**
@@ -95,11 +110,21 @@ export function caseSourceCache(
 }
 
 function verifierCache() {
-  const byText = new Map<string, ReturnType<typeof createQuoteVerifier>>();
+  const byText = new Map<string, ReturnType<typeof createLocatingVerifier>>();
   return (source: string) => {
     let verify = byText.get(source);
-    if (!verify) { verify = createQuoteVerifier(source); byText.set(source, verify); }
+    if (!verify) { verify = createLocatingVerifier(source); byText.set(source, verify); }
     return verify;
+  };
+}
+
+/** pageStarts once per source text for a verification pass. */
+function pageStartsCache() {
+  const byText = new Map<string, number[]>();
+  return (source: string) => {
+    let starts = byText.get(source);
+    if (!starts) { starts = pageStarts(source); byText.set(source, starts); }
+    return starts;
   };
 }
 
@@ -236,6 +261,16 @@ export function verifyQuoteAgainstSource(
   quote: string,
   prepared = prepareSource(source),
 ): QuoteVerificationResult {
+  const { span: _span, ...result } = locateAndVerifyQuote(source, quote, prepared);
+  return result;
+}
+
+/** verifyQuoteAgainstSource, with the span the quote was found at. */
+function locateAndVerifyQuote(
+  source: string,
+  quote: string,
+  prepared: QuoteSource,
+): LocatedVerification {
   if (!source || UNREADABLE_SOURCES.has(source)) {
     return { verified: false, needs_correction: false };
   }
@@ -250,7 +285,7 @@ export function verifyQuoteAgainstSource(
     // Verify each segment independently (segments may contain ellipsis,
     // handled recursively by the ellipsis branch below).
     const verified = segments.map((seg) =>
-      verifyQuoteAgainstSource(source, seg, prepared),
+      locateAndVerifyQuote(source, seg, prepared),
     );
     if (verified.some((result) => !result.verified)) {
       return { verified: false, needs_correction: false };
@@ -281,6 +316,7 @@ export function verifyQuoteAgainstSource(
       source_excerpt: verified
         .map((result, index) => result.source_excerpt ?? segments[index])
         .join(` ${PAGE_BREAK_SENTINEL} `),
+      span: { start: anchors[0].start, end: anchors[anchors.length - 1].end },
     };
   }
 
@@ -311,6 +347,7 @@ export function verifyQuoteAgainstSource(
       source_excerpt: located
         .map(({ location }) => location!.excerpt)
         .join(" ... "),
+      span: ellipsisSpan(located.map(({ location }) => location!)),
     };
   }
 
@@ -322,7 +359,22 @@ export function verifyQuoteAgainstSource(
     start_char: loc.start,
     end_char: loc.end,
     source_excerpt: loc.excerpt,
+    span: { start: loc.start, end: loc.end },
   };
+}
+
+/**
+ * Where a quote with omissions was found. Each segment is found on its own,
+ * so the span runs from the first segment to the last only when the last
+ * follows the first closely, as one passage's would; otherwise it is the
+ * first segment's.
+ */
+function ellipsisSpan(locations: QuoteLocation[]): { start: number; end: number } {
+  const first = locations[0];
+  const last = locations[locations.length - 1];
+  const joined =
+    last.end >= first.end && last.start - first.end <= MAX_PAGE_BREAK_SPAN_CHARS;
+  return { start: first.start, end: joined ? last.end : first.end };
 }
 
 type DocQuoteEntry = { page: number | string; quote: string };
@@ -346,7 +398,12 @@ function record(value: unknown): Record<string, unknown> | null {
 
 function withVerifiedDocumentQuotes(
   documentValue: unknown,
-  verifiedQuotes: { quote: string; verification: QuoteVerification }[],
+  verifiedQuotes: {
+    quote: string;
+    verification: QuoteVerification;
+    /** Set where the quote was found on another page than the one cited. */
+    foundOnPage?: number | string;
+  }[],
 ): Record<string, unknown> | undefined {
   const document = record(documentValue);
   if (!document) return undefined;
@@ -356,13 +413,16 @@ function withVerifiedDocumentQuotes(
     quotes: documentQuotes.map((value, index) => {
       const quote = record(value);
       const verifiedQuote = verifiedQuotes[index];
-      return quote && verifiedQuote
-        ? {
-            ...quote,
-            quote: verifiedQuote.quote,
-            verification: verifiedQuote.verification,
-          }
-        : value;
+      if (!quote || !verifiedQuote) return value;
+      const target = record(quote.target);
+      return {
+        ...quote,
+        quote: verifiedQuote.quote,
+        verification: verifiedQuote.verification,
+        ...(verifiedQuote.foundOnPage !== undefined && target && "page" in target
+          ? { target: { ...target, page: verifiedQuote.foundOnPage } }
+          : {}),
+      };
     }),
   };
 }
@@ -412,7 +472,7 @@ export async function verifyCaseCitationAnnotation(
         : (opinions.find((opinion) => opinion.opinion_id === opinionId)?.text ??
           "");
     const result = verifierFor(source)(entry.quote);
-    const { needs_correction, ...verification } = result;
+    const { needs_correction, span: _span, ...verification } = result;
     const quote =
       needs_correction && verification.source_excerpt
         ? verification.source_excerpt
@@ -445,6 +505,7 @@ export async function verifyDocumentCitationAnnotation(
   annotation: unknown,
   getSourceText: (docId: string) => Promise<string>,
   verifierFor = verifierCache(),
+  pagesOf = pageStartsCache(),
 ): Promise<unknown> {
   if (!annotation || typeof annotation !== "object") return annotation;
   const a = annotation as Record<string, unknown>;
@@ -472,17 +533,39 @@ export async function verifyDocumentCitationAnnotation(
     sourceProviderFor(String(record(a.document)?.document_id ?? ""))
       ?.quoteVerification === "exact";
   const verifiedQuotes = entries.map((entry) => {
-    const result = exact
+    const result: LocatedVerification = exact
       ? { verified: quoteOccursVerbatim(source, entry.quote), needs_correction: false }
       : verifierFor(source)(entry.quote);
-    const { needs_correction, ...verification } = result;
+    const { needs_correction, span, ...verification } = result;
     // Swap the exact source text into the displayed quote when it drifted,
     // so a drifted quote is never surfaced as the source's words.
     const quote =
       needs_correction && verification.source_excerpt
         ? verification.source_excerpt
         : entry.quote;
-    return { ...entry, quote, verification };
+    // A quote found in a paged text is cited on the page it was found on.
+    // The model may have given none (a quote it found by search, which
+    // normalizeCitation files on page 1) or a printed page number; the
+    // "[Page N]" marker where the quote is wins, unless the page the model
+    // named holds the quote too (a phrase the document repeats). A
+    // spreadsheet's cell and an unpaged text keep what the model said.
+    const foundOn =
+      span && !isCellQuote(entry)
+        ? citedPageAt(pagesOf(source), span.start, span.end)
+        : null;
+    const foundOnPage =
+      foundOn !== null &&
+      String(foundOn) !== String(entry.page) &&
+      !pageHoldsQuote(source, pagesOf(source), entry.page, entry.quote)
+        ? foundOn
+        : undefined;
+    return {
+      ...entry,
+      ...(foundOnPage === undefined ? {} : { page: foundOnPage }),
+      quote,
+      verification,
+      foundOnPage,
+    };
   });
 
   const verified = verifiedQuotes.every((q) => q.verification.verified);
@@ -491,14 +574,79 @@ export async function verifyDocumentCitationAnnotation(
     a.document,
     verifiedQuotes,
   );
+  const quotes = verifiedQuotes.map(({ foundOnPage: _found, ...quote }) => quote);
 
   return {
     ...a,
-    quote: verifiedQuotes[0]?.quote ?? a.quote,
-    quotes: verifiedQuotes,
+    quote: quotes[0]?.quote ?? a.quote,
+    ...(verifiedQuotes[0]?.foundOnPage !== undefined && "page" in a
+      ? { page: verifiedQuotes[0].foundOnPage }
+      : {}),
+    quotes,
     verified,
     ...(verifiedDocument ? { document: verifiedDocument } : {}),
   };
+}
+
+/**
+ * Whether the page a citation names ("33", or "41-42") holds the quote too:
+ * a phrase the document repeats is found first where it first occurs, and a
+ * model that cited a later occurrence keeps its page.
+ */
+function pageHoldsQuote(
+  source: string,
+  starts: readonly number[],
+  page: number | string,
+  quote: string,
+): boolean {
+  const named = String(page).match(/^\s*(\d+)\s*(?:-\s*(\d+)\s*)?$/);
+  if (!named) return false;
+  const first = Number(named[1]);
+  const last = Number(named[2] ?? named[1]);
+  if (first < 1 || last < first || last > starts.length) return false;
+  const text = source.slice(starts[first - 1], starts[last] ?? source.length);
+  return verifyQuoteAgainstSource(text, quote).verified;
+}
+
+/** A spreadsheet quote, located by its sheet and cell rather than a page. */
+function isCellQuote(entry: DocQuoteEntry): boolean {
+  const located = entry as DocQuoteEntry & { sheet?: unknown; cell?: unknown };
+  return typeof located.sheet === "string" || typeof located.cell === "string";
+}
+
+// A tabular cell's inline citations, as the review's page reads them
+// (frontend components/tabular/citation-utils.ts): a [[...]] marker, and in
+// it a page citation with a whole page number.
+const INLINE_CITATION = /\[\[((?:[^\[\]]|\[[^\]]*\])+)\]\]/g;
+const INLINE_PAGE_CITATION = /^((?:document:[^|]+\|\|)?page:)(\d+)(\|\|(?:quote:)?)([\s\S]+)$/i;
+
+/**
+ * A tabular cell's text with each inline page citation set to the page its
+ * quote is on in the row's document, as verifyDocumentCitationAnnotation
+ * does for a chat's citations. An extraction model often writes the page
+ * number printed in the document (s. 11.4 "at page 7" on the PDF's fifth
+ * page); the "[Page N]" marker where the quote is found wins. A quote not
+ * found or also on the page cited, a spreadsheet's cell citation and an
+ * unpaged source are left as written; a quote over a page break is cited
+ * at its first page, since the review's page takes a whole number.
+ */
+export function withInlineCitationPagesFound(text: string, source: string): string {
+  if (typeof text !== "string" || !text.includes("[[")) return text;
+  const starts = pageStarts(source);
+  if (!starts.length) return text;
+  const verify = createLocatingVerifier(source);
+  return text.replace(INLINE_CITATION, (marker, metadata: string) => {
+    const citation = metadata.match(INLINE_PAGE_CITATION);
+    if (!citation) return marker;
+    const [, head, page, separator, quote] = citation;
+    const { span } = verify(quote.trim());
+    const found = span ? pageAt(starts, span.start) : null;
+    return found === null ||
+      String(found) === page ||
+      pageHoldsQuote(source, starts, page, quote.trim())
+      ? marker
+      : `[[${head}${found}${separator}${quote}]]`;
+  });
 }
 
 /**
@@ -513,13 +661,14 @@ export async function verifyCitations(
   getCaseOpinions: (clusterId: number) => Promise<CaseOpinionSource[]>,
 ): Promise<unknown[]> {
   const verifierFor = verifierCache();
+  const pagesOf = pageStartsCache();
   const caseSources = caseSourceCache(getCaseOpinions);
   return Promise.all(
     annotations.map((annotation) => {
       const value = record(annotation);
       return value?.kind === "case"
         ? verifyCaseCitationAnnotation(annotation, caseSources, verifierFor)
-        : verifyDocumentCitationAnnotation(annotation, getSourceText, verifierFor);
+        : verifyDocumentCitationAnnotation(annotation, getSourceText, verifierFor, pagesOf);
     }),
   );
 }

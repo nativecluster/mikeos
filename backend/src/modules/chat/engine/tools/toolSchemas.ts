@@ -340,7 +340,7 @@ export const TOOLS = [
     function: {
       name: "find_in_document",
       description:
-        "Search for specific strings inside a document — a Ctrl+F equivalent. Returns each match with surrounding context so you can locate and quote the exact text without reading the whole document. Matching is case-insensitive and whitespace-tolerant. Use this for targeted lookups (e.g. finding a clause title, party name, or a specific phrase) rather than reading the whole document.",
+        "Search for specific strings inside a document — a Ctrl+F equivalent. Returns each match with surrounding context, and in a paged document its page (the [Page N] number to cite), so you can locate, quote and cite the exact text without reading the whole document. Matching is case-insensitive and whitespace-tolerant. Use this for targeted lookups (e.g. finding a clause title, party name, or a specific phrase) rather than reading the whole document.",
       parameters: {
         type: "object",
         properties: {

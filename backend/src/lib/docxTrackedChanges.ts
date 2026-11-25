@@ -723,8 +723,19 @@ const REVIEW_MAX_TEXT_CHARS = 500;
 const REVIEW_MAX_CONTEXT_CHARS = 200;
 const COMMENTS_MAX_BYTES = 8 * 1024 * 1024;
 
-/** `by` is the author, with the date when the document gives one. */
-type ReviewChange = { kind: "Inserted" | "Deleted"; by: string; text: string; paragraph: string };
+/**
+ * `by` is the author, with the date when the document gives one.
+ * `paragraph` is where the change is, already cut to fit: for an insertion
+ * the paragraph as the body reads it, for a deletion as it read before the
+ * changes (`original`), so the words a deletion takes out are seen in place.
+ */
+type ReviewChange = {
+    kind: "Inserted" | "Deleted";
+    by: string;
+    text: string;
+    paragraph: string;
+    original?: boolean;
+};
 type ReviewComment = { id: string; by: string; text: string };
 
 function oneLine(text: string, max: number): string {
@@ -755,6 +766,77 @@ function changeText(wrapper: XNode, tag: "w:t" | "w:delText"): string {
 }
 
 /**
+ * A paragraph as the body reads it (its insertions in, its deletions out)
+ * and as it read before its tracked changes (the reverse), with where each
+ * of its own w:ins and w:del is in the view that shows it. The accepted
+ * view is flattenParagraph's, so `accepted` is the body's paragraph; a
+ * change nested deeper (in a hyperlink) has no place here.
+ */
+function paragraphViews(paraChildren: XNode[]): {
+    accepted: string;
+    original: string;
+    at: Map<XNode, { start: number; end: number }>;
+} {
+    let accepted = "";
+    let original = "";
+    const at = new Map<XNode, { start: number; end: number }>();
+    const runText = (run: XNode, tag: "w:t" | "w:delText") => {
+        let out = "";
+        for (const child of elChildren(run)) {
+            if (elName(child) === tag) out += getTextContent(child);
+        }
+        return out;
+    };
+    for (const child of paraChildren) {
+        const name = elName(child);
+        if (name === "w:r") {
+            const text = runText(child, "w:t");
+            accepted += text;
+            original += text;
+        } else if (name === "w:ins") {
+            const start = accepted.length;
+            for (const inner of elChildren(child)) {
+                if (elName(inner) === "w:r") accepted += runText(inner, "w:t");
+            }
+            at.set(child, { start, end: accepted.length });
+        } else if (name === "w:del") {
+            const start = original.length;
+            for (const inner of elChildren(child)) {
+                if (elName(inner) === "w:r") original += runText(inner, "w:delText");
+            }
+            at.set(child, { start, end: original.length });
+        }
+    }
+    return { accepted, original, at };
+}
+
+/**
+ * The part of a paragraph around [start, end), at most
+ * REVIEW_MAX_CONTEXT_CHARS, cut at spaces and marked "…" where cut: a short
+ * change in a long clause ("6" for "9" in "60 days") is shown with the words
+ * around it, not with the clause's first words.
+ */
+function contextAround(text: string, start: number, end: number): string {
+    const max = REVIEW_MAX_CONTEXT_CHARS;
+    if (text.length <= max) return oneLine(text, max);
+    if (end - start >= max) return `${start > 0 ? "…" : ""}${oneLine(text.slice(start, end), max)}`;
+    const room = max - (end - start);
+    let from = Math.max(0, start - Math.floor(room / 2));
+    let to = Math.min(text.length, from + max);
+    from = Math.max(0, to - max);
+    if (from > 0) {
+        const space = text.indexOf(" ", from);
+        if (space >= 0 && space < start) from = space + 1;
+    }
+    if (to < text.length) {
+        const space = text.lastIndexOf(" ", to);
+        if (space >= end) to = space;
+    }
+    const inner = text.slice(from, to).replace(/\s+/g, " ").trim();
+    return `${from > 0 ? "…" : ""}${inner}${to < text.length ? "…" : ""}`;
+}
+
+/**
  * The text of a .docx as read_document gives it to the model: the accepted
  * view (extractDocxBodyText, which the edit matcher anchors against) and,
  * apart from it, what that view cannot show: the tracked changes not yet
@@ -764,17 +846,22 @@ function changeText(wrapper: XNode, tag: "w:t" | "w:delText"): string {
  *
  * The notes come after the body, never inside it: an edit is anchored on
  * the body's own characters, and a marker in the middle of a sentence would
- * be copied into a `find` that then matches nothing.
+ * be copied into a `find` that then matches nothing. `lead` goes before the
+ * body when there are tracked changes (reviewLead): the body reads as if
+ * they were accepted, and a model that summarizes from it must know that
+ * before it reads a word, not after (the models campaign's bug 4).
  */
-export async function extractDocxBodyAndReview(bytes: Buffer): Promise<{ body: string; review: string }> {
+export async function extractDocxBodyAndReview(
+    bytes: Buffer,
+): Promise<{ body: string; review: string; lead: string }> {
     const zip = await JSZip.loadAsync(bytes);
     const docXmlFile = getZipEntry(zip, "word/document.xml");
-    if (!docXmlFile) return { body: "", review: "" };
+    if (!docXmlFile) return { body: "", review: "", lead: "" };
     const docXmlRaw = await docXmlFile.async("string");
     const parser = createParser();
     const tree = parser.parse(docXmlRaw) as XNode[];
     const bodyChildren = findBody(tree);
-    if (!bodyChildren) return { body: "", review: "" };
+    if (!bodyChildren) return { body: "", review: "", lead: "" };
 
     const lines: string[] = [];
     const changes: ReviewChange[] = [];
@@ -786,6 +873,7 @@ export async function extractDocxBodyAndReview(bytes: Buffer): Promise<{ body: s
         const starts: string[] = [];
         const ends: string[] = [];
         const references: string[] = [];
+        let views: ReturnType<typeof paragraphViews> | undefined;
         const visit = (nodes: XNode[], depth: number) => {
             for (const c of nodes) {
                 const name = elName(c);
@@ -794,10 +882,17 @@ export async function extractDocxBodyAndReview(bytes: Buffer): Promise<{ body: s
                 if (name === "w:ins" || name === "w:del") {
                     const text = changeText(c, name === "w:ins" ? "w:t" : "w:delText");
                     if (text.trim()) {
+                        views ??= paragraphViews(paraChildren);
+                        const place = views.at.get(c);
+                        const shown = name === "w:ins" ? views.accepted : views.original;
                         changes.push({
                             kind: name === "w:ins" ? "Inserted" : "Deleted",
                             by: byline(elAttrs(c)),
-                            text, paragraph: paraText,
+                            text,
+                            paragraph: place
+                                ? contextAround(shown, place.start, place.end)
+                                : oneLine(paraText, REVIEW_MAX_CONTEXT_CHARS),
+                            original: !!place && name === "w:del",
                         });
                     }
                 } else if (name === "w:commentRangeStart") starts.push(id);
@@ -850,7 +945,24 @@ export async function extractDocxBodyAndReview(bytes: Buffer): Promise<{ body: s
             commentsUnreadable = true;
         }
     }
-    return { body, review: formatReview(changes, comments, anchors, commentsUnreadable) };
+    return {
+        body,
+        review: formatReview(changes, comments, anchors, commentsUnreadable),
+        lead: reviewLead(changes.length),
+    };
+}
+
+/**
+ * What a .docx's text says first when it has tracked changes not yet
+ * accepted or rejected (the models campaign's bug 4, 2026-11-25): its body
+ * reads as if they were accepted, so a memo drafted from it stated a
+ * proposed 90 days and Delaware law as the agreement's, where the signed
+ * text says 60 days and Pennsylvania. "" when it has none.
+ */
+export function reviewLead(changeCount: number): string {
+    if (changeCount === 0) return "";
+    const changes = changeCount === 1 ? "1 tracked change" : `${changeCount} tracked changes`;
+    return `[This version has ${changes} not yet accepted or rejected. The text below shows ${changeCount === 1 ? "it" : "them"} as if accepted: a proposed insertion is in it and a proposed deletion is left out. Tracked changes are proposals, not agreed terms: until one is accepted, the original wording is what the document says. Each change is listed after the text; a deletion's text is the original wording, an insertion's is proposed. When you say what the document provides, give the original wording and name each change as proposed.]`;
 }
 
 function parseComments(tree: XNode[]): ReviewComment[] {
@@ -888,8 +1000,12 @@ function formatReview(
             `[Tracked changes: ${changes.length} not yet accepted or rejected. The text above reads as if each were accepted: its insertions are in it and its deletions are not. Base an edit on the text above.]`,
             ...changes.slice(0, REVIEW_MAX_ITEMS).map((change, i) => {
                 const text = oneLine(change.text, REVIEW_MAX_TEXT_CHARS);
-                const paragraph = oneLine(change.paragraph, REVIEW_MAX_CONTEXT_CHARS);
-                const where = paragraph && paragraph !== text ? `, in "${paragraph}"` : "";
+                const paragraph = change.paragraph;
+                const where = !paragraph || paragraph === text
+                    ? ""
+                    : change.original
+                        ? `, where the original reads "${paragraph}"`
+                        : `, in "${paragraph}"`;
                 return `${i + 1}. ${change.kind} by ${change.by}: "${text}"${where}`;
             }),
             ...more(changes.length),
