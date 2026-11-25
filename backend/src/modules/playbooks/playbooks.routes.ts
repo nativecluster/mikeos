@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { Router, type Response } from "express";
 import { requireAuth, requireMfaIfEnrolled } from "../../middleware/auth";
+import { sharingOffInNcApp } from "../../middleware/ncApp";
 import { sendInternalError } from "../../lib/httpError";
 import { pipeToResponse } from "../../lib/pipeToResponse";
 import { setOperation } from "../../lib/observability/sentry";
@@ -500,8 +501,10 @@ playbooksRouter.get("/:playbookId/shares", async (req, res) => {
   }
 });
 
+// Off in the NativeCluster app (middleware/ncApp.ts, review M1).
 playbooksRouter.post(
   "/:playbookId/share",
+  sharingOffInNcApp,
   requireMfaIfEnrolled,
   async (req, res) => {
     try {

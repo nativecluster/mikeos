@@ -1,4 +1,5 @@
 import type { Db } from "./supabase";
+import { ncAppSharingRefusal } from "./authApp";
 import { selectInBatches } from "./batchedQuery";
 import type { ProjectRole } from "./permissions";
 
@@ -399,6 +400,9 @@ export async function setOrgAccessOverride(
     | { ok: true; override: OrgAccessOverride | null }
     | { ok: false; detail: string }
 > {
+    // The NativeCluster app gives no one access to anything (review M1).
+    const sharingOff = ncAppSharingRefusal();
+    if (sharingOff) return { ok: false, detail: sharingOff };
     const config = CONFIG[params.kind];
     const { data, error } = await db
         .from(config.table)
@@ -444,6 +448,9 @@ export async function setOrgAccessOverrides(
         assignedBy: string;
     },
 ): Promise<{ ok: true } | { ok: false; detail: string }> {
+    // The NativeCluster app gives no one access to anything (review M1).
+    const sharingOff = ncAppSharingRefusal();
+    if (sharingOff) return { ok: false, detail: sharingOff };
     if (params.userIds.length === 0) return { ok: true };
     const config = CONFIG[params.kind];
     const updatedAt = new Date().toISOString();

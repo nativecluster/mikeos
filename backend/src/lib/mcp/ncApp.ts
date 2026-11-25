@@ -18,6 +18,7 @@
 //   ticket check), never a linked account.
 
 import { AsyncLocalStorage } from "node:async_hooks";
+import { ncPersonIdOf } from "../nc/personId";
 import type { HostSecrets } from "./ncSecrets";
 
 export function isNcAppMode(): boolean {
@@ -72,13 +73,12 @@ export function ncAppSecrets(): HostSecrets {
 
 const personContext = new AsyncLocalStorage<{ person: string | null }>();
 
-/** A ticket's person id is the host's opaque id for this app: `p_` and hex. */
-const PERSON_RE = /^p_[A-Za-z0-9]{1,64}$/;
-
+/**
+ * A ticket's person id, the host's opaque id for this app (`p_` and hex), by
+ * the one rule every part of Mike reads it with (lib/nc/personId.ts).
+ */
 export function normalizeNcPerson(value: unknown): string | null {
-    if (typeof value !== "string") return null;
-    const trimmed = value.trim();
-    return PERSON_RE.test(trimmed) ? trimmed : null;
+    return ncPersonIdOf(value);
 }
 
 /** Runs `fn` as work of `person` (the ticket's, from `X-NC-Person`). */
@@ -108,29 +108,76 @@ export function currentNcPerson(): string | null {
     return normalizeNcPerson(personResolver?.() ?? null);
 }
 
+export class NcPersonUnknownError extends Error {
+    code = "nc_person_unknown";
+    constructor() {
+        super("Mike could not tell which NativeCluster person this connection is for.");
+        this.name = "NcPersonUnknownError";
+    }
+}
+
+/**
+ * App mode: the person of the work in hand, to save with something only they
+ * may finish (a sign-in's state): throws when none is known, so nothing is
+ * ever saved for no one. Elsewhere null (nothing is saved for a person).
+ */
+export function ncPersonToSave(): string | null {
+    if (!isNcAppMode()) return null;
+    const person = currentNcPerson();
+    if (!person) throw new NcPersonUnknownError();
+    return person;
+}
+
+/**
+ * Whether the work in hand may use what was saved for `saved` (a sign-in's
+ * state). App mode: only that same person, and never something saved with
+ * no person, or used by no one: "no person" is never a wildcard (the
+ * 2026-11-24 security review, L3). Elsewhere states carry no person, and one
+ * that does is held to it as before.
+ */
+export function ncPersonMayUse(saved: unknown): boolean {
+    const person = typeof saved === "string" && saved ? saved : null;
+    if (!isNcAppMode()) return !person || currentNcPerson() === person;
+    const asking = currentNcPerson();
+    return person !== null && asking !== null && asking === person;
+}
+
 // ---------------------------------------------------------------------------
 // The app's own origin
 // ---------------------------------------------------------------------------
 
 /**
- * The hosts the app's origin may have: 127.0.0.1 (or localhost) on one of
- * NativeCluster's ten app ports. Anything else is refused, so a redirect URI
- * is never built from a header pointing elsewhere.
+ * The host the app's origin has: 127.0.0.1 on one of NativeCluster's ten
+ * app ports (`https://127.0.0.1:<port>`, NativeCluster's own origin for each
+ * app; never `localhost`). Anything else is refused, so a redirect URI is
+ * never built from a header pointing elsewhere.
  */
-const APP_HOST_RE = /^(?:127\.0\.0\.1|localhost):(849\d)$/;
+const APP_HOST_RE = /^127\.0\.0\.1:(849\d)$/;
 
 /**
  * `https://127.0.0.1:<port>`, the app's origin on this computer, from the
  * request itself: the browser's `Host` (the host passes it on, and so does
- * the launcher), which must be 127.0.0.1 or localhost on one of
- * NativeCluster's app ports. An `Origin` the browser sent must be that same
- * origin; one that is not is never trusted. Null otherwise.
+ * the launcher), which must be 127.0.0.1 on one of NativeCluster's app
+ * ports. An `Origin` the browser sent must be that same origin; one that is
+ * not is never trusted. Null otherwise.
+ *
+ * `requireOrigin`: the request must also carry the browser's `Origin`, and
+ * it must be the Host's. A sign-in's start asks for it (ncAppRedirectUri):
+ * the way back is then the origin of the page that asked, which a browser
+ * never lets a page set, and not merely the Host a client could write as
+ * another app's port (the 2026-11-24 security review, L7). The app is told
+ * no port of its own by NativeCluster, so the request's own origin is the
+ * one both headers name.
  */
-export function ncAppOrigin(req: { get(name: string): string | undefined }): string | null {
+export function ncAppOrigin(
+    req: { get(name: string): string | undefined },
+    options: { requireOrigin?: boolean } = {},
+): string | null {
     const host = req.get("host")?.trim().toLowerCase();
     if (!host || !APP_HOST_RE.test(host)) return null;
     const origin = `https://${host}`;
     const sent = req.get("origin")?.trim().toLowerCase();
+    if (options.requireOrigin) return sent === origin ? origin : null;
     if (sent && sent !== "null" && sent !== origin) return null;
     return origin;
 }
@@ -152,7 +199,7 @@ export function ncAppRedirectUri(
     req: { get(name: string): string | undefined },
     path: string,
 ): string {
-    const origin = ncAppOrigin(req);
+    const origin = ncAppOrigin(req, { requireOrigin: true });
     if (!origin) throw new NcAppOriginUnknownError();
     return `${origin}/api${path}`;
 }

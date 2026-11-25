@@ -95,6 +95,34 @@ describe("the routes of a plane that is off for everyone", () => {
         expect(startUserMcpConnectorOAuth).not.toHaveBeenCalled();
     });
 
+    // Review L1: Express routes a path whatever its case, and the guard read
+    // it as written, so POST /user/MCP-Connectors reached the connector's
+    // create (a DNS query for the caller's name, the key kept) with MCP off.
+    it("refuses a route whatever the case or a trailing slash of its path", async () => {
+        vi.stubEnv("LB_MIKE_MCP", "0");
+        vi.stubEnv("LB_MIKE_WEBSEARCH", "0");
+        vi.stubEnv("LB_MIKE_COURTLISTENER", "0");
+        for (const path of ["/user/MCP-Connectors", "/user/mcp-CONNECTORS/", "/USER/Mcp-Connectors"]) {
+            const add = await request(app).post(path).send({ name: "x", serverUrl: "https://bob-chosen.example.test/mcp" });
+            expect(add.status, path).toBe(404);
+            expect(add.body, path).toEqual(refused("mcp"));
+        }
+        expect((await request(app).post("/user/Mcp-Connectors/c1/OAuth/Start")).body).toEqual(refused("mcp"));
+        expect((await request(app).get("/user/MCP-connectors/")).body).toEqual([]);
+        expect((await request(app).put("/user/Web-Search").send({ enabled: true })).body).toEqual(refused("websearch"));
+        expect((await request(app).put("/user/web-search/").send({ enabled: true })).body).toEqual(refused("websearch"));
+        expect((await request(app).put("/user/API-Keys/Brave").send({ api_key: "k" })).body).toEqual(refused("websearch"));
+        expect((await request(app).put("/user/Integrations/CourtListener/Token").send({ token: "t" })).body).toEqual(
+            refused("courtlistener"),
+        );
+        expect(netPlaneOfUserRoute("POST", "/MCP-Connectors")).toBe("mcp");
+        expect(netPlaneOfUserRoute("PUT", "/API-KEYS/TAVILY/")).toBe("websearch");
+        expect(createUserMcpConnector).not.toHaveBeenCalled();
+        expect(startUserMcpConnectorOAuth).not.toHaveBeenCalled();
+        expect(saveWebSearchSettings).not.toHaveBeenCalled();
+        expect(saveApiKey).not.toHaveBeenCalled();
+    });
+
     it("CourtListener: its status says unavailable, and its switch and token are refused", async () => {
         vi.stubEnv("LB_MIKE_COURTLISTENER", "0");
         const status = await request(app).get("/user/integrations/courtlistener");

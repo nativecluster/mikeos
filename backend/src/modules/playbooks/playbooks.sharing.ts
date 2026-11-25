@@ -4,6 +4,7 @@
 // Reading the roster needs view access; changing it needs Owner.
 
 import { createServerSupabase, type Db } from "../../lib/supabase";
+import { ncAppSharingRefusal } from "../../lib/authApp";
 import {
   deleteOrgAccessOverride,
   findAssignableOrgMembers,
@@ -147,6 +148,9 @@ export async function sharePlaybook(
   input: { emails: unknown; role: unknown },
   db: Db = createServerSupabase(),
 ): Promise<void> {
+  // The NativeCluster app shares nothing (review M1): no share is written.
+  const sharingOff = ncAppSharingRefusal();
+  if (sharingOff) throw new PlaybookRequestError(sharingOff, 403);
   const emails = Array.isArray(input.emails)
     ? [
         ...new Set(

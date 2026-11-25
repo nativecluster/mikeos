@@ -34,6 +34,8 @@ export type NcRequest = {
   at: number;
   /** The task its route says it is (ncTaskForPath). */
   task: NcTask;
+  /** The person's Mike account, once the request's sign-in found it. */
+  userId?: string;
 };
 
 export type NcJob = {
@@ -78,6 +80,17 @@ export function runInNcRequest<T>(request: NcRequest, fn: () => T): T {
   return storage.run({ request }, fn);
 }
 
+/** The request's sign-in found its person's Mike account (middleware/auth.ts). */
+export function setNcRequestUser(userId: string): void {
+  const request = storage.getStore()?.request;
+  if (request) request.userId = userId;
+}
+
+/** The Mike account of the person whose request is in hand, once signed in. */
+export function currentNcRequestUser(): string | undefined {
+  return storage.getStore()?.request?.userId;
+}
+
 export function runInNcJob<T>(job: NcJob, fn: () => T): T {
   return storage.run({ job }, fn);
 }
@@ -90,13 +103,14 @@ export function runInNcCall<T>(call: NcCall, fn: () => T): T {
 
 /**
  * The task a request's route says it is. Coarse on purpose: a call site that
- * knows better (a chat's title) says so for its call.
+ * knows better (a chat's title) says so for its call. Read whatever the
+ * path's case, as Express routes it (the 2026-11-24 security review, L1).
  */
 export function ncTaskForPath(path: string): NcTask {
-  if (/\/tabular-review\/[^/]+\/chat(?:\/|$)/.test(path)) return "assistant";
-  if (/\/tabular-review(?:\/|$)/.test(path)) return "tabular";
-  if (/\/playbooks(?:\/|$)/.test(path)) return "playbook";
-  if (/\/memory(?:\/|$)/.test(path)) return "memory";
+  if (/\/tabular-review\/[^/]+\/chat(?:\/|$)/i.test(path)) return "assistant";
+  if (/\/tabular-review(?:\/|$)/i.test(path)) return "tabular";
+  if (/\/playbooks(?:\/|$)/i.test(path)) return "playbook";
+  if (/\/memory(?:\/|$)/i.test(path)) return "memory";
   return "assistant";
 }
 

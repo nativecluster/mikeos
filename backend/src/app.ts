@@ -41,6 +41,7 @@ import { envInt } from "./lib/runtimeConfig";
 import { stripApiPathPrefix } from "./middleware/apiPathPrefix";
 import { requestDiagnostics } from "./middleware/requestDiagnostics";
 import { ncIngress, ncIngressEnabled } from "./lib/nc/ingress";
+import { requireAuthInNcApp } from "./middleware/ncApp";
 
 export const app = express();
 const isProduction = process.env.NODE_ENV === "production";
@@ -320,7 +321,9 @@ app.delete("/user/tabular-reviews", dataDeleteLimiter);
 // Registered ahead of the global JSON parser: the filesystem storage driver's
 // signed PUT streams its body straight to disk (see downloads.routes.ts), so
 // no body parser may consume it first — a .json upload otherwise would be.
-app.put("/download/signed/:token", blobUploadLimiter, blobUploadHandler);
+// In the NativeCluster app the caller is signed in first, and must be the
+// link's person (requireAuthInNcApp reads no body; review L2).
+app.put("/download/signed/:token", blobUploadLimiter, requireAuthInNcApp, blobUploadHandler);
 
 app.use(express.json({ limit: JSON_BODY_LIMIT }));
 

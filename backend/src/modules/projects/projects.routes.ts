@@ -6,6 +6,7 @@
 
 import { Router, type Response } from "express";
 import { requireAuth, requireMfaIfEnrolled } from "../../middleware/auth";
+import { sharingOffInNcApp } from "../../middleware/ncApp";
 import { asyncRoute, routerErrorHandler } from "../../middleware/asyncRoute";
 import { createServerSupabase } from "../../lib/supabase";
 import { sendInternalError } from "../../lib/httpError";
@@ -352,7 +353,8 @@ projectsRouter.get("/:projectId/access", requireAuth, asyncRoute(async (req, res
 }));
 
 // POST /projects/:projectId/access — grant or re-role one recipient.
-projectsRouter.post("/:projectId/access", requireAuth, asyncRoute(async (req, res) => {
+// Off in the NativeCluster app (middleware/ncApp.ts, review M1).
+projectsRouter.post("/:projectId/access", sharingOffInNcApp, requireAuth, asyncRoute(async (req, res) => {
   const userId = res.locals.userId as string;
   const userEmail = res.locals.userEmail as string | undefined;
   const { projectId } = req.params;

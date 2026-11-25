@@ -18,6 +18,7 @@ import { stopOutcomeFrame } from "../../lib/streamRuns";
 import { Router } from "express";
 import { randomUUID } from "node:crypto";
 import { requireAuth } from "../../middleware/auth";
+import { sharingOffInNcApp } from "../../middleware/ncApp";
 import { asyncRoute, routerErrorHandler } from "../../middleware/asyncRoute";
 import { createServerSupabase } from "../../lib/supabase";
 import { enqueueChatTurnAudit, stoppedTurnAuditStatus } from "../../lib/audit";
@@ -325,7 +326,8 @@ chatRouter.get("/:chatId/access", requireAuth, asyncRoute(async (req, res) => {
 }));
 
 // POST /chat/:chatId/access — grant or re-role one recipient.
-chatRouter.post("/:chatId/access", requireAuth, asyncRoute(async (req, res) => {
+// Off in the NativeCluster app (middleware/ncApp.ts, review M1).
+chatRouter.post("/:chatId/access", sharingOffInNcApp, requireAuth, asyncRoute(async (req, res) => {
     const userId = res.locals.userId as string;
     const userEmail = res.locals.userEmail as string | undefined;
     const { chatId } = req.params;

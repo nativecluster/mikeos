@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { currentNcScope, ncOriginFor } from "../context";
 import { ncIngress, ncIngressEnabled } from "../ingress";
 import {
+  applyLaunchConfigSecrets,
   internalSecretMatches,
   launchSecrets,
   ncAppCredential,
@@ -24,6 +25,59 @@ afterEach(() => {
 });
 
 describe("the launcher's secrets on stdin", () => {
+  // Review M3: the stack's keys were in the backend's environment, which any
+  // program of the same macOS user reads (KERN_PROCARGS2, `ps -E`).
+  it("carries the stack's keys too, into this process's memory alone", async () => {
+    const line = {
+      app_credential: CREDENTIAL,
+      internal_secret: SECRET,
+      supabase_publishable_key: "anon.jwt",
+      supabase_secret_key: "service-role.jwt",
+      download_signing_secret: "d".repeat(64),
+      user_api_keys_encryption_secret: "u".repeat(64),
+    };
+    const input = new PassThrough();
+    const reading = readLaunchSecrets(input);
+    input.write(JSON.stringify(line) + "\n");
+    await expect(reading).resolves.toMatchObject({ appCredential: CREDENTIAL, internalSecret: SECRET });
+    const env: NodeJS.ProcessEnv = { SUPABASE_SECRET_KEY: "from the environment" };
+    expect(applyLaunchConfigSecrets(env).sort()).toEqual([
+      "DOWNLOAD_SIGNING_SECRET",
+      "SUPABASE_PUBLISHABLE_KEY",
+      "SUPABASE_SECRET_KEY",
+      "USER_API_KEYS_ENCRYPTION_SECRET",
+    ]);
+    expect(env).toEqual({
+      SUPABASE_PUBLISHABLE_KEY: "anon.jwt",
+      SUPABASE_SECRET_KEY: "service-role.jwt",
+      DOWNLOAD_SIGNING_SECRET: "d".repeat(64),
+      USER_API_KEYS_ENCRYPTION_SECRET: "u".repeat(64),
+    });
+    input.end();
+  });
+
+  it("refuses a stack key that is empty or not a string, without saying it", () => {
+    for (const bad of ["", 42, null]) {
+      const line = JSON.stringify({ app_credential: CREDENTIAL, internal_secret: SECRET, supabase_secret_key: bad });
+      expect(() => parseLaunchSecrets(line)).toThrow(/supabase_secret_key/);
+    }
+    const line = JSON.stringify({ app_credential: CREDENTIAL, internal_secret: SECRET, supabase_secret_key: "" });
+    try {
+      parseLaunchSecrets(line);
+    } catch (err) {
+      expect(String(err)).not.toContain(SECRET);
+    }
+  });
+
+  it("sets nothing before the line is read, or when it carries no keys", () => {
+    const env: NodeJS.ProcessEnv = {};
+    expect(applyLaunchConfigSecrets(env)).toEqual([]);
+    expect(parseLaunchSecrets(JSON.stringify({ app_credential: CREDENTIAL, internal_secret: SECRET }))).toEqual({
+      appCredential: CREDENTIAL,
+      internalSecret: SECRET,
+    });
+  });
+
   it("reads one JSON line, keeps it in memory, and drops what follows", async () => {
     const input = new PassThrough();
     const reading = readLaunchSecrets(input);
@@ -183,6 +237,47 @@ describe("the backend's door", () => {
       .set("X-NC-Person", "p_1")
       .set("X-NC-Request", "r_4");
     expect(playbook.body.origin.task).toBe("playbook");
+  });
+
+  // Review L1: Express routes /Tabular-Review/… as /tabular-review/…, and
+  // the task was read from the path as written: long work in lane P.
+  it("names the task by the route whatever the case of its path", async () => {
+    const tabular = await request(appBehindTheDoor())
+      .post("/echo/TABULAR-REVIEW/r1/generate")
+      .set("X-NC-Internal", SECRET)
+      .set("X-NC-Person", "p_1")
+      .set("X-NC-Request", "r_5");
+    expect(tabular.body.origin).toMatchObject({ task: "tabular", lane: "B", job: true });
+    const playbook = await request(appBehindTheDoor())
+      .post("/echo/PlayBooks/p/review")
+      .set("X-NC-Internal", SECRET)
+      .set("X-NC-Person", "p_1")
+      .set("X-NC-Request", "r_6");
+    expect(playbook.body.origin.task).toBe("playbook");
+  });
+
+  // Review L3: one rule for a person id. The ingress took any id of
+  // `[A-Za-z0-9._:~-]`, the sign-in `p_` and `[A-Za-z0-9._-]`, the
+  // connectors `p_` and letters and digits: an id one read as a person
+  // another read as no one.
+  it("reads a person by the one rule every part of Mike reads it with", async () => {
+    for (const [sent, kept] of [
+      ["p_7f3a", "p_7f3a"],
+      ["p_" + "a".repeat(64), "p_" + "a".repeat(64)],
+      ["p_" + "a".repeat(65), ""],
+      ["p_al.ice", ""],
+      ["p_al-ice", ""],
+      ["p_a:b", ""],
+      ["alice", ""],
+      ["p_", ""],
+    ]) {
+      const res = await request(appBehindTheDoor())
+        .get("/echo/x")
+        .set("X-NC-Internal", SECRET)
+        .set("X-NC-Person", sent)
+        .set("X-NC-Request", "r_7");
+      expect(res.body.scope.request.person, sent).toBe(kept);
+    }
   });
 
   it("keeps a person or request id that is not an id out of the scope", async () => {

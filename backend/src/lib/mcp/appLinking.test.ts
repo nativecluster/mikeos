@@ -167,7 +167,12 @@ describe("the device grant for an MCP connector", () => {
         expect(row.access_token_iv).toBe(HOST_SECRET_IV);
         expect(JSON.stringify(row)).not.toContain("at-1");
         expect(JSON.stringify(row)).not.toContain("rt-1");
-        expect([...store.values.keys()].every((name) => name.startsWith("mike:p_alice:mcp:"))).toBe(true);
+        // Beside them, only alice's count of what she keeps (hostSecretIndex.ts).
+        expect(
+            [...store.values.keys()].every(
+                (name) => name.startsWith("mike:p_alice:mcp:") || name === "mike:p_alice:index",
+            ),
+        ).toBe(true);
         expect([...store.values.values()]).toEqual(expect.arrayContaining(["at-1", "rt-1"]));
         expect(db.tables.get("user_mcp_oauth_states")).toHaveLength(0);
 

@@ -33,12 +33,15 @@ import {
 import { log, tpl } from "./lib/log";
 import { listNativeClusterModels } from "./lib/llm/nativecluster";
 import {
+  applyLaunchConfigSecrets,
   internalSecretFromStdinEnabled,
   ncAppCredential,
   readLaunchSecrets,
 } from "./lib/nc/launchSecrets";
 import { currentNcPerson } from "./lib/nc/context";
 import { startNcAppConnectors } from "./lib/mcp/ncAppStartup";
+import { sweepOrphanHostSecrets } from "./lib/mcp/hostSecretSweep";
+import { createServerSupabase } from "./lib/supabase";
 
 const PORT = process.env.PORT ?? 3001;
 const HOST = process.env.HOST?.trim() || undefined;
@@ -187,12 +190,28 @@ async function startNativeClusterConnectors(): Promise<void> {
   process.env.USER_API_KEYS_ENCRYPTION_SECRET = apiKeysEncryptionSecret;
 }
 
+/**
+ * A NativeCluster app: before Mike serves anything, delete what the host's
+ * secrets store keeps for it that no row points to (lib/mcp/hostSecretSweep.ts).
+ * A failure is logged and the start goes on: the values stay until the next.
+ */
+async function sweepNativeClusterSecrets(): Promise<void> {
+  try {
+    await sweepOrphanHostSecrets(createServerSupabase());
+  } catch (err) {
+    log.warn("startup", "the sweep of unused connector secrets did not finish", { error: err });
+  }
+}
+
 async function main(): Promise<void> {
   // A NativeCluster app's launcher hands its secrets over on stdin before
   // anything else, and keeps stdin open: its end means the launcher is gone.
   if (internalSecretFromStdinEnabled()) {
     try {
       await readLaunchSecrets(process.stdin, () => void shutdown("stdin closed"));
+      // The stack's keys, into this process's memory before anything reads
+      // its configuration (never in the environment it started with).
+      applyLaunchConfigSecrets();
     } catch (err) {
       await failBoot(err, "launch-secrets");
       return;
@@ -216,6 +235,7 @@ async function main(): Promise<void> {
   // provably absent and only warns when the answer is unavailable, so the
   // cost of gating is one round trip of boot latency, never a crash loop.
   await enforceDocumentLifecycleMigration();
+  if (ncAppMode()) await sweepNativeClusterSecrets();
   // Read NativeCluster's model list before the first request, so a chat
   // turn knows its model's window (contextWindowFor). A no-op unless
   // NativeCluster is configured; it never delays or fails the boot.

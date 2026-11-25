@@ -9,6 +9,9 @@ import {
     ncAppSecrets,
     NcAppNotConfiguredError,
     ncPersonContext,
+    ncPersonMayUse,
+    NcPersonUnknownError,
+    ncPersonToSave,
     parsePastedAuthorization,
     resetNcAppConnectors,
     withNcPerson,
@@ -45,13 +48,15 @@ describe("app mode", () => {
 describe("the app's own origin", () => {
     it("is the browser's Host when it is 127.0.0.1 on one of NativeCluster's app ports", () => {
         expect(ncAppOrigin(req({ host: "127.0.0.1:8494" }))).toBe("https://127.0.0.1:8494");
-        expect(ncAppOrigin(req({ host: "localhost:8490" }))).toBe("https://localhost:8490");
         expect(ncAppOrigin(req({ host: "127.0.0.1:8494", origin: "https://127.0.0.1:8494" }))).toBe(
             "https://127.0.0.1:8494",
         );
-        expect(ncAppRedirectUri(req({ host: "127.0.0.1:8499" }), "/user/mcp-connectors/oauth/callback")).toBe(
-            "https://127.0.0.1:8499/api/user/mcp-connectors/oauth/callback",
-        );
+        expect(
+            ncAppRedirectUri(
+                req({ host: "127.0.0.1:8499", origin: "https://127.0.0.1:8499" }),
+                "/user/mcp-connectors/oauth/callback",
+            ),
+        ).toBe("https://127.0.0.1:8499/api/user/mcp-connectors/oauth/callback");
     });
 
     it("is never another host or port, nor an Origin that is not the Host's", () => {
@@ -62,6 +67,25 @@ describe("the app's own origin", () => {
         expect(ncAppOrigin(req({ host: "127.0.0.1:8494", origin: "https://127.0.0.1:8495" }))).toBeNull();
         expect(ncAppOrigin(req({ host: "127.0.0.1:8494", origin: "https://evil.example" }))).toBeNull();
         expect(() => ncAppRedirectUri(req({ host: "localhost:3000" }), "/x")).toThrow(NcAppOriginUnknownError);
+    });
+
+    // Review L7: the way back accepted any of the ten app ports, and
+    // localhost, from the Host header alone.
+    it("is never localhost, and a sign-in starts only from a page of the request's own origin", () => {
+        expect(ncAppOrigin(req({ host: "localhost:8490" }))).toBeNull();
+        expect(ncAppOrigin(req({ host: "localhost:8494", origin: "https://localhost:8494" }))).toBeNull();
+        // A client that writes another app's port as Host, with no browser Origin.
+        expect(() => ncAppRedirectUri(req({ host: "127.0.0.1:8495" }), "/x")).toThrow(NcAppOriginUnknownError);
+        expect(() =>
+            ncAppRedirectUri(req({ host: "127.0.0.1:8495", origin: "https://127.0.0.1:8494" }), "/x"),
+        ).toThrow(NcAppOriginUnknownError);
+        expect(() => ncAppRedirectUri(req({ host: "127.0.0.1:8495", origin: "null" }), "/x")).toThrow(
+            NcAppOriginUnknownError,
+        );
+        expect(ncAppOrigin(req({ host: "127.0.0.1:8494" }), { requireOrigin: true })).toBeNull();
+        expect(
+            ncAppOrigin(req({ host: "127.0.0.1:8494", origin: "https://127.0.0.1:8494" }), { requireOrigin: true }),
+        ).toBe("https://127.0.0.1:8494");
     });
 });
 
@@ -92,6 +116,32 @@ describe("the person", () => {
             inside = currentNcPerson();
         });
         expect(inside).toBe("p_1");
+    });
+
+    // Review L3: a sign-in's state saved with no person was finished by
+    // anyone, and one was started for no one.
+    it("saves nothing for no one, and lets only its own person use a saved state", () => {
+        vi.stubEnv("MIKE_NC_APP", "1");
+        expect(() => ncPersonToSave()).toThrow(NcPersonUnknownError);
+        withNcPerson("p_alice", () => expect(ncPersonToSave()).toBe("p_alice"));
+        withNcPerson("p_alice", () => {
+            expect(ncPersonMayUse("p_alice")).toBe(true);
+            expect(ncPersonMayUse("p_bob")).toBe(false);
+            expect(ncPersonMayUse(undefined)).toBe(false);
+            expect(ncPersonMayUse("")).toBe(false);
+        });
+        expect(ncPersonMayUse("p_alice")).toBe(false);
+        expect(ncPersonMayUse(undefined)).toBe(false);
+        // Elsewhere states carry no person, as before.
+        vi.stubEnv("MIKE_NC_APP", "");
+        expect(ncPersonToSave()).toBeNull();
+        expect(ncPersonMayUse(undefined)).toBe(true);
+    });
+
+    it("is read by the one rule for a person id", () => {
+        withNcPerson("p_al.ice", () => expect(currentNcPerson()).toBeNull());
+        withNcPerson("p_al-ice", () => expect(currentNcPerson()).toBeNull());
+        withNcPerson(" p_7f3a ", () => expect(currentNcPerson()).toBe("p_7f3a"));
     });
 
     it("falls back to the wired resolver outside a request", () => {

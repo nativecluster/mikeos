@@ -1,5 +1,6 @@
 import type { Request } from "express";
 import { requestOriginIsTrusted } from "./origins";
+import { ncPersonIdOf } from "./nc/personId";
 
 /**
  * Mike packaged as a NativeCluster app (MIKE_NC_APP=1, set by the app's
@@ -20,13 +21,25 @@ export function ncAppMode(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.MIKE_NC_APP?.trim() === "1";
 }
 
+/**
+ * Sharing, organizations and invitations are off in the app: each person's
+ * work is their own (middleware/ncApp.ts sharingOffInNcApp, and the writers
+ * of every grant).
+ */
+export const NC_APP_SHARING_OFF_DETAIL =
+  "Sharing is off in Mike on NativeCluster: what each person makes stays their own.";
+
+/** The refusal's words when sharing is off here (the app), or null. */
+export function ncAppSharingRefusal(env: NodeJS.ProcessEnv = process.env): string | null {
+  return ncAppMode(env) ? NC_APP_SHARING_OFF_DETAIL : null;
+}
+
 /** The NativeCluster person the launcher names, `p_…`, or empty for nobody. */
 export const NC_PERSON_HEADER = "x-nc-person";
 /** Their email and name, sent only when the manifest asks people.read. */
 export const NC_PERSON_EMAIL_HEADER = "x-nc-person-email";
 export const NC_PERSON_NAME_HEADER = "x-nc-person-name";
 
-const NC_PERSON_PATTERN = /^p_[A-Za-z0-9._-]{1,128}$/;
 const EMAIL_PATTERN = /^[^@\s]+@[^@\s]+$/;
 
 type HeaderSource = Pick<Request, "get">;
@@ -36,8 +49,7 @@ type HeaderSource = Pick<Request, "get">;
  * or "" when nobody is (or the header is not one the launcher would send).
  */
 export function ncPersonOf(req: HeaderSource): string {
-  const value = req.get(NC_PERSON_HEADER)?.trim() ?? "";
-  return NC_PERSON_PATTERN.test(value) ? value : "";
+  return ncPersonIdOf(req.get(NC_PERSON_HEADER)) ?? "";
 }
 
 /** The person's email from NativeCluster, lowercased, or "" without one. */

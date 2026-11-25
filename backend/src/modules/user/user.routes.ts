@@ -28,7 +28,7 @@ import { ConnectorSetupError } from "../../lib/mcp/errors";
 import crypto from "crypto";
 import { Router, type Request, type Response } from "express";
 import { requireAuth, requireMfaIfEnrolled } from "../../middleware/auth";
-import { unavailableInNcApp } from "../../middleware/ncApp";
+import { sharingOffInNcApp, unavailableInNcApp } from "../../middleware/ncApp";
 import { asyncRoute, routerErrorHandler } from "../../middleware/asyncRoute";
 import { createServerSupabase, type Db } from "../../lib/supabase";
 import { sendInternalError } from "../../lib/httpError";
@@ -152,15 +152,20 @@ async function connectorOwner(
     };
 }
 
-function backendPublicUrl(req: {
-    protocol: string;
-    get(name: string): string | undefined;
-}) {
+function backendPublicUrl(
+    req: {
+        protocol: string;
+        get(name: string): string | undefined;
+    },
+    /** A sign-in's start: its way back must be the asking page's origin. */
+    starting = false,
+) {
     // Mike's NativeCluster app: the backend is served under /api on the app's
     // own origin, whose port differs per computer, so connector redirects are
-    // built from the request (its Host; never an Origin that differs).
+    // built from the request (its Host; never an Origin that differs, and at
+    // a start the browser's own Origin, review L7).
     if (isNcAppMode()) {
-        const origin = ncAppOrigin(req);
+        const origin = ncAppOrigin(req, { requireOrigin: starting });
         if (!origin) throw new NcAppOriginUnknownError();
         return `${origin}/api`;
     }
@@ -346,8 +351,10 @@ userRouter.get("/invitations", requireAuth, asyncRoute(async (_req, res) => {
 }));
 
 // POST /user/invitations/:invitationId/accept — join the organization.
+// Off in the NativeCluster app (middleware/ncApp.ts, review M1).
 userRouter.post(
     "/invitations/:invitationId/accept",
+    sharingOffInNcApp,
     requireAuth,
     asyncRoute(async (req, res) => {
         const userId = res.locals.userId as string;
@@ -671,7 +678,7 @@ userRouter.post(
             headers,
         });
         if (!result.ok) {
-            if (result.kind === "setup")
+            if (result.kind === "setup" || result.kind === "limit")
                 return void res
                     .status(400)
                     .json({ code: result.code, detail: result.detail });
@@ -741,10 +748,15 @@ userRouter.patch(
                     : {}),
             },
         );
-        if (!result.ok)
+        if (!result.ok) {
+            if (result.kind === "not_found")
+                return void res.status(404).json({ code: "connector_not_found", detail: "Connector not found." });
+            if (result.kind === "limit")
+                return void res.status(400).json({ code: result.code, detail: result.detail });
             return void res.status(400).json({
                 detail: "Connector settings are invalid or the server could not be reached.",
             });
+        }
         res.json(result.connector);
     }),
 );
@@ -935,7 +947,7 @@ userRouter.post(
         const owner = await connectorOwner(req, res);
         if (!owner) return;
         try {
-            const redirectUri = `${backendPublicUrl(req)}/user/integrations/google-drive/oauth/callback`;
+            const redirectUri = `${backendPublicUrl(req, true)}/user/integrations/google-drive/oauth/callback`;
             const result = await startGoogleDriveOAuth(
                 owner,
                 redirectUri,
@@ -1242,8 +1254,8 @@ userRouter.post(
 // Gmail and Calendar are explicit integrations, independent of sign-in.
 for (const provider of ["gmail", "google-calendar"] as const) {
     const path = `/integrations/${provider}`;
-    const callback = (req: Parameters<typeof backendPublicUrl>[0]) =>
-        `${backendPublicUrl(req)}/user${path}/oauth/callback`;
+    const callback = (req: Parameters<typeof backendPublicUrl>[0], starting = false) =>
+        `${backendPublicUrl(req, starting)}/user${path}/oauth/callback`;
     const operation = provider === "gmail" ? "google.gmail" : "google.calendar";
     /** The user's answer: the integration's own fixed text, or a generic one. */
     const message = (error: unknown) =>
@@ -1300,7 +1312,7 @@ for (const provider of ["gmail", "google-calendar"] as const) {
                         createServerSupabase(),
                         owner,
                         provider,
-                        callback(req),
+                        callback(req, true),
                     ),
                 );
             } catch (error) {

@@ -15,24 +15,26 @@
 // row and field, so a refresh replaces the value in place and a disconnect
 // knows what to delete. A reference read under another person is refused
 // (read as nothing): the host's store is one for the whole app, so the app
-// itself reads only the asking person's values.
+// itself reads only the asking person's values, and none for no one.
+//
+// Each person's values are counted, and held to their share of the store
+// (hostSecretIndex.ts). A write whose row then fails to save is undone
+// (withHostSecretWrite): a new value is deleted, a replaced one put back, so
+// the store keeps nothing no row points to.
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import crypto from "node:crypto";
-import { currentNcPerson, ncAppSecrets, normalizeNcPerson } from "./ncApp";
+import { log } from "../log";
+import { currentNcPerson, ncAppSecrets, NcPersonUnknownError, normalizeNcPerson } from "./ncApp";
 import { HostSecretUnreadableError } from "./ncSecrets";
+import { releaseHostSecret, reserveHostSecret } from "./hostSecretIndex";
+
+export { NcPersonUnknownError };
 
 export const HOST_SECRET_IV = "nc-host";
 const REF_PREFIX = "nc-host:";
 
 export type HostSecretKind = "mcp" | "mcp-auth" | "gdrive" | "gws";
-
-export class NcPersonUnknownError extends Error {
-    code = "nc_person_unknown";
-    constructor() {
-        super("Mike could not tell which NativeCluster person this connection is for.");
-        this.name = "NcPersonUnknownError";
-    }
-}
 
 /** Resolved values in this process: name -> value (null: none or unreadable). */
 const resolved = new Map<string, string | null>();
@@ -40,6 +42,11 @@ const resolved = new Map<string, string | null>();
 /** For tests. */
 export function forgetResolvedHostSecrets(): void {
     resolved.clear();
+}
+
+/** The reference a row's column holds for the value kept under `name`. */
+export function hostSecretRef(name: string): string {
+    return REF_PREFIX + name;
 }
 
 export function isHostSecretRef(
@@ -76,9 +83,14 @@ export function hostSecretName(
     return `mike:${person}:${kind}:${row}:${field}`;
 }
 
+/**
+ * A reference is read only for the person it was kept for. With no person
+ * in hand nothing is read: "no person" is never a wildcard (the 2026-11-24
+ * security review, L3).
+ */
 function refused(encrypted: string): boolean {
     const asking = currentNcPerson();
-    return asking !== null && refPerson(encrypted) !== asking;
+    return asking === null || refPerson(encrypted) !== asking;
 }
 
 /**
@@ -133,12 +145,62 @@ export async function resolveHostColumnsForRows(
     for (const row of rows ?? []) await resolveHostColumns(row, fields);
 }
 
+type HostSecretWrite = {
+    /** Run in reverse when the row's write fails: each value as it was. */
+    undo: Array<() => Promise<void>>;
+    /** Run once the row's write succeeded: the values it no longer points to. */
+    after: Array<() => Promise<void>>;
+};
+
+const writeScope = new AsyncLocalStorage<HostSecretWrite>();
+
+/**
+ * Runs `write`, a row's save whose secret columns sealHostColumns made, so
+ * that a failed save leaves the store as it was: a value it added is
+ * deleted, one it replaced is put back, and a value the row stops pointing
+ * to is deleted only once the save succeeded. Nested, the outermost one
+ * decides. Outside app mode it only runs `write`.
+ */
+export async function withHostSecretWrite<T>(write: () => Promise<T>): Promise<T> {
+    if (writeScope.getStore()) return write();
+    const scope: HostSecretWrite = { undo: [], after: [] };
+    let result: T;
+    try {
+        result = await writeScope.run(scope, write);
+    } catch (err) {
+        for (const undo of scope.undo.reverse()) {
+            await undo().catch((undoError: unknown) =>
+                log.warn("connectors", "a connector secret could not be put back after a failed save", { error: undoError }),
+            );
+        }
+        throw err;
+    }
+    for (const after of scope.after) {
+        await after().catch((afterError: unknown) =>
+            log.warn("connectors", "a connector secret the row no longer uses could not be deleted", { error: afterError }),
+        );
+    }
+    return result;
+}
+
+/** The value kept under `name` now, as this process knows it or the host says. */
+async function valueBefore(name: string): Promise<string | null> {
+    if (resolved.has(name)) return resolved.get(name) ?? null;
+    try {
+        return await ncAppSecrets().getSecret(name);
+    } catch (err) {
+        if (err instanceof HostSecretUnreadableError) return null;
+        throw err;
+    }
+}
+
 /**
  * Keeps `value` for `field` of the row `rowKey` names in the host's store and
  * answers the column triple that references it (all null for no value, the
- * kept value deleted). `previous` is the row as it was, when there was one:
- * its reference says whose the value is when no person is in hand (a
- * background refresh), and a reference it held under another name is deleted.
+ * kept value deleted). `previous` is the row as it was, when there was one: a
+ * reference it held under another name is deleted. Only the person of the
+ * work in hand keeps a value, and only in their own name: with no person, or
+ * a previous reference of another person's, nothing is written.
  */
 export async function sealHostColumns(
     field: string,
@@ -155,24 +217,66 @@ export async function sealHostColumns(
         before && isHostSecretRef(before.encrypted, before.iv)
             ? before.encrypted
             : null;
-    if (!value) {
+    const person = currentNcPerson();
+    if (!person) throw new NcPersonUnknownError();
+    if (previousRef && refPerson(previousRef) !== person) throw new NcPersonUnknownError();
+    const scope = writeScope.getStore();
+    const dropPrevious = async () => {
         if (previousRef) await dropRef(previousRef);
+    };
+    if (!value) {
+        if (scope) scope.after.push(dropPrevious);
+        else await dropPrevious();
         return columns(null);
     }
-    const person =
-        currentNcPerson() ?? (previousRef ? refPerson(previousRef) : null);
-    if (!person) throw new NcPersonUnknownError();
     const name = hostSecretName(person, where.kind, where.rowKey, field);
-    await ncAppSecrets().putSecret(name, value);
+    const secrets = ncAppSecrets();
+    const prior = scope ? await valueBefore(name) : null;
+    const { had } = await reserveHostSecret(person, name, value);
+    try {
+        await secrets.putSecret(name, value);
+    } catch (err) {
+        if (!had) await releaseHostSecret(person, name).catch(() => undefined);
+        throw err;
+    }
     resolved.set(name, value);
-    if (previousRef && refName(previousRef) !== name) await dropRef(previousRef);
+    if (scope) {
+        scope.undo.push(async () => {
+            // A value the store held before (counted or from before the
+            // count began) is put back; a new one is deleted.
+            if (prior !== null) {
+                await reserveHostSecret(person, name, prior);
+                await secrets.putSecret(name, prior);
+                resolved.set(name, prior);
+            } else {
+                await dropName(name);
+            }
+        });
+    }
+    if (previousRef && refName(previousRef) !== name) {
+        if (scope) scope.after.push(dropPrevious);
+        else await dropPrevious();
+    }
     return columns(REF_PREFIX + name);
 }
 
-async function dropRef(encrypted: string): Promise<void> {
-    const name = refName(encrypted);
+/**
+ * Deletes the value kept under `name`, and its count: for the sweep of
+ * values no row points to (hostSecretSweep.ts).
+ */
+export function forgetHostSecret(name: string): Promise<void> {
+    return dropName(name);
+}
+
+async function dropName(name: string): Promise<void> {
     await ncAppSecrets().deleteSecret(name);
     resolved.delete(name);
+    const person = normalizeNcPerson(name.split(":")[1]);
+    if (person) await releaseHostSecret(person, name);
+}
+
+async function dropRef(encrypted: string): Promise<void> {
+    await dropName(refName(encrypted));
 }
 
 /**

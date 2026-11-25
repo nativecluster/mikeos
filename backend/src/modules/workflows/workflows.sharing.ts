@@ -1,5 +1,6 @@
 // workflows sharing — implementation behind the module facade.
 import { type Db } from "../../lib/supabase";
+import { ncAppSharingRefusal } from "../../lib/authApp";
 import { findMissingUserEmails, loadProfileUsersByEmail } from "../../lib/userLookup";
 import { type ProjectRole } from "../../lib/permissions";
 import { deleteOrgAccessOverride, findAssignableOrgMembers, isOrgAssignableRole, listOrgAccessPeople, setOrgAccessOverrides } from "../../lib/orgAccessOverrides";
@@ -232,6 +233,9 @@ export async function shareWorkflow(
     role: unknown;
   },
 ): Promise<ShareWorkflowResult> {
+  // The NativeCluster app shares nothing (review M1): no share is written.
+  const sharingOff = ncAppSharingRefusal();
+  if (sharingOff) return { ok: false, kind: "validation", detail: sharingOff };
   const { workflowId, userId, userEmail, emails, role } = params;
 
   const normalizedEmails = [

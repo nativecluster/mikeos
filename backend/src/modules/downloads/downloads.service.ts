@@ -25,6 +25,7 @@ import {
     type ServiceResult,
 } from "../../lib/serviceResult";
 import { ensureDocAccess } from "../../lib/access";
+import { ncAppMode } from "../../lib/authApp";
 import {
     contentTypeForDocumentType,
     documentSuffix,
@@ -72,6 +73,17 @@ async function describeObject(
 }
 
 /**
+ * The NativeCluster app holds a link to its person (lib/downloadTokens.ts,
+ * the 2026-11-24 security review L2): it is redeemed only by the signed-in
+ * account it names, and a link that names none is no link there. Elsewhere
+ * the token alone is the authorization, as an S3 presigned URL is.
+ */
+function linkIsTheCallers(linkUser: string | undefined, caller: string | undefined): boolean {
+    if (!ncAppMode()) return true;
+    return !!linkUser && !!caller && linkUser === caller;
+}
+
+/**
  * Resolve a filesystem-driver blob token (the fs stand-in for an S3 presigned
  * GET) to the object it names. The token itself is the authorization: it is
  * minted only after an authenticated caller's access check, matching the S3
@@ -79,9 +91,12 @@ async function describeObject(
  */
 export async function resolveBlobDownload(
     token: string,
+    /** App mode: the signed-in caller, who must be the link's person. */
+    userId?: string,
 ): Promise<ServiceResult<ObjectDownload>> {
     const info = verifyBlobToken(token);
     if (!info) return failure("not_found", "Invalid or expired link");
+    if (!linkIsTheCallers(info.user, userId)) return failure("not_found", "Invalid or expired link");
     const download = await describeObject(info.path, info.filename);
     if (!download) return failure("not_found", "File not found");
     return ok(download);
@@ -100,9 +115,13 @@ export async function storeBlobUpload(args: {
     token: string;
     contentType: string;
     body: Readable;
+    /** App mode: the signed-in caller, who must be the link's person. */
+    userId?: string;
 }): Promise<ServiceResult<void>> {
     const info = verifyBlobUploadToken(args.token);
     if (!info) return failure("forbidden", "Invalid or expired upload link");
+    if (!linkIsTheCallers(info.user, args.userId))
+        return failure("forbidden", "Invalid or expired upload link");
     const declaredType = args.contentType.split(";")[0].trim();
     if (declaredType && declaredType !== info.contentType) {
         return failure("validation", "Upload content type does not match the link");

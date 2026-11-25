@@ -19,6 +19,7 @@
 // all reads and writes use grants directly from then on.
 
 import type { Db } from "./supabase";
+import { ncAppSharingRefusal } from "./authApp";
 import { normalizeEmail } from "./access";
 import { isProjectRole, type ProjectRole } from "./permissions";
 import { listOrgAccessPeople } from "./orgAccessOverrides";
@@ -204,6 +205,9 @@ export async function upsertProjectGrant(
         creatorEmail?: string | null;
     },
 ): Promise<GrantWriteResult> {
+    // The NativeCluster app shares nothing (review M1): no grant is written.
+    const sharingOff = ncAppSharingRefusal();
+    if (sharingOff) return { ok: false, kind: "validation", detail: sharingOff };
     const email =
         typeof params.email === "string" ? normalizeEmail(params.email) : null;
     if (!email || !email.includes("@"))

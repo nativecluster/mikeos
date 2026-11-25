@@ -64,12 +64,13 @@ import {
     googleServiceUnavailableMessage,
     isGoogleServiceAvailable as isGoogleServiceSwitchedOn,
 } from "./googleAvailability";
-import { currentNcPerson, isNcAppMode } from "../mcp/ncApp";
+import { isNcAppMode, ncPersonMayUse, ncPersonToSave } from "../mcp/ncApp";
 import {
     GOOGLE_TOKEN_FIELDS,
     releaseHostColumns,
     resolveHostColumns,
     sealHostColumns,
+    withHostSecretWrite,
 } from "../mcp/hostSecretColumns";
 
 /**
@@ -329,7 +330,8 @@ export async function startGoogleDriveOAuth(
         crypto.createHash("sha256").update(codeVerifier).digest(),
     );
     const stateToken = base64Url(crypto.randomBytes(24));
-    const person = isNcAppMode() ? currentNcPerson() : null;
+    // App mode: the person who starts it, and no sign-in for no one (review L3).
+    const person = ncPersonToSave();
     const encrypted = encryptString(
         JSON.stringify({
             codeVerifier,
@@ -395,7 +397,7 @@ export async function completeGoogleDriveOAuth(
     const config = JSON.parse(decrypted) as StateConfig;
     // App mode: only the NativeCluster person who started it, on the app
     // origin it started on, finishes it.
-    if (config.person && currentNcPerson() !== config.person)
+    if (!ncPersonMayUse(config.person))
         throw new Error("OAuth state belongs to another person.");
     if (config.origin && options.origin !== config.origin)
         throw new Error("OAuth state was started on another origin.");
@@ -441,22 +443,28 @@ export async function completeGoogleDriveOAuth(
         userId,
         orgId: typeof data.org_id === "string" ? data.org_id : null,
     };
-    const patch = {
-        ...(await sealedTokenPatch(owner, token, isNcAppMode() ? await loadTokenRow(owner, db) : null)),
-        account_email: await googleDriveAccountEmail(token.access_token),
-    };
-    const { data: completed, error: saveError } = await db.rpc(
-        "complete_google_drive_oauth",
-        {
-            p_state_hash: stateHash(state),
-            p_tokens: patch,
-        },
-    );
-    if (saveError) throw saveError;
-    if (!completed)
-        throw new GoogleDriveUserError(
-            "Google Drive authorization expired or was cancelled. Please connect again.",
+    const accountEmail = await googleDriveAccountEmail(token.access_token);
+    const previous = isNcAppMode() ? await loadTokenRow(owner, db) : null;
+    // App mode: tokens kept in NativeCluster's store whose row is then not
+    // saved are deleted again, or put back as they were (review M2).
+    await withHostSecretWrite(async () => {
+        const patch = {
+            ...(await sealedTokenPatch(owner, token, previous)),
+            account_email: accountEmail,
+        };
+        const { data: completed, error: saveError } = await db.rpc(
+            "complete_google_drive_oauth",
+            {
+                p_state_hash: stateHash(state),
+                p_tokens: patch,
+            },
         );
+        if (saveError) throw saveError;
+        if (!completed)
+            throw new GoogleDriveUserError(
+                "Google Drive authorization expired or was cancelled. Please connect again.",
+            );
+    });
     return { userId };
 }
 

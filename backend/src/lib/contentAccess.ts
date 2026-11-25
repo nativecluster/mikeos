@@ -4,6 +4,7 @@
 // implicit Owner standing; these rows represent only additional recipients.
 
 import type { Db } from "./supabase";
+import { ncAppSharingRefusal } from "./authApp";
 import { isProjectRole, type ProjectRole } from "./permissions";
 import { findProfileUserByEmail } from "./userLookup";
 
@@ -125,6 +126,9 @@ export async function upsertContentGrant(
         orgId?: string | null;
     },
 ): Promise<ContentGrantWriteResult> {
+    // The NativeCluster app shares nothing (review M1): no grant is written.
+    const sharingOff = ncAppSharingRefusal();
+    if (sharingOff) return { ok: false, kind: "validation", detail: sharingOff };
     const email =
         typeof params.email === "string" ? normalizeEmail(params.email) : null;
     if (!email || !email.includes("@"))
