@@ -3,7 +3,7 @@ import { isBlockedDestinationError } from "../blockedDestination";
 import { reportError } from "../observability/sentry";
 import { guardedFetch, validateRemoteMcpUrl } from "../mcp/client";
 import { assertNetPlaneOn } from "../nc/netPlanes";
-import { extractPdfTextForModel } from "../pdfText";
+import { ExtractionBusyError, ExtractionLimitError, runIsolatedExtraction } from "../extraction/isolated";
 import { withTimeout } from "./http";
 import { SEARCH_SERVICES } from "./services";
 import type { WebPage, WebSearchAccount } from "./types";
@@ -22,7 +22,8 @@ const REQUEST_HEADERS = {
 };
 
 // Pages are parsed on the main thread, so keep them small. Anything that is
-// not text may still be a PDF, which needs more room.
+// not text may still be a PDF, which needs more room; a PDF is read by the
+// document reader (lib/extraction), within its bounds, not here.
 const MAX_TEXT_BYTES = 2 * 1024 * 1024;
 const MAX_PDF_BYTES = 5 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 20_000;
@@ -144,7 +145,7 @@ async function readDirectly(
 ): Promise<WebPage> {
     const { finalUrl, contentType, charset, body } = await fetchPage(url, signal);
     if (isPdf(contentType, body)) {
-        return { url: finalUrl, title: null, text: await extractPdfTextForModel(body) };
+        return { url: finalUrl, title: null, text: await readPdf(body) };
     }
     if (contentType === "text/html" || contentType === "application/xhtml+xml") {
         return {
@@ -161,6 +162,23 @@ async function readDirectly(
     throw new WebPageUnreadableError(
         "This kind of file cannot be read as a web page.",
     );
+}
+
+/** A fetched PDF's text, read as a document is: in the bounded reader. */
+async function readPdf(body: ArrayBuffer): Promise<string> {
+    try {
+        return await runIsolatedExtraction("pdfForModel", async () => body);
+    } catch (error) {
+        if (error instanceof ExtractionBusyError) {
+            throw new WebPageUnreadableError("Document reading is busy. Try again shortly.", { cause: error });
+        }
+        throw new WebPageUnreadableError(
+            error instanceof ExtractionLimitError
+                ? "This PDF is too large or complex to read."
+                : "This PDF could not be read.",
+            { cause: error },
+        );
+    }
 }
 
 type ReadOptions = {

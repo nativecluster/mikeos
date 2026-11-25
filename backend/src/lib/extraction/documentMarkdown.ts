@@ -8,7 +8,9 @@ import {
     isWordDocumentType,
 } from "../documentTypes";
 import { extractPresentationText } from "../officeText";
-import { loadPdfjs } from "../pdfjs";
+import { loadPdfjs, runWithPdfBudget } from "../pdfjs";
+import { ExtractionLimitError } from "./limits";
+import { legacyTextByTextutil, readLegacyTextWithTextutil } from "./textutil";
 import { spreadsheetToLLMText } from "../spreadsheet";
 
 /**
@@ -35,6 +37,8 @@ export async function extractDocumentMarkdown(
         isPresentationDocumentType(normalizedType) ||
         isWordDocumentType(normalizedType)
     ) {
+        // Mike's NativeCluster app has no LibreOffice: textutil reads a .doc.
+        if (legacyTextByTextutil()) return readLegacyTextWithTextutil(buf);
         const pdfBuf = await docxToPdf(Buffer.from(buf));
         const pdfArrayBuffer = pdfBuf.buffer.slice(
             pdfBuf.byteOffset,
@@ -46,25 +50,34 @@ export async function extractDocumentMarkdown(
 }
 
 export async function extractPdfMarkdown(buf: ArrayBuffer): Promise<string> {
-    try {
-        const pdfjsLib = await loadPdfjs();
-        const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buf) })
-            .promise;
-        const pages: string[] = [];
-        for (let i = 1; i <= pdf.numPages; i++) {
-            const page = await pdf.getPage(i);
-            const tc = await page.getTextContent();
-            const text = tc.items
-                .filter((it): it is { str: string } => "str" in it)
-                .map((it) => it.str)
-                .join(" ")
-                .trim();
-            if (text) pages.push(`## Page ${i}\n\n${text}`);
+    // Bounded as every PDF read is (lib/pdfjs.ts): a stream past the limit
+    // makes the document too large, never an empty Markdown.
+    return runWithPdfBudget(async (budget) => {
+        let task: ReturnType<Awaited<ReturnType<typeof loadPdfjs>>["getDocument"]> | undefined;
+        try {
+            const pdfjsLib = await loadPdfjs();
+            task = pdfjsLib.getDocument({ data: new Uint8Array(buf) });
+            const pdf = await task.promise;
+            const pages: string[] = [];
+            for (let i = 1; i <= pdf.numPages; i++) {
+                const page = await pdf.getPage(i);
+                const tc = await page.getTextContent();
+                if (budget.exceeded !== null) break;
+                const text = tc.items
+                    .filter((it): it is { str: string } => "str" in it)
+                    .map((it) => it.str)
+                    .join(" ")
+                    .trim();
+                if (text) pages.push(`## Page ${i}\n\n${text}`);
+            }
+            if (budget.exceeded === null) return pages.join("\n\n");
+        } catch {
+            if (budget.exceeded === null) return "";
+        } finally {
+            await task?.destroy?.().catch(() => {});
         }
-        return pages.join("\n\n");
-    } catch {
-        return "";
-    }
+        throw new ExtractionLimitError(`a PDF stream decodes past ${budget.maxStreamBytes} bytes`);
+    });
 }
 
 /**

@@ -1,5 +1,6 @@
 import { extractDocxBodyText } from "../docxTrackedChanges";
 import { extractPdfTextForIndex } from "../pdfText";
+import { legacyTextByTextutil, readLegacyTextWithTextutil } from "./textutil";
 import { docxToPdf } from "../convert";
 import { extractPresentationText } from "../officeText";
 import { spreadsheetToLLMText } from "../spreadsheet";
@@ -10,6 +11,12 @@ export async function extractDocumentText(raw: ArrayBuffer, fileType: string) {
   const type = fileType.toLowerCase();
   if (type === "pdf") return extractPdfTextForIndex(raw);
   if (requiresLibreOfficeTextExtraction(type)) {
+    // Mike's NativeCluster app has no LibreOffice: textutil reads a .doc,
+    // and nothing there reads a .ppt.
+    if (legacyTextByTextutil()) {
+      if (type !== "doc") throw new Error("document_text_unsupported_format");
+      return { text: await readLegacyTextWithTextutil(raw), textlessPageCount: null };
+    }
     const pdf = await docxToPdf(Buffer.from(raw));
     return extractPdfTextForIndex(Uint8Array.from(pdf).buffer);
   }

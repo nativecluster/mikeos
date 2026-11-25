@@ -105,10 +105,22 @@ const UPLOAD_FILE_CONTENT_MESSAGES: Record<
         filenames.length === 1
             ? `${filenames[0]} is not a valid PDF file.`
             : `${filenames.join(", ")} are not valid PDF files.`,
+    // Encrypted with a user password: Mike cannot read it, and nothing it
+    // could do would let it.
+    pdf_password_protected: (filenames) =>
+        filenames.length === 1
+            ? `${filenames[0]} is password-protected; remove the password and upload it again.`
+            : `${filenames.join(", ")} are password-protected; remove the passwords and upload them again.`,
     invalid_docx_package: (filenames) =>
         filenames.length === 1
             ? `${filenames[0]} is not a valid DOCX file.`
             : `${filenames.join(", ")} are not valid DOCX files.`,
+    // A legacy Office file this installation has no reader for (Mike's
+    // NativeCluster app reads a .doc with macOS's textutil, a .ppt not at all).
+    document_unreadable: (filenames) =>
+        filenames.length === 1
+            ? `${filenames[0]} could not be read. Save it as .docx, .pptx or PDF and upload it again.`
+            : `${filenames.join(", ")} could not be read. Save them as .docx, .pptx or PDF and upload them again.`,
     // Well formed, but past the parser's time or memory budget; the same
     // bytes would hit the same budget again.
     document_too_large: (filenames) =>

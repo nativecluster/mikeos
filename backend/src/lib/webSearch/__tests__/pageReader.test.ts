@@ -1,13 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { guardedFetch, validateRemoteMcpUrl, extractPdfTextForModel } = vi.hoisted(() => ({
+const { guardedFetch, validateRemoteMcpUrl, readPdfTextForModel } = vi.hoisted(() => ({
     guardedFetch: vi.fn(),
     validateRemoteMcpUrl: vi.fn(),
-    extractPdfTextForModel: vi.fn(),
+    readPdfTextForModel: vi.fn(),
 }));
 
 vi.mock("../../mcp/client", () => ({ guardedFetch, validateRemoteMcpUrl }));
-vi.mock("../../pdfText", () => ({ extractPdfTextForModel }));
+vi.mock("../../pdfText", () => ({ readPdfTextForModel }));
 
 const { reportError } = vi.hoisted(() => ({ reportError: vi.fn(() => null) }));
 vi.mock("../../observability/sentry", async (importOriginal) => ({
@@ -131,7 +131,7 @@ describe("readWebPage", () => {
         guardedFetch.mockResolvedValue(
             page("%PDF-1.7 ...", "application/octet-stream"),
         );
-        extractPdfTextForModel.mockResolvedValue("Order adopting rules.");
+        readPdfTextForModel.mockResolvedValue("Order adopting rules.");
 
         const result = await readWebPage("https://files.example.test/filing");
 

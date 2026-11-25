@@ -9,6 +9,15 @@ function positiveNumber(name: string, fallback: number): number {
 
 // A DB claim becomes stale after ten minutes. Reserve time for I/O too.
 export const extractionTimeoutMs = () => Math.min(positiveNumber("EXTRACTION_TIMEOUT_MS", 180_000), 300_000);
+/**
+ * How long one PDF may take to read, in whichever thread reads it: past it
+ * the read ends and the PDF is too large to read. Inside the parser's own
+ * deadline, so the reader stops by itself (and frees what it held) before
+ * its thread is ended for it.
+ */
+export const pdfReadBudgetMs = () => Math.max(1_000, Math.floor(extractionTimeoutMs() * 0.8));
+/** A PDF with more pages than this is not read page by page. */
+export const PDF_MAX_PAGES = 10_000;
 export const extractionMemoryMb = () => Math.min(65_536, Math.max(1, Math.floor(positiveNumber("EXTRACTION_MAX_MEMORY_MB", 1024))));
 
 export class ExtractionLimitError extends Error {

@@ -14,12 +14,11 @@ import {
 
 import { createHash, randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { mkdir, mkdtemp, open, readdir, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { pathToFileURL } from "node:url";
 
 import { resolveContentOrgId } from "../../lib/access";
 import { AppError } from "../../lib/appError";
@@ -38,7 +37,7 @@ import {
 } from "../../lib/observability/pollFailureGate";
 import { asReportableError, withResponseStatus } from "../../lib/httpError";
 import { shouldConvertToPdf } from "../../lib/documentTypes";
-import { countPagesWithoutText } from "../../lib/pdfText";
+import { isPdfPasswordError } from "../../lib/pdfText";
 import { uploadJobWallClockMs } from "../../lib/runtimeConfig";
 import {
   copyFile,
@@ -51,8 +50,9 @@ import {
   versionStorageKey,
 } from "../../lib/storage";
 import { createServerSupabase, type Db } from "../../lib/supabase";
-import { ExtractionBusyError, ExtractionLimitError, withBackgroundExtraction } from "../../lib/extraction/isolated";
+import { ExtractionBusyError, ExtractionLimitError, ExtractionParseError, withBackgroundExtraction } from "../../lib/extraction/isolated";
 import { isAllocationFailure } from "../../lib/extraction/limits";
+import { legacyTextByTextutil } from "../../lib/extraction/textutil";
 import { MAX_UPLOAD_SIZE_BYTES, UPLOAD_VERIFICATION_LEASE_SECONDS } from "./uploads.manifest";
 
 type UploadSessionRow = {
@@ -116,7 +116,9 @@ const TERMINAL_UPLOAD_ERROR_CODES = new Set([
   "size_mismatch",
   "content_type_mismatch",
   "invalid_pdf_file",
+  "pdf_password_protected",
   "invalid_docx_package",
+  "document_unreadable",
   "document_too_large",
   // The destination document no longer exists. Retrying cannot make it exist
   // again — it can only put it back, which is the bug this code prevents.
@@ -150,12 +152,36 @@ class ChangedDocumentError extends AppError {
   }
 }
 
-class InvalidPdfFileError extends Error {
-  constructor() {
-    super("invalid_pdf_file");
-    this.name = "InvalidPdfFileError";
+/**
+ * A file the reader cannot read, refused at upload with a code the person
+ * is told in words (packages/client's uploadSessionClient): never kept as a
+ * ready document whose text is empty. "processing_failed" alone is ours,
+ * not the file's, and is retried.
+ */
+class UnreadableFileError extends AppError {
+  constructor(
+    readonly code:
+      | "invalid_pdf_file"
+      | "pdf_password_protected"
+      | "document_unreadable"
+      | "document_too_large"
+      | "processing_failed",
+    cause?: unknown,
+  ) {
+    super("upload.file_unreadable", code, { cause });
+    this.name = "UnreadableFileError";
   }
 }
+
+/** Refusals that are the file's alone: not reported as failures of ours. */
+const USER_FILE_CODES: ReadonlySet<string> = new Set([
+  "invalid_pdf_file",
+  "pdf_password_protected",
+  "document_unreadable",
+]);
+
+/** What an upload keeps of a PDF it has read. */
+type PdfFacts = { pageCount: number; textlessPageCount: number };
 
 class DocxValidationError extends AppError {
   constructor(
@@ -197,33 +223,70 @@ async function validateDocxFile(artifact: SealedFileArtifact): Promise<void> {
   }
 }
 
-const PDF_HEADER_SIGNATURE = Buffer.from("%PDF-");
-// ISO 32000 lets a reader accept the header anywhere in the first 1024 bytes
-// (Annex H, implementation note 13), and pdf.js — which renders and page-counts
-// these files downstream — scans exactly that window.
-const PDF_HEADER_SEARCH_WINDOW_BYTES = 1024;
-
-async function hasPdfSignature(filePath: string): Promise<boolean> {
-  const handle = await open(filePath, "r");
+/**
+ * Read an uploaded PDF in full, in the bounded reader (the parser thread in
+ * the app, the parser process elsewhere), before anything is written for
+ * it: the verdict on its bytes, and its page count and textless pages for
+ * the version row. One read: the reader does what the in-process page count
+ * and textless count used to do here, outside every bound (one 1.9 MB PDF
+ * inflating to 1.9 GiB held gigabytes and an upload for minutes).
+ *
+ * pdf.js decides, never the header: it opens files without one, and refuses
+ * some with one (garbage after "%PDF-", a truncated file, a structure nested
+ * past what it can follow). A PDF it cannot read is refused in words here
+ * (invalid_pdf_file, or pdf_password_protected); one past the reader's
+ * bounds is document_too_large.
+ */
+async function readUploadedPdf(artifact: SealedFileArtifact): Promise<PdfFacts> {
+  if (artifact.size > MAX_UPLOAD_SIZE_BYTES) throw new UnreadableFileError("document_too_large");
   try {
-    const window = Buffer.alloc(PDF_HEADER_SEARCH_WINDOW_BYTES);
-    const { bytesRead } = await handle.read(window, 0, window.length, 0);
-    return window.subarray(0, bytesRead).indexOf(PDF_HEADER_SIGNATURE) !== -1;
-  } finally {
-    await handle.close();
+    // The DOCX validation's admission (validateDocxFile): wait for the
+    // parser as the background text jobs do, one upload at a time.
+    return await withBackgroundExtraction({ waitMs: PARSER_SLOT_WAIT_MS }, async (extract) => {
+      const bytes = await readFile(artifact.filePath);
+      const facts = await extract("pdfFacts", bytes.buffer.slice(
+        bytes.byteOffset, bytes.byteOffset + bytes.byteLength,
+      ) as ArrayBuffer);
+      return { pageCount: facts.pageCount, textlessPageCount: facts.textlessPageCount };
+    });
+  } catch (error) {
+    // Still busy after the wait: requeued without charging an attempt.
+    if (error instanceof ExtractionBusyError || error instanceof UnreadableFileError) throw error;
+    if (error instanceof ExtractionLimitError || isAllocationFailure(error)) {
+      throw new UnreadableFileError("document_too_large", error);
+    }
+    if (isPdfPasswordError(error)) throw new UnreadableFileError("pdf_password_protected", error);
+    if (error instanceof ExtractionParseError) throw new UnreadableFileError("invalid_pdf_file", error);
+    // The parser could not run, or failed for itself: retryable.
+    throw new UnreadableFileError("processing_failed", error);
   }
 }
 
-// Refuse bytes that cannot be a PDF (a renamed .txt, a ZIP, a truncated or
-// empty file) before anything is written for them. The signature search is
-// the cheap path; when it misses, the decision is handed to the same parser
-// that renders the file downstream, because pdf.js keeps going without a
-// header and rebuilds the cross-reference table by scanning, so a file it
-// can open must never be refused here as "not a PDF".
-async function validatePdfFile(filePath: string): Promise<void> {
-  if (await hasPdfSignature(filePath)) return;
-  if ((await countPdfPages(filePath)) !== null) return;
-  throw new InvalidPdfFileError();
+/**
+ * A legacy Office file in Mike's NativeCluster app, which has no LibreOffice:
+ * a .doc is read now by textutil, in the parser, as read_document will read
+ * it, and refused in words if it cannot be; a .ppt has no reader there at
+ * all, so it is refused at once rather than kept as a document that always
+ * reads "could not be read".
+ */
+async function checkLegacyOfficeFile(file: UploadFileRow, artifact: SealedFileArtifact): Promise<void> {
+  if (file.file_type === "ppt") throw new UnreadableFileError("document_unreadable");
+  if (artifact.size > MAX_UPLOAD_SIZE_BYTES) throw new UnreadableFileError("document_too_large");
+  try {
+    await withBackgroundExtraction({ waitMs: PARSER_SLOT_WAIT_MS }, async (extract) => {
+      const bytes = await readFile(artifact.filePath);
+      await extract("legacyOfficeText", bytes.buffer.slice(
+        bytes.byteOffset, bytes.byteOffset + bytes.byteLength,
+      ) as ArrayBuffer);
+    });
+  } catch (error) {
+    if (error instanceof ExtractionBusyError) throw error;
+    if (error instanceof ExtractionLimitError || isAllocationFailure(error)) {
+      throw new UnreadableFileError("document_too_large", error);
+    }
+    if (error instanceof ExtractionParseError) throw new UnreadableFileError("document_unreadable", error);
+    throw new UnreadableFileError("processing_failed", error);
+  }
 }
 
 /**
@@ -246,49 +309,9 @@ type SealedFileArtifact = {
   filePath: string;
   size: number;
   sha256: string;
+  /** A PDF's facts, from the one bounded read before processing. */
+  pdf?: PdfFacts;
 };
-
-async function countPdfPages(filePath: string): Promise<number | null> {
-  let loadingTask:
-    | {
-        promise: Promise<{ numPages: number }>;
-        destroy?: () => Promise<void>;
-      }
-    | undefined;
-  try {
-    const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs" as string);
-    loadingTask = (
-      pdfjsLib as unknown as {
-        getDocument: (options: unknown) => {
-          promise: Promise<{ numPages: number }>;
-          destroy?: () => Promise<void>;
-        };
-      }
-    ).getDocument({ url: pathToFileURL(filePath).href });
-    const pdf = await loadingTask.promise;
-    return pdf.numPages;
-  } catch {
-    return null;
-  } finally {
-    await loadingTask?.destroy?.().catch(() => {});
-  }
-}
-
-// Measured once at upload so the document list can flag scanned PDFs without
-// re-reading them. Null when the PDF cannot be parsed.
-async function countTextlessPdfPages(filePath: string): Promise<number | null> {
-  try {
-    const bytes = await readFile(filePath);
-    return await countPagesWithoutText(
-      bytes.buffer.slice(
-        bytes.byteOffset,
-        bytes.byteOffset + bytes.byteLength,
-      ) as ArrayBuffer,
-    );
-  } catch {
-    return null;
-  }
-}
 
 async function buildPdfRendition(args: {
   sourceFilePath: string;
@@ -541,12 +564,8 @@ async function processCreatedDocument(
     documentId,
     sourceStoragePath: sourcePath,
   });
-  const pageCount =
-    file.file_type === "pdf" ? await countPdfPages(artifact.filePath) : null;
-  const textlessPageCount =
-    file.file_type === "pdf"
-      ? await countTextlessPdfPages(artifact.filePath)
-      : null;
+  const pageCount = artifact.pdf?.pageCount ?? null;
+  const textlessPageCount = artifact.pdf?.textlessPageCount ?? null;
 
   const { error: versionError } = await createDocumentVersion(db, {
     id: versionId,
@@ -638,12 +657,8 @@ async function processNewDocumentVersion(
     versionSlug,
     sourceStoragePath: sourcePath,
   });
-  const pageCount =
-    file.file_type === "pdf" ? await countPdfPages(artifact.filePath) : null;
-  const textlessPageCount =
-    file.file_type === "pdf"
-      ? await countTextlessPdfPages(artifact.filePath)
-      : null;
+  const pageCount = artifact.pdf?.pageCount ?? null;
+  const textlessPageCount = artifact.pdf?.textlessPageCount ?? null;
 
   const { data: version, error } = await createDocumentVersion(db, {
     id: versionId,
@@ -755,12 +770,8 @@ async function processReplacementDocumentVersion(
         versionSlug,
         sourceStoragePath: sourcePath,
       });
-  const pageCount =
-    file.file_type === "pdf" ? await countPdfPages(artifact.filePath) : null;
-  const textlessPageCount =
-    file.file_type === "pdf"
-      ? await countTextlessPdfPages(artifact.filePath)
-      : null;
+  const pageCount = artifact.pdf?.pageCount ?? null;
+  const textlessPageCount = artifact.pdf?.textlessPageCount ?? null;
   const { data: updated, error } = await updateDocumentVersion(
     db,
     documentId,
@@ -796,8 +807,11 @@ export async function processUploadFile(
 ) {
   const artifact = await requireSealedFile(file);
   try {
-    if (file.file_type === "pdf") await validatePdfFile(artifact.filePath);
+    if (file.file_type === "pdf") artifact.pdf = await readUploadedPdf(artifact);
     if (file.file_type === "docx") await validateDocxFile(artifact);
+    if ((file.file_type === "doc" || file.file_type === "ppt") && legacyTextByTextutil()) {
+      await checkLegacyOfficeFile(file, artifact);
+    }
     switch (session.purpose) {
       case "document_create":
         return await processCreatedDocument(db, session, file, artifact);
@@ -1069,11 +1083,12 @@ export async function processUploadJob(
         terminalProcessingFailure =
           error instanceof DeletedDocumentError ||
           error instanceof ChangedDocumentError ||
-          error instanceof InvalidPdfFileError ||
+          (error instanceof UnreadableFileError && error.code !== "processing_failed") ||
           (error instanceof DocxValidationError && error.code !== "processing_failed");
         if (
           !(error instanceof ChangedDocumentError) &&
-          !(error instanceof InvalidPdfFileError) &&
+          // The person's file, refused in words: nothing of ours to report.
+          !(error instanceof UnreadableFileError && USER_FILE_CODES.has(error.code)) &&
           !(error instanceof DocxValidationError && error.code === "invalid_docx_package")
         ) {
           reportError(error, {
@@ -1103,7 +1118,7 @@ export async function processUploadJob(
             error_code: error instanceof ChangedDocumentError
               ? "document_changed"
               : error instanceof DeletedDocumentError ? "document_deleted"
-              : error instanceof InvalidPdfFileError ? "invalid_pdf_file"
+              : error instanceof UnreadableFileError ? error.code
               : error instanceof DocxValidationError ? error.code
               : "processing_failed",
             updated_at: new Date().toISOString(),

@@ -71,6 +71,10 @@ const PARSER_REJECTION_MESSAGE = new RegExp([
   "^document\\.xml missing from docx$",
   "^w:body missing from document\\.xml$",
   "^document_text_unsupported_format$",
+  // pdfText.ts: pdf.js read the bytes but could not use them.
+  "^pdf_unreadable$",
+  // textutil.ts: macOS's textutil could not read a legacy Office file.
+  "^legacy_document_unreadable$",
 ].join("|"));
 
 /** The error and its causes, breadth-first, as diagnosticErrorTags walks them. */

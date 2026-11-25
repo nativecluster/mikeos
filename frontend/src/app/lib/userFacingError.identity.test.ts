@@ -253,6 +253,12 @@ describe("uploadBatchFault", () => {
         expect(uploadBatchFault([outcome("invalid_pdf_file")])).toBeNull();
     });
 
+    it("does not report a PDF refused for its password, and offers no Retry", () => {
+        // D1: refused at upload, the person's to fix.
+        expect(uploadBatchFault([outcome("pdf_password_protected")])).toBeNull();
+        expect(uploadOutcomeNeedsRetry(outcome("pdf_password_protected"))).toBe(false);
+    });
+
     it.each([
         ["invalid_docx_package", "a.docx is not a valid DOCX file."],
         ["document_too_large", "a.docx is too large or complex to process."],

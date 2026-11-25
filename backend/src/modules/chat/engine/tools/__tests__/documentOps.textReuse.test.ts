@@ -7,8 +7,9 @@ vi.mock("../../../../../lib/documentTextCache", async load => ({ ...await load<o
 vi.mock("../../../../documents/documents.service", async load => ({ ...await load<object>(), loadCurrentVersionBytes: mocks.bytes }));
 vi.mock("../../../../../lib/extraction/isolated", async load => ({ ...await load<object>(), withExtractionRequest: (work: (extract: typeof mocks.extract) => unknown) => work(mocks.extract) }));
 import { readDocumentContent } from "../documentOps";
-const index: DocIndex = { D1: { document_id: "doc", filename: "test.docx", version_id: "version" } };
-const store = (): DocStore => new Map([["D1", { storage_path: "source", filename: "test.docx", file_type: "docx" }]]);
+// A PDF: a .docx is read from its file (below), for its tracked changes and comments.
+const index: DocIndex = { D1: { document_id: "doc", filename: "test.pdf", version_id: "version" } };
+const store = (): DocStore => new Map([["D1", { storage_path: "source", filename: "test.pdf", file_type: "pdf" }]]);
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.active.mockResolvedValue({ id: "version", version_number: 1, storage_path: "source", text_revision: "r1" });
@@ -39,4 +40,16 @@ it("keeps turn caches separate", async () => {
   await readDocumentContent("D1", store(), () => {}, index, {} as Db);
   await readDocumentContent("D1", store(), () => {}, index, {} as Db);
   expect(mocks.text).toHaveBeenCalledTimes(2);
+});
+
+// D3: a .docx's persisted text is its accepted view alone (search and tabular
+// review keep it so); the model's read comes from its file, which adds the
+// tracked changes and comments that view cannot show.
+it("reads a .docx from its file, for its review notes, even with persisted text", async () => {
+  const docs: DocStore = new Map([["D1", { storage_path: "source", filename: "test.docx", file_type: "docx" }]]);
+  mocks.extract.mockResolvedValue("Accepted contract\n\n[Comments: 1.]\n1. Reviewer, on \"Accepted contract\": Check this.");
+  const docxIndex: DocIndex = { D1: { document_id: "doc", filename: "test.docx", version_id: "version" } };
+  expect(await readDocumentContent("D1", docs, () => {}, docxIndex, {} as Db)).toContain("[Comments: 1.]");
+  expect(mocks.text).not.toHaveBeenCalled();
+  expect(mocks.extract).toHaveBeenCalledWith("docxText", expect.anything());
 });

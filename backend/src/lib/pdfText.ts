@@ -11,7 +11,19 @@ export const STANDARD_FONT_DATA_URL = (() => {
 
 import { AppError } from "./appError";
 import { docxToPdf } from "./convert";
+import { ExtractionParseError } from "./extraction/failure";
+import {
+  ExtractionLimitError,
+  isAllocationFailure,
+  PDF_MAX_PAGES,
+  pdfReadBudgetMs,
+} from "./extraction/limits";
+import { legacyTextByTextutil, readLegacyTextWithTextutil } from "./extraction/textutil";
+import { loadPdfjs, PDF_MAX_IMAGE_PIXELS, runWithPdfBudget } from "./pdfjs";
 import { orderTextItemLines } from "./pdfTextOrder";
+
+/** The message of a PDF pdf.js could not read (extraction/failure.ts knows it as the bytes' fault). */
+export const PDF_UNREADABLE_MESSAGE = "pdf_unreadable";
 
 type PdfTextItem = {
   str?: string;
@@ -238,8 +250,13 @@ type PdfPageText = {
 
 type PdfReadResult =
   | { pages: PdfPageText[] }
-  /** pdf.js rejected the bytes; `cause` is its error, for the one report. */
-  | { pages: null; cause: unknown };
+  /**
+   * pdf.js rejected the bytes, or could not be loaded; `cause` is its error,
+   * for the one report. `stage` says which: "load" (pdf.js itself, never the
+   * bytes), "open" (getDocument: corrupt, encrypted, not a PDF) or "page"
+   * (it opened, then a page failed; `raw` is pdf.js's own error, unwrapped).
+   */
+  | { pages: null; cause: unknown; stage: "load" | "open" | "page"; raw: unknown };
 
 /**
  * The warning for a PDF pdf.js could not open, filed by the callers that
@@ -264,78 +281,168 @@ function reportUnreadablePdf(cause: unknown): void {
  * a page is empty is decided here, from the extracted items, rather than by
  * parsing the joined text afterwards: a PDF line that happens to read
  * "[Page 2]" is content, not a page boundary.
+ *
+ * Bounded wherever it runs (the parser thread, or in-process): pdf.js is the
+ * bounded build (lib/pdfjs.ts), so a stream that would decode past
+ * PDF_MAX_DECODED_STREAM_BYTES is never allocated; a document with more
+ * than PDF_MAX_PAGES pages is not read page by page; and the whole read has
+ * pdfReadBudgetMs(). Each of these throws ExtractionLimitError, which no
+ * caller turns into an empty text: the document is too large to read.
  */
 async function readPdfPages(buf: ArrayBuffer): Promise<PdfReadResult> {
-  let opened = false;
-  let loadingTask: PdfLoadingTask | undefined;
   // A pdf.js that cannot be loaded is a broken install, not an unreadable
   // document: it carries its own kind so the two never share an issue.
-  let pdfjsLib: unknown;
+  let pdfjsLib: Awaited<ReturnType<typeof loadPdfjs>>;
   try {
-    pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs" as string);
+    pdfjsLib = await loadPdfjs();
   } catch (cause) {
     return {
       pages: null,
+      stage: "load",
+      raw: cause,
       cause: new AppError("extraction.failed", "pdf.js could not be loaded", { cause }),
     };
   }
-  try {
-    loadingTask = (
-      pdfjsLib as unknown as {
+  return runWithPdfBudget(async (budget) => {
+    let opened = false;
+    let timedOut = false;
+    let loadingTask: PdfLoadingTask | undefined;
+    // pdf.js's worker runs in this thread on promises alone, so no timer
+    // fires while it reads: the clock is checked after each step. The timer
+    // ends what waits on anything else (the native inflater): pdf.js
+    // rejects whatever waits once its task is destroyed.
+    const deadline = Date.now() + pdfReadBudgetMs();
+    const timer = setTimeout(() => {
+      timedOut = true;
+      void loadingTask?.destroy?.().catch(() => {});
+    }, pdfReadBudgetMs());
+    // pdf.js swallows most errors inside a page (its text is then cut
+    // short), so a refused stream is read from the budget, after each step.
+    const overLimit = (): ExtractionLimitError | null =>
+      budget.exceeded !== null
+        ? new ExtractionLimitError(`a PDF stream decodes past ${budget.maxStreamBytes} bytes`)
+        : timedOut || Date.now() > deadline
+          ? new ExtractionLimitError("the PDF was not read within its time budget")
+          : null;
+    try {
+      loadingTask = (pdfjsLib as unknown as {
         getDocument: (opts: unknown) => PdfLoadingTask;
-      }
-    ).getDocument({
-      // A copy: pdf.js takes the bytes it is given for its worker, which
-      // detaches the buffer. Callers keep using theirs, for example to store
-      // the file once its text has been read.
-      data: new Uint8Array(buf).slice(),
-      standardFontDataUrl: STANDARD_FONT_DATA_URL,
-    });
-    const pdf = await loadingTask.promise;
-    opened = true;
-    const pages: PdfPageText[] = [];
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i);
-      const textContent = await page.getTextContent();
-      let fields: ExtractedFormField[] = [];
-      try {
-        fields = extractFormFields(await page.getAnnotations());
-      } catch {
-        // Keep the page's content-stream text if its annotations are malformed.
-      }
-      const positionedFields = fields
-        .map(positionedFormItem)
-        .filter((item): item is PdfTextItem => item !== null);
-      const layout = layoutPageText([
-        ...textContent.items,
-        ...positionedFields,
-      ]);
-      let pageText = `[Page ${i}]\n${layout}`;
-      const unpositionedFields = fields.filter((field) => !field.rect);
-      if (unpositionedFields.length) {
-        pageText += `\n[Page ${i} form fields]\n${unpositionedFields
-          .map((field) => field.text)
-          .join("\n")}`;
-      }
-      pages.push({
-        text: pageText,
-        empty: !layout.trim() && unpositionedFields.length === 0,
+      }).getDocument({
+        // A copy: pdf.js takes the bytes it is given for its worker, which
+        // detaches the buffer. Callers keep using theirs, for example to store
+        // the file once its text has been read.
+        data: new Uint8Array(buf).slice(),
+        standardFontDataUrl: STANDARD_FONT_DATA_URL,
+        maxImageSize: PDF_MAX_IMAGE_PIXELS,
+        disableFontFace: true,
+        useSystemFonts: false,
       });
+      const pdf = await loadingTask.promise;
+      opened = true;
+      const limited = overLimit();
+      if (limited) throw limited;
+      if (pdf.numPages > PDF_MAX_PAGES) {
+        throw new ExtractionLimitError(`the PDF has more than ${PDF_MAX_PAGES} pages`);
+      }
+      const pages: PdfPageText[] = [];
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const textContent = await page.getTextContent();
+        let fields: ExtractedFormField[] = [];
+        try {
+          fields = extractFormFields(await page.getAnnotations());
+        } catch {
+          // Keep the page's content-stream text if its annotations are malformed.
+        }
+        const pageLimited = overLimit();
+        if (pageLimited) throw pageLimited;
+        const positionedFields = fields
+          .map(positionedFormItem)
+          .filter((item): item is PdfTextItem => item !== null);
+        const layout = layoutPageText([
+          ...textContent.items,
+          ...positionedFields,
+        ]);
+        let pageText = `[Page ${i}]\n${layout}`;
+        const unpositionedFields = fields.filter((field) => !field.rect);
+        if (unpositionedFields.length) {
+          pageText += `\n[Page ${i} form fields]\n${unpositionedFields
+            .map((field) => field.text)
+            .join("\n")}`;
+        }
+        pages.push({
+          text: pageText,
+          empty: !layout.trim() && unpositionedFields.length === 0,
+        });
+      }
+      return { pages };
+    } catch (cause) {
+      if (cause instanceof ExtractionLimitError) throw cause;
+      const limited = overLimit();
+      if (limited) throw limited;
+      if (isAllocationFailure(cause)) throw new ExtractionLimitError("the PDF could not be held in memory");
+      // A document that opened successfully but failed during page/text
+      // processing is an extraction failure, not an invalid-input verdict.
+      return opened
+        ? {
+            pages: null,
+            stage: "page",
+            raw: cause,
+            cause: new AppError("extraction.failed", "PDF text processing failed", { cause }),
+          }
+        : { pages: null, stage: "open", raw: cause, cause };
+    } finally {
+      clearTimeout(timer);
+      // Releases the pdfjs worker-side document; resolving the promise does not.
+      await loadingTask?.destroy?.().catch(() => {});
     }
-    return { pages };
-  } catch (cause) {
-    // A document that opened successfully but failed during page/text
-    // processing is an extraction failure, not an invalid-input verdict.
-    return {
-      pages: null,
-      cause: opened
-        ? new AppError("extraction.failed", "PDF text processing failed", { cause })
-        : cause,
-    };
-  } finally {
-    // Releases the pdfjs worker-side document; resolving the promise does not.
-    await loadingTask?.destroy?.().catch(() => {});
+  });
+}
+
+/**
+ * The verdict on a PDF pdf.js read but could not use: it would not open
+ * (corrupt, truncated, encrypted, not a PDF), or a page of it failed (a
+ * structure nested past what a parser can follow). The same bytes fail the
+ * same way every time. pdf.js's own error stays the cause, so a password is
+ * still told apart (isPdfPasswordError).
+ */
+function unreadablePdf(raw: unknown): ExtractionParseError {
+  return new ExtractionParseError("extraction.pdf_unreadable", PDF_UNREADABLE_MESSAGE, { cause: raw });
+}
+
+/** Whether a PDF failed for its password: pdf.js's PasswordException, anywhere on the chain. */
+export function isPdfPasswordError(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  let link: unknown = error;
+  while (link && typeof link === "object" && !seen.has(link) && seen.size < 12) {
+    seen.add(link);
+    if ((link as { name?: unknown }).name === "PasswordException") return true;
+    link = (link as { cause?: unknown }).cause;
   }
+  return false;
+}
+
+/**
+ * What an upload records of a PDF, read in full as the reader would: its
+ * page count and how many pages have no text layer. Strict: a PDF that cannot
+ * be read throws (ExtractionParseError, with pdf.js's PasswordException kept
+ * as its cause for an encrypted one), so it is never kept as a ready document
+ * with an empty body; one past the reader's bounds throws
+ * ExtractionLimitError.
+ */
+export async function readPdfFacts(
+  buf: ArrayBuffer,
+): Promise<{ text: ""; pageCount: number; textlessPageCount: number }> {
+  const read = await readPdfPages(buf);
+  if (!read.pages) {
+    if (read.stage === "load") throw read.cause;
+    throw unreadablePdf(read.raw);
+  }
+  return {
+    text: "",
+    pageCount: read.pages.length,
+    textlessPageCount: read.pages.filter((page) => page.empty).length,
+  };
 }
 
 /** Strict extraction for persisted search: unreadable is not a successful blank. */
@@ -405,20 +512,7 @@ export function textLayerNotice(
     : `[Pages ${formatPageRanges(emptyPages)} of this PDF have no text layer, so their content cannot be read. They are most likely scanned and need OCR.]`;
 }
 
-/**
- * The text read_document returns for a PDF. Without a notice, a scanned PDF
- * reaches the model as empty page markers and nothing that says why, so the
- * model may report the document as blank or guess at its content. A fully
- * scanned PDF is replaced by the notice; a partly scanned one keeps its text
- * with the notice in front.
- */
-export async function extractPdfTextForModel(buf: ArrayBuffer): Promise<string> {
-  const read = await readPdfPages(buf);
-  if (!read.pages) {
-    reportUnreadablePdf(read.cause);
-    return "";
-  }
-  const { pages } = read;
+function textForModel(pages: PdfPageText[]): string {
   const text = pages.map((page) => page.text).join("\n\n");
   const emptyPages = pages.flatMap((page, i) => (page.empty ? [i + 1] : []));
   const notice = textLayerNotice(emptyPages, pages.length);
@@ -427,14 +521,49 @@ export async function extractPdfTextForModel(buf: ArrayBuffer): Promise<string> 
 }
 
 /**
+ * The text read_document returns for a PDF. Without a notice, a scanned PDF
+ * reaches the model as empty page markers and nothing that says why, so the
+ * model may report the document as blank or guess at its content. A fully
+ * scanned PDF is replaced by the notice; a partly scanned one keeps its text
+ * with the notice in front. Lenient: an unreadable PDF reads as "".
+ */
+export async function extractPdfTextForModel(buf: ArrayBuffer): Promise<string> {
+  const read = await readPdfPages(buf);
+  if (!read.pages) {
+    reportUnreadablePdf(read.cause);
+    return "";
+  }
+  return textForModel(read.pages);
+}
+
+/**
+ * The same text, strict: a PDF pdf.js cannot read throws
+ * ExtractionParseError (pdf.js's PasswordException kept as its cause), so
+ * read_document says the document could not be read instead of handing the
+ * model an empty body as if the document were blank.
+ */
+export async function readPdfTextForModel(buf: ArrayBuffer): Promise<string> {
+  const read = await readPdfPages(buf);
+  if (!read.pages) {
+    if (read.stage === "load") throw read.cause;
+    throw unreadablePdf(read.raw);
+  }
+  return textForModel(read.pages);
+}
+
+/**
  * The text read_document derives for the legacy Office types (.doc/.ppt):
  * LibreOffice → PDF → pdfjs. Exported so the document.precompute_text job
  * produces byte-identical text to the inline read path — a cache that can
- * drift from what it caches is worse than no cache.
+ * drift from what it caches is worse than no cache. In Mike's NativeCluster
+ * app, which has no LibreOffice, a .doc (or an RTF saved as .doc) is read by
+ * macOS's own textutil instead (extraction/textutil.ts), and a .ppt cannot
+ * be read.
  */
 export async function extractLegacyOfficeText(
   raw: ArrayBuffer,
 ): Promise<string> {
+  if (legacyTextByTextutil()) return readLegacyTextWithTextutil(raw);
   const pdfBuf = await docxToPdf(Buffer.from(raw));
   return extractPdfText(
     pdfBuf.buffer.slice(

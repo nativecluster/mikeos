@@ -16,6 +16,7 @@
 
 import JSZip from "jszip";
 import { XMLParser, XMLBuilder } from "fast-xml-parser";
+import { readZipEntryBounded } from "./docxpackagevalidation";
 
 // ---------------------------------------------------------------------------
 // JSZip path helpers
@@ -712,16 +713,108 @@ function maxTrackedId(doc: XNode[]): number {
  * anchor matcher operates against.
  */
 export async function extractDocxBodyText(bytes: Buffer): Promise<string> {
+    return (await extractDocxBodyAndReview(bytes)).body;
+}
+
+// What the review notes may hold: enough for a reviewer's pass over a
+// contract, bounded so a document of thousands of changes stays readable.
+const REVIEW_MAX_ITEMS = 200;
+const REVIEW_MAX_TEXT_CHARS = 500;
+const REVIEW_MAX_CONTEXT_CHARS = 200;
+const COMMENTS_MAX_BYTES = 8 * 1024 * 1024;
+
+/** `by` is the author, with the date when the document gives one. */
+type ReviewChange = { kind: "Inserted" | "Deleted"; by: string; text: string; paragraph: string };
+type ReviewComment = { id: string; by: string; text: string };
+
+function oneLine(text: string, max: number): string {
+    const flat = text.replace(/\s+/g, " ").trim();
+    return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
+function byline(attrs: Record<string, string>): string {
+    const author = String(attrs["@_w:author"] ?? "").trim() || "an unknown author";
+    const date = String(attrs["@_w:date"] ?? "").match(/^\d{4}-\d{2}-\d{2}/)?.[0];
+    return date ? `${author} (${date})` : author;
+}
+
+/** The text of a tracked change's runs: w:t for an insertion, w:delText for a deletion. */
+function changeText(wrapper: XNode, tag: "w:t" | "w:delText"): string {
+    let out = "";
+    const visit = (n: XNode) => {
+        for (const c of elChildren(n)) {
+            const name = elName(c);
+            if (name === tag) out += getTextContent(c);
+            else if (name === "w:tab") out += "\t";
+            else if (name === "w:br" || name === "w:cr") out += "\n";
+            else if (name && name !== "w:rPr") visit(c);
+        }
+    };
+    visit(wrapper);
+    return out;
+}
+
+/**
+ * The text of a .docx as read_document gives it to the model: the accepted
+ * view (extractDocxBodyText, which the edit matcher anchors against) and,
+ * apart from it, what that view cannot show: the tracked changes not yet
+ * accepted or rejected, each an insertion or a deletion with its author, and
+ * the comments, each with its author and the text it is on. `review` is ""
+ * for a document with neither, so its text is exactly the accepted view.
+ *
+ * The notes come after the body, never inside it: an edit is anchored on
+ * the body's own characters, and a marker in the middle of a sentence would
+ * be copied into a `find` that then matches nothing.
+ */
+export async function extractDocxBodyAndReview(bytes: Buffer): Promise<{ body: string; review: string }> {
     const zip = await JSZip.loadAsync(bytes);
     const docXmlFile = getZipEntry(zip, "word/document.xml");
-    if (!docXmlFile) return "";
+    if (!docXmlFile) return { body: "", review: "" };
     const docXmlRaw = await docXmlFile.async("string");
     const parser = createParser();
     const tree = parser.parse(docXmlRaw) as XNode[];
     const bodyChildren = findBody(tree);
-    if (!bodyChildren) return "";
+    if (!bodyChildren) return { body: "", review: "" };
 
     const lines: string[] = [];
+    const changes: ReviewChange[] = [];
+    // A comment's range may span paragraphs: each open range gathers the
+    // accepted text of every paragraph it touches.
+    const openRanges = new Map<string, string[]>();
+    const anchors = new Map<string, string>();
+    const paragraphReview = (paraChildren: XNode[], paraText: string) => {
+        const starts: string[] = [];
+        const ends: string[] = [];
+        const references: string[] = [];
+        const visit = (nodes: XNode[], depth: number) => {
+            for (const c of nodes) {
+                const name = elName(c);
+                if (!name) continue;
+                const id = String(elAttrs(c)["@_w:id"] ?? "");
+                if (name === "w:ins" || name === "w:del") {
+                    const text = changeText(c, name === "w:ins" ? "w:t" : "w:delText");
+                    if (text.trim()) {
+                        changes.push({
+                            kind: name === "w:ins" ? "Inserted" : "Deleted",
+                            by: byline(elAttrs(c)),
+                            text, paragraph: paraText,
+                        });
+                    }
+                } else if (name === "w:commentRangeStart") starts.push(id);
+                else if (name === "w:commentRangeEnd") ends.push(id);
+                else if (name === "w:commentReference") references.push(id);
+                else if (depth < 8 && name !== "w:pPr" && name !== "w:rPr") visit(elChildren(c), depth + 1);
+            }
+        };
+        visit(paraChildren, 0);
+        for (const id of starts) if (!openRanges.has(id)) openRanges.set(id, []);
+        for (const texts of openRanges.values()) texts.push(paraText);
+        for (const id of ends) {
+            const texts = openRanges.get(id);
+            if (texts) { anchors.set(id, texts.join(" ")); openRanges.delete(id); }
+        }
+        for (const id of references) if (!anchors.has(id) && !openRanges.has(id)) anchors.set(id, paraText);
+    };
     const collect = (nodes: XNode[]) => {
         for (const n of nodes) {
             const name = elName(n);
@@ -729,6 +822,7 @@ export async function extractDocxBodyText(bytes: Buffer): Promise<string> {
             if (name === "w:p") {
                 const flat = flattenParagraph(elChildren(n));
                 lines.push(flat.paraText);
+                paragraphReview(elChildren(n), flat.paraText);
             } else if (
                 name === "w:tbl" ||
                 name === "w:tr" ||
@@ -741,7 +835,80 @@ export async function extractDocxBodyText(bytes: Buffer): Promise<string> {
         }
     };
     collect(bodyChildren);
-    return lines.join("\n");
+    for (const [id, texts] of openRanges) anchors.set(id, texts.join(" "));
+    const body = lines.join("\n");
+
+    let comments: ReviewComment[] = [];
+    let commentsUnreadable = false;
+    const commentsFile = getZipEntry(zip, "word/comments.xml");
+    if (commentsFile) {
+        try {
+            // Bounded: comments.xml is not checked at upload as document.xml is.
+            const xml = await readZipEntryBounded(commentsFile, COMMENTS_MAX_BYTES);
+            comments = parseComments(parser.parse(xml) as XNode[]);
+        } catch {
+            commentsUnreadable = true;
+        }
+    }
+    return { body, review: formatReview(changes, comments, anchors, commentsUnreadable) };
+}
+
+function parseComments(tree: XNode[]): ReviewComment[] {
+    const out: ReviewComment[] = [];
+    for (const top of tree) {
+        if (elName(top) !== "w:comments") continue;
+        for (const c of elChildren(top)) {
+            if (elName(c) !== "w:comment") continue;
+            const attrs = elAttrs(c);
+            const paragraphs: string[] = [];
+            const visit = (nodes: XNode[], depth: number) => {
+                for (const n of nodes) {
+                    const name = elName(n);
+                    if (name === "w:p") paragraphs.push(flattenParagraph(elChildren(n)).paraText);
+                    else if (name && depth < 6) visit(elChildren(n), depth + 1);
+                }
+            };
+            visit(elChildren(c), 0);
+            out.push({ id: String(attrs["@_w:id"] ?? ""), by: byline(attrs), text: paragraphs.join(" ") });
+        }
+    }
+    return out;
+}
+
+function formatReview(
+    changes: ReviewChange[],
+    comments: ReviewComment[],
+    anchors: Map<string, string>,
+    commentsUnreadable: boolean,
+): string {
+    const parts: string[] = [];
+    const more = (n: number) => (n > REVIEW_MAX_ITEMS ? [`… and ${n - REVIEW_MAX_ITEMS} more.`] : []);
+    if (changes.length) {
+        parts.push([
+            `[Tracked changes: ${changes.length} not yet accepted or rejected. The text above reads as if each were accepted: its insertions are in it and its deletions are not. Base an edit on the text above.]`,
+            ...changes.slice(0, REVIEW_MAX_ITEMS).map((change, i) => {
+                const text = oneLine(change.text, REVIEW_MAX_TEXT_CHARS);
+                const paragraph = oneLine(change.paragraph, REVIEW_MAX_CONTEXT_CHARS);
+                const where = paragraph && paragraph !== text ? `, in "${paragraph}"` : "";
+                return `${i + 1}. ${change.kind} by ${change.by}: "${text}"${where}`;
+            }),
+            ...more(changes.length),
+        ].join("\n"));
+    }
+    if (comments.length) {
+        parts.push([
+            `[Comments: ${comments.length}.]`,
+            ...comments.slice(0, REVIEW_MAX_ITEMS).map((comment, i) => {
+                const anchor = oneLine(anchors.get(comment.id) ?? "", REVIEW_MAX_CONTEXT_CHARS);
+                const on = anchor ? `, on "${anchor}"` : "";
+                return `${i + 1}. ${comment.by}${on}: ${oneLine(comment.text, REVIEW_MAX_TEXT_CHARS)}`;
+            }),
+            ...more(comments.length),
+        ].join("\n"));
+    } else if (commentsUnreadable) {
+        parts.push("[This document has comments that could not be read.]");
+    }
+    return parts.join("\n\n");
 }
 
 /**

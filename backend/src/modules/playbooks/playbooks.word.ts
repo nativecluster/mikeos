@@ -1,5 +1,5 @@
 import JSZip from "jszip";
-import { extractPdfText } from "../../lib/pdfText";
+import { runIsolatedExtraction } from "../../lib/extraction/isolated";
 
 export type PlaybookSourceRef = {
   id: string;
@@ -213,11 +213,15 @@ const PDF_PAGE_MARKER = /^\[Page \d+(?: form fields)?\]$/;
 export async function extractPlaybookPdfStructure(
   buffer: Buffer,
 ): Promise<PlaybookWordStructure> {
-  const raw = await extractPdfText(
-    buffer.buffer.slice(
-      buffer.byteOffset,
-      buffer.byteOffset + buffer.byteLength,
-    ) as ArrayBuffer,
+  // In the bounded document reader, as every uploaded document is read: a
+  // PDF that decodes past its limits is refused, never read in this process.
+  const raw = await runIsolatedExtraction(
+    "pdfText",
+    async () =>
+      buffer.buffer.slice(
+        buffer.byteOffset,
+        buffer.byteOffset + buffer.byteLength,
+      ) as ArrayBuffer,
   );
   const blocks: PlaybookWordStructure["blocks"] = [];
   const sources: PlaybookSourceRef[] = [];

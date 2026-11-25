@@ -5,17 +5,21 @@ import {
   readdir,
   rm,
   utimes,
+  writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import JSZip from "jszip";
 import { EXTRACTION_OPS } from "../../../lib/extraction/ops";
 import { ExtractionBusyError, ExtractionLimitError, withExtractionRequest, withExtractionSlot } from "../../../lib/extraction/isolated";
 import { Document, Packer, Paragraph } from "docx";
 import { diagnosticErrorTags } from "../../../lib/observability/sentryPrivacy";
+import { PDF_MAX_DECODED_STREAM_BYTES } from "../../../lib/pdfjs";
+import { bombPdf, nestedPdf, passwordPdf, writePdf } from "../../../lib/__tests__/hostilePdfs";
 
 const mocks = vi.hoisted(() => ({
   maxUploadBytes: 100 * 1024 * 1024,
@@ -244,7 +248,8 @@ function scriptedDb(results: QueryResult[]) {
   };
 }
 
-const pdfBytes = Buffer.from("%PDF-1.7\n");
+// A real PDF: an upload is read in full, so a header alone is not one.
+const pdfBytes = buildOnePagePdf();
 
 /** The smallest PDF pdf.js opens: one empty page, a cross-reference table, a trailer. */
 function buildOnePagePdf(): Buffer {
@@ -439,6 +444,10 @@ describe("upload processing", () => {
     ["a ZIP container", "PK\u0003\u0004Office bytes"],
     ["a signature missing its dash", "%PDF"],
     ["whitespace only", " \uFEFF\n"],
+    // A header and nothing a reader can open behind it (D1: these listed as
+    // ready and read as nothing).
+    ["a bare header", "%PDF-1.7\n"],
+    ["a header and then garbage", "%PDF-1.7\n" + "\u0001\u00ff garbage ".repeat(200)],
     // The signature search misses and pdf.js has nothing to parse either.
     ["a bare header past 1024 bytes with no document behind it", "x".repeat(1024 - "%PDF-".length + 1) + "%PDF-1.7"],
   ])(
@@ -458,6 +467,119 @@ describe("upload processing", () => {
       expect(await readdir(processingTempRoot)).toEqual([]);
     },
   );
+
+  // X1: the upload's page count and textless count were pdf.js run here, in
+  // the upload worker, outside every bound: one 1.9 MB PDF inflating to
+  // 1.9 GiB held gigabytes and the upload for minutes. They are one read in
+  // the bounded reader now, which refuses it as too large.
+  it("refuses a PDF that inflates past the reader's limit as document_too_large, before destination writes", async () => {
+    const bytes = await bombPdf(PDF_MAX_DECODED_STREAM_BYTES / (1024 * 1024) + 64, 10);
+    mocks.createFileReadStream.mockImplementation(() => Readable.from([bytes]));
+    const db = fakeDb();
+    const started = Date.now();
+    await expect(processUploadFile(db as never, baseSession, {
+      ...baseFile, expected_size_bytes: bytes.length,
+    })).rejects.toMatchObject({ code: "document_too_large" });
+    expect(Date.now() - started).toBeLessThan(15_000);
+    expect(db.from).not.toHaveBeenCalled();
+    expect(mocks.copyFile).not.toHaveBeenCalled();
+    expect(await readdir(processingTempRoot)).toEqual([]);
+  }, 60_000);
+
+  it("records a PDF's page count and textless pages from the one bounded read", async () => {
+    const bytes = writePdf([
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>",
+    ]);
+    mocks.createFileReadStream.mockImplementation(() => Readable.from([bytes]));
+    const db = fakeDb({ documents: [{ data: { id: baseFile.resource_id } }] });
+    await processUploadFile(db as never, baseSession, { ...baseFile, expected_size_bytes: bytes.length });
+    expect(db.rpc).toHaveBeenCalledWith("create_document_version", expect.objectContaining({
+      p_version: expect.objectContaining({ page_count: 2, textless_page_count: 2 }),
+    }));
+  });
+
+  // D1: these uploaded as completed, listed ready, and read as nothing.
+  it.each([
+    ["a PDF locked with a password", () => passwordPdf(), "pdf_password_protected"],
+    ["a PDF whose page nests past what a parser follows", () => nestedPdf(), "invalid_pdf_file"],
+    ["a PDF cut off before its cross-references", () => buildOnePagePdf().subarray(0, 60), "invalid_pdf_file"],
+  ])("refuses %s in words before destination writes", async (_label, pdf, code) => {
+    const bytes = pdf();
+    mocks.createFileReadStream.mockImplementation(() => Readable.from([bytes]));
+    const db = fakeDb();
+    await expect(processUploadFile(db as never, baseSession, {
+      ...baseFile, expected_size_bytes: bytes.length,
+    })).rejects.toMatchObject({ code });
+    expect(db.from).not.toHaveBeenCalled();
+    expect(mocks.copyFile).not.toHaveBeenCalled();
+  });
+
+  it("records a password-protected PDF as pdf_password_protected, terminal, never retried", async () => {
+    const bytes = passwordPdf();
+    mocks.createFileReadStream.mockImplementation(() => Readable.from([bytes]));
+    const db = scriptedDb([
+      { data: { id: "job-1", session_id: baseSession.id, file_id: baseFile.id, attempts: 1, locked_by: "worker-1" } },
+      { data: baseSession },
+      { data: { ...baseFile, expected_size_bytes: bytes.length } },
+      { data: { id: "job-1" } }, // Initial heartbeat.
+      { error: null }, // Processing status.
+      { data: { id: "job-1" } }, // Failure heartbeat.
+      { error: null }, // File error.
+      { error: null }, // Document error.
+      { data: { id: "job-1" } }, // Final heartbeat.
+      { error: null }, // Remove failed document.
+      { data: [{ sealed_storage_path: baseFile.sealed_storage_path }] },
+      { data: { id: "job-1" } },
+    ]);
+    await processUploadJob(db as never, "job-1", "worker-1");
+    expect(db.calls).toContainEqual(expect.objectContaining({
+      table: "upload_session_files", operation: "update",
+      payload: expect.objectContaining({ status: "error", error_code: "pdf_password_protected" }),
+    }));
+    expect(db.calls.some((call) => (call.payload as { status?: string })?.status === "queued")).toBe(false);
+    expect(db.remaining).toHaveLength(0);
+  });
+
+  // D2: in the app (no LibreOffice) a .doc uploaded, then always read "could
+  // not be read". It is read now, by textutil, and refused in words if not.
+  describe.skipIf(process.platform !== "darwin")("a legacy Office file in the app", () => {
+    beforeEach(() => vi.stubEnv("MIKE_NC_APP", "1"));
+    afterEach(() => vi.unstubAllEnvs());
+    const legacyFile = (filename: string, bytes: Buffer) => ({
+      ...baseFile, filename, file_type: filename.split(".").pop()!,
+      content_type: "application/msword", expected_size_bytes: bytes.length,
+    });
+
+    it("accepts a .doc that textutil reads", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "mike-upload-doc-"));
+      try {
+        await writeFile(join(dir, "lease.txt"), "LEGACY WORD 97 LEASE");
+        execFileSync("/usr/bin/textutil", ["-convert", "doc", "-output", join(dir, "lease.doc"), join(dir, "lease.txt")]);
+        const bytes = await readFile(join(dir, "lease.doc"));
+        mocks.createFileReadStream.mockImplementation(() => Readable.from([bytes]));
+        const db = fakeDb({ documents: [{ data: { id: baseFile.resource_id } }] });
+        await processUploadFile(db as never, baseSession, legacyFile("lease.doc", bytes));
+        expect(mocks.copyFile).toHaveBeenCalledOnce();
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    it.each([
+      ["a .doc textutil cannot read", "broken.doc", Buffer.concat([Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]), Buffer.alloc(2048, 7)])],
+      ["a .ppt, which nothing in the app reads", "deck.ppt", Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1])],
+    ])("refuses %s as document_unreadable before destination writes", async (_label, filename, bytes) => {
+      mocks.createFileReadStream.mockImplementation(() => Readable.from([bytes]));
+      const db = fakeDb();
+      await expect(processUploadFile(db as never, baseSession, legacyFile(filename, bytes)))
+        .rejects.toMatchObject({ code: "document_unreadable" });
+      expect(db.from).not.toHaveBeenCalled();
+      expect(mocks.copyFile).not.toHaveBeenCalled();
+    });
+  });
 
   it.each([false, true])("keeps invalid PDFs terminal when already failed=%s", async (alreadyFailed) => {
     const bytes = Buffer.from("not a PDF");
