@@ -1,14 +1,20 @@
 // One parser slot per calling thread. Queue coordination remains responsive;
 // a reusable child process keeps parsers warm behind an OS memory boundary.
+// In Mike's NativeCluster app (MIKE_NC_APP=1) the parser is a worker thread
+// instead (ParserThread, below): the sandbox refuses every signal to a child.
 import path from "node:path";
+import { EventEmitter } from "node:events";
 import type { Socket } from "node:net";
+import type { Readable } from "node:stream";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { Worker, type WorkerOptions } from "node:worker_threads";
 import type { ExtractionOp, ExtractionOps } from "./ops";
-import { EXTRACTION_MAX_BYTES, ExtractionBusyError, ExtractionLimitError, extractionIsolated, extractionLauncher, extractionMemoryMb, extractionTimeoutMs } from "./limits";
+import { EXTRACTION_MAX_BYTES, ExtractionBusyError, ExtractionLimitError, extractionInThread, extractionIsolated, extractionLauncher, extractionMemoryMb, extractionTimeoutMs, isAllocationFailure } from "./limits";
 import { asExtractionFailure, extractionFailureFromWire, type ExtractionFailureWire } from "./failure";
 import { AppError } from "../appError";
+import { boundedWorkerLimits, watchWorkerMemory } from "../boundedWorker";
 
 export { EXTRACTION_MAX_BYTES, ExtractionBusyError, ExtractionLimitError } from "./limits";
 export { ExtractionParseError } from "./failure";
@@ -47,6 +53,9 @@ const PARSER_UNAVAILABLE_MESSAGE =
   "(util-linux) to enforce its memory limit; install util-linux (the " +
   "backend Docker image and backend/nixpacks.toml include it, see " +
   "docs/deployment.md). No restart is needed once it is on PATH.";
+const PARSER_THREAD_UNAVAILABLE_MESSAGE =
+  "The document parser thread could not be started, so text extraction " +
+  "and DOCX validation fail.";
 
 // child.kill() emits "error" synchronously when the signal is refused (EPERM:
 // in NativeCluster's app sandbox a process may signal only itself), and that
@@ -79,8 +88,81 @@ function killParser(child: ChildProcess): void {
   }
 }
 
+/** What a parse needs of its parser: the child process, or a ParserThread. */
+interface ParserChild extends EventEmitter {
+  send(message: unknown, callback: (error: Error | null) => void): boolean;
+  ref(): void;
+  unref(): void;
+  readonly stderr: Readable | null;
+  readonly channel?: { ref(): void; unref(): void } | null;
+}
+
+/**
+ * The parser as a worker thread, for Mike's NativeCluster app. It speaks as
+ * the child does (spawn, message, error, close; send), so a parse, its
+ * deadline, recycling and the idle shutdown are the same code, and it ends
+ * by terminate(), which needs no signal. Its memory budget is the child's
+ * (EXTRACTION_MAX_MEMORY_MB), counting buffers as well as the heap
+ * (boundedWorker.ts); a parse over it ends the thread, never the backend.
+ */
+class ParserThread extends EventEmitter implements ParserChild {
+  readonly stderr = null;
+  /** Ended for its memory: its parse fails as over the memory budget. */
+  outOfMemory = false;
+  private readonly worker: Worker;
+  private unwatch?: () => void;
+
+  constructor(entry: string, options: WorkerOptions, private readonly memoryMb: number) {
+    super();
+    this.worker = new Worker(entry, { ...options, stdout: true, stderr: true });
+    // What the parsers print is dropped, as the child's stdout is.
+    this.worker.stdout.resume();
+    this.worker.stderr.resume();
+    let online = false;
+    this.worker.once("online", () => { online = true; this.emit("spawn"); });
+    this.worker.on("message", (message: unknown) => { this.unwatch?.(); this.emit("message", message); });
+    this.worker.on("error", (error: Error) => {
+      // V8's own heap limit (the backstop), or an allocation it refused.
+      if ((error as NodeJS.ErrnoException).code === "ERR_WORKER_OUT_OF_MEMORY" || isAllocationFailure(error)) this.outOfMemory = true;
+      // A thread that never started is a parser that could not be started.
+      // Anything later is a crash, which its exit reports, as a child's.
+      else if (!online) this.emit("error", error);
+    });
+    this.worker.once("exit", (code: number) => { this.unwatch?.(); this.emit("close", code, null); });
+  }
+
+  send(message: unknown, callback: (error: Error | null) => void): boolean {
+    try {
+      // Copied, not transferred: the caller keeps its bytes, as with the child.
+      this.worker.postMessage(message);
+    } catch (error) {
+      callback(error as Error);
+      return false;
+    }
+    this.unwatch?.();
+    this.unwatch = watchWorkerMemory(this.worker, this.memoryMb, () => {
+      this.outOfMemory = true;
+      this.terminate();
+    });
+    callback(null);
+    return true;
+  }
+
+  terminate(): void {
+    this.unwatch?.();
+    void this.worker.terminate().catch(() => {});
+  }
+
+  ref(): void { this.worker.ref(); }
+  unref(): void { this.worker.unref(); }
+}
+
 type Parser = {
-  child: ChildProcess;
+  child: ParserChild;
+  /** Kill the child (its group), or terminate the thread. */
+  stop: () => void;
+  /** Whether it ended for its memory, beyond what its exit says. */
+  outOfMemory: () => boolean;
   closed: Promise<void>;
   memoryMb: number;
   started: boolean;
@@ -99,7 +181,7 @@ function retire(p: Parser): void {
   try {
     if (parser === p) parser = null;
     clearTimeout(p.idle);
-    killParser(p.child);
+    p.stop();
   } finally {
     p.retiring = false;
   }
@@ -122,6 +204,7 @@ function reference(p: Parser, active: boolean): void {
 }
 
 async function startParser(): Promise<Parser> {
+  if (extractionInThread()) return startParserThread();
   const entry = path.join(__dirname, __filename.endsWith(".ts") ? "process.ts" : "process.js");
   const { command, args } = extractionCommand(entry);
   const scratch = await mkdtemp(path.join(tmpdir(), "mike-extraction-"));
@@ -140,7 +223,7 @@ async function startParser(): Promise<Parser> {
     env, detached: process.platform !== "win32",
     stdio: ["ignore", "ignore", "pipe", "ipc"], serialization: "advanced",
   });
-  const p: Parser = { child, closed: Promise.resolve(), memoryMb: extractionMemoryMb(), started: false, files: 0 };
+  const p: Parser = { child, stop: () => killParser(child), outOfMemory: () => false, closed: Promise.resolve(), memoryMb: extractionMemoryMb(), started: false, files: 0 };
   const onParentExit = () => killParser(child);
   process.once("exit", onParentExit);
   child.once("spawn", () => { p.started = true; });
@@ -152,6 +235,44 @@ async function startParser(): Promise<Parser> {
     void rm(scratch, { recursive: true, force: true }).then(resolve, reject);
   }));
   // Idle retirement has no caller awaiting cleanup; active parses do await it.
+  void p.closed.catch(() => {});
+  return p;
+}
+
+/** The parser as a thread (Mike's NativeCluster app): see ParserThread. */
+async function startParserThread(): Promise<Parser> {
+  const isTs = __filename.endsWith(".ts");
+  const entry = path.join(__dirname, isTs ? "thread.ts" : "thread.js");
+  const scratch = await mkdtemp(path.join(tmpdir(), "mike-extraction-"));
+  // A thread's process.env is its own copy: no application credentials in it.
+  // MIKE_NC_APP keeps LibreOffice off inside it too (convert.ts).
+  const env: NodeJS.ProcessEnv = {};
+  for (const name of ["PATH", "HOME", "LANG", "MIKE_NC_APP"]) {
+    if (process.env[name] !== undefined) env[name] = process.env[name];
+  }
+  env.TMPDIR = env.TMP = env.TEMP = scratch;
+  const memoryMb = extractionMemoryMb();
+  let thread: ParserThread;
+  try {
+    thread = new ParserThread(entry, {
+      env,
+      resourceLimits: boundedWorkerLimits(memoryMb),
+      // Compiled, a thread inherits the parent's flags; from source it needs
+      // the TypeScript loader, as the child does.
+      ...(isTs ? { execArgv: ["--require", require.resolve("tsx/cjs")] } : {}),
+    }, memoryMb);
+  } catch (error) {
+    await rm(scratch, { recursive: true, force: true });
+    throw new AppError("extraction.parser_unavailable", PARSER_THREAD_UNAVAILABLE_MESSAGE, { cause: error });
+  }
+  const p: Parser = { child: thread, stop: () => thread.terminate(), outOfMemory: () => thread.outOfMemory, closed: Promise.resolve(), memoryMb, started: false, files: 0 };
+  thread.once("spawn", () => { p.started = true; });
+  thread.on("error", () => retire(p));
+  // A thread ends with the thread that started it: no exit hook is needed.
+  p.closed = new Promise<void>((resolve, reject) => thread.once("close", () => {
+    retire(p);
+    void rm(scratch, { recursive: true, force: true }).then(resolve, reject);
+  }));
   void p.closed.catch(() => {});
   return p;
 }
@@ -214,7 +335,7 @@ async function extractInChild<K extends ExtractionOp>(op: K, bytes: ArrayBuffer,
         if (failure instanceof ExtractionLimitError) reject(failure);
         else if (reply?.ok) resolve(reply.result as Result<K>);
         else if (reply) reject(reply.limited ? new ExtractionLimitError(reply.message) : extractionFailureFromWire(reply));
-        else if (signal === "SIGABRT" || /out of memory|allocation failed|cannot allocate memory|failed to map segment|ENOMEM/i.test(diagnostics)) {
+        else if (p.outOfMemory() || signal === "SIGABRT" || /out of memory|allocation failed|cannot allocate memory|failed to map segment|ENOMEM/i.test(diagnostics)) {
           reject(new ExtractionLimitError("parser memory budget exceeded"));
         } else if (failure) reject(failure);
         else {
