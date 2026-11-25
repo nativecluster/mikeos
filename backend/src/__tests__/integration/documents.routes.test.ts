@@ -218,6 +218,21 @@ describe("GET /single-documents/:documentId", () => {
         expect(res.body).toEqual({ detail: "You do not have access to this document." });
     });
 
+    // The robustness campaign (2026-11-24): in the app another person's
+    // document by id answered 403 where every other route answers 404, which
+    // says that the id exists. Accounts there are per computer; nothing is shared.
+    it("answers another person's document as not found in the NativeCluster app", async () => {
+        vi.stubEnv("MIKE_NC_APP", "1");
+        try {
+            ensureDocAccess.mockResolvedValue({ ok: false });
+            const res = await request(app).get(`/single-documents/${DOC}`).set(...AUTH);
+            expect(res.status).toBe(404);
+            expect(res.body).toEqual({ detail: "Document not found" });
+        } finally {
+            vi.unstubAllEnvs();
+        }
+    });
+
     it.each(["missing", "archived"])("returns 404 for a %s document", async (state) => {
         if (state === "missing") rows.documents = [];
         else rows.documents[0].archived_at = "2026-10-14T00:00:00Z";

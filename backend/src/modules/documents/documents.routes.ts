@@ -10,6 +10,7 @@ import type { Readable } from "node:stream";
 import { requireAuth } from "../../middleware/auth";
 import { asyncRoute, routerErrorHandler } from "../../middleware/asyncRoute";
 import { createServerSupabase } from "../../lib/supabase";
+import { ncAppMode } from "../../lib/authApp";
 import { sendServiceFailure } from "../../lib/serviceResult";
 import { sendInternalError } from "../../lib/httpError";
 import { pipeToResponse } from "../../lib/pipeToResponse";
@@ -58,7 +59,10 @@ documentsRouter.get("/:documentId", requireAuth, asyncRoute(async (req, res) => 
     const result = await getDocument(documentId, userId, userEmail, db);
     if (!result.ok) {
         if (result.kind === "error") return void sendInternalError(res, result.error);
-        if (result.kind === "forbidden")
+        // In Mike's NativeCluster app accounts are per computer and nothing is
+        // shared: another person's document is "not found", as every other
+        // route answers it, never a 403 that says it exists.
+        if (result.kind === "forbidden" && !ncAppMode())
             return void res.status(403).json({ detail: "You do not have access to this document." });
         return void res.status(404).json({ detail: "Document not found" });
     }
