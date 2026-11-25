@@ -1,4 +1,6 @@
 import crypto from "crypto";
+import { ncAppMode } from "./authApp";
+import { currentNcRequestUser } from "./nc/context";
 
 /**
  * HMAC-signed, non-expiring download tokens.
@@ -95,8 +97,10 @@ export function signBlobToken(
     filename: string,
     expiresInSeconds: number,
 ): string {
-    const exp = Math.floor(Date.now() / 1000) + expiresInSeconds;
-    const payload = JSON.stringify({ p: path, f: filename, e: exp });
+    const user = linkUser();
+    const life = user ? Math.min(expiresInSeconds, NC_APP_DOWNLOAD_TTL_SECONDS) : expiresInSeconds;
+    const exp = Math.floor(Date.now() / 1000) + life;
+    const payload = JSON.stringify({ p: path, f: filename, e: exp, ...(user ? { u: user } : {}) });
     const enc = b64urlEncode(Buffer.from(payload, "utf8"));
     const sig = crypto
         .createHmac("sha256", getSecret())
@@ -107,7 +111,7 @@ export function signBlobToken(
 
 export function verifyBlobToken(
     token: string,
-): { path: string; filename: string } | null {
+): { path: string; filename: string; user?: string } | null {
     const parts = token.split(".");
     if (parts.length !== 2) return null;
     const [enc, sigEnc] = parts;
@@ -121,13 +125,38 @@ export function verifyBlobToken(
             p: string;
             f: string;
             e: number;
+            u?: unknown;
         };
         if (!parsed?.p || !parsed?.f || typeof parsed.e !== "number") return null;
         if (parsed.e < Math.floor(Date.now() / 1000)) return null;
-        return { path: parsed.p, filename: parsed.f };
+        return { path: parsed.p, filename: parsed.f, ...tokenUser(parsed.u) };
     } catch {
         return null;
     }
+}
+
+/**
+ * The NativeCluster app (lib/authApp.ts): one copy of Mike serves everyone
+ * who opens it on a computer, and its window's history, a pasted or
+ * screenshotted link, are within another person's reach. So there a link is
+ * the person's alone: it carries their Mike account (`u`), the route that
+ * redeems it signs the caller in and compares (downloads.service.ts), and a
+ * download lives minutes, not an hour (the 2026-11-24 security review, L2).
+ * Elsewhere the tokens are exactly as above.
+ */
+export const NC_APP_DOWNLOAD_TTL_SECONDS = 5 * 60;
+
+/** App mode: the account a link is made for; refuses to make one for no one. */
+function linkUser(): string | undefined {
+    if (!ncAppMode()) return undefined;
+    const user = currentNcRequestUser();
+    if (!user) throw new Error("A link is made only for the person signed in.");
+    return user;
+}
+
+/** The account a token names, as `verify*` answer it (`user`), when it names one. */
+function tokenUser(value: unknown): { user?: string } {
+    return typeof value === "string" && value ? { user: value } : {};
 }
 
 /**
@@ -147,12 +176,14 @@ export function signBlobUploadToken(
     sizeBytes: number,
     expiresInSeconds: number,
 ): string {
+    const user = linkUser();
     const exp = Math.floor(Date.now() / 1000) + expiresInSeconds;
     const payload = JSON.stringify({
         p: path,
         c: contentType,
         s: sizeBytes,
         e: exp,
+        ...(user ? { u: user } : {}),
     });
     const enc = b64urlEncode(Buffer.from(payload, "utf8"));
     const sig = crypto
@@ -164,7 +195,7 @@ export function signBlobUploadToken(
 
 export function verifyBlobUploadToken(
     token: string,
-): { path: string; contentType: string; sizeBytes: number } | null {
+): { path: string; contentType: string; sizeBytes: number; user?: string } | null {
     const parts = token.split(".");
     if (parts.length !== 2) return null;
     const [enc, sigEnc] = parts;
@@ -179,12 +210,13 @@ export function verifyBlobUploadToken(
             c: string;
             s: number;
             e: number;
+            u?: unknown;
         };
         if (!parsed?.p || !parsed?.c) return null;
         if (typeof parsed.s !== "number" || typeof parsed.e !== "number")
             return null;
         if (parsed.e < Math.floor(Date.now() / 1000)) return null;
-        return { path: parsed.p, contentType: parsed.c, sizeBytes: parsed.s };
+        return { path: parsed.p, contentType: parsed.c, sizeBytes: parsed.s, ...tokenUser(parsed.u) };
     } catch {
         return null;
     }

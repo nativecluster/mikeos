@@ -34,6 +34,8 @@ export type NcRequest = {
   at: number;
   /** The task its route says it is (ncTaskForPath). */
   task: NcTask;
+  /** The person's Mike account, once the request's sign-in found it. */
+  userId?: string;
 };
 
 export type NcJob = {
@@ -76,6 +78,17 @@ export function currentNcPerson(): string | undefined {
 
 export function runInNcRequest<T>(request: NcRequest, fn: () => T): T {
   return storage.run({ request }, fn);
+}
+
+/** The request's sign-in found its person's Mike account (middleware/auth.ts). */
+export function setNcRequestUser(userId: string): void {
+  const request = storage.getStore()?.request;
+  if (request) request.userId = userId;
+}
+
+/** The Mike account of the person whose request is in hand, once signed in. */
+export function currentNcRequestUser(): string | undefined {
+  return storage.getStore()?.request?.userId;
 }
 
 export function runInNcJob<T>(job: NcJob, fn: () => T): T {

@@ -1,5 +1,7 @@
 import type { NextFunction, Request, Response } from "express";
+import type { ParamsFlatDictionary } from "express-serve-static-core";
 import { ncAppMode, NC_APP_SHARING_OFF_DETAIL } from "../lib/authApp";
+import { requireAuth } from "./auth";
 
 export const NC_APP_UNAVAILABLE_DETAIL =
   "NativeCluster manages your account in the NativeCluster app, so this isn't available here.";
@@ -53,3 +55,17 @@ export const sharingWritesOffInNcApp: Middleware = (req, res, next) => {
   sharingOffInNcApp(req, res, next);
 };
 
+/**
+ * requireAuth in the NativeCluster app, and nothing elsewhere: for a route
+ * a capability link alone opens on other deployments, which the app also
+ * holds to its person (a download link, lib/downloadTokens.ts; the
+ * 2026-11-24 security review, L2).
+ */
+export function requireAuthInNcApp(
+  req: Request<ParamsFlatDictionary>,
+  res: Response,
+  next: NextFunction,
+): void | Promise<void> {
+  if (!ncAppMode()) return next();
+  return requireAuth(req, res, next);
+}

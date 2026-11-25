@@ -5,6 +5,7 @@
 
 import { Router, type Request, type Response } from "express";
 import { requireAuth } from "../../middleware/auth";
+import { requireAuthInNcApp } from "../../middleware/ncApp";
 import { asyncRoute, routerErrorHandler } from "../../middleware/asyncRoute";
 import { createServerSupabase } from "../../lib/supabase";
 import {
@@ -104,8 +105,14 @@ async function sendObject(
 // capability minted by an authenticated route (documents /url, workflow
 // references) AFTER its own access check, scoped to one object. Registered
 // before /:token so Express doesn't swallow it with the pattern below.
-downloadsRouter.get("/signed/:token", asyncRoute(async (req, res) => {
-    const result = await resolveBlobDownload(req.params.token);
+//
+// The NativeCluster app holds the link to its person as well: the caller is
+// signed in, and must be the account the link names (review L2).
+downloadsRouter.get("/signed/:token", requireAuthInNcApp, asyncRoute(async (req, res) => {
+    const result = await resolveBlobDownload(
+        req.params.token,
+        res.locals.userId as string | undefined,
+    );
     if (!result.ok) return void sendServiceFailure(res, result);
     await sendObject(req, res, result.data);
 }));
@@ -128,6 +135,9 @@ export const blobUploadHandler = asyncRoute(async (req, res) => {
         token: req.params.token,
         contentType: String(req.headers["content-type"] ?? ""),
         body: req,
+        // The NativeCluster app: the signed-in caller (requireAuthInNcApp,
+        // mounted before this in app.ts), who must be the link's person.
+        userId: res.locals.userId as string | undefined,
     });
     if (!result.ok) return void sendServiceFailure(res, result);
     res.status(200).json({ ok: true });

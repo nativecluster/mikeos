@@ -8,6 +8,7 @@ import { noteUpstreamReachable } from "../lib/upstreamOutage";
 import { clearRequestAuthCookies, createRequestSupabase } from "../lib/authSession";
 import { reportSchemaOutOfDateOnce } from "../lib/schemaOutOfDate";
 import { requestOriginIsTrusted } from "../lib/origins";
+import { setNcRequestUser } from "../lib/nc/context";
 import {
   ncAppMode,
   ncPersonEmailOf,
@@ -219,6 +220,9 @@ async function requireNcPerson(
   res.locals.userEmail = result.account.email;
   res.locals.authSource = "nativecluster";
   setCurrentUser(result.account.userId);
+  // What the request makes for its person alone (a download link) is bound
+  // to this account (lib/downloadTokens.ts).
+  setNcRequestUser(result.account.userId);
   next();
 }
 
