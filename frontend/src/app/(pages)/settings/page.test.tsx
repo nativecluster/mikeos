@@ -124,7 +124,7 @@ describe("SettingsPage Google email changes", () => {
             expect(screen.getByRole("heading", { name: "About" })).toBeInTheDocument();
             expect(screen.getByRole("link", { name: "Source code" })).toHaveAttribute(
                 "href",
-                "https://github.com/pablothe/mikeos",
+                "https://github.com/nativecluster/mikeos",
             );
             expect(
                 screen.getByRole("link", { name: "GNU Affero General Public License v3.0" }),

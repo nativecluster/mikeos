@@ -11,7 +11,7 @@ in the source below, under nativecluster/ and in the commits after that one.
 MikeOS and this modified version are licensed under the GNU Affero General
 Public License, version 3 (the file LICENSE beside this one), with no
 warranty. The complete corresponding source of this package is at
-https://github.com/pablothe/mikeos, commit @COMMIT@.
+https://github.com/nativecluster/mikeos, commit @COMMIT@.
 
 Other software in this package keeps its own licence:
 - Node.js: runtime/LICENSE
