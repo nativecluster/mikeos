@@ -3,7 +3,10 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { backendEnv, backendLaunchLine, pgliteEnv, PGLITE_NODE_FLAGS, postgrestConfig, stackPaths } from "../lib/stack.mjs";
+import { readdirSync, readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { APP_RATE_LIMITS, KEPT_RATE_LIMITS, backendEnv, backendLaunchLine, pgliteEnv, PGLITE_NODE_FLAGS, postgrestConfig, stackPaths } from "../lib/stack.mjs";
 
 const secrets = { anonKey: "anon.jwt", serviceRoleKey: "service.jwt", downloadSigningSecret: "d".repeat(64), userApiKeysEncryptionSecret: "u".repeat(64), jwtSecret: "j".repeat(96) };
 
@@ -92,4 +95,48 @@ test("PGlite's child: a small young generation, the allocator's large cache off,
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
     Object.assign(process.env, saved);
   }
+});
+
+// Every RATE_LIMIT_* maximum the backend's own sources read (not their
+// tests), found by reading them: a new limit fails this until it is lifted
+// for the app or named as kept.
+function backendRateLimitMaxima() {
+  const src = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../backend/src");
+  const names = new Set();
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name !== "__tests__" && entry.name !== "node_modules") walk(full);
+      } else if (/\.ts$/.test(entry.name) && !/\.test\.ts$/.test(entry.name)) {
+        for (const m of readFileSync(full, "utf8").matchAll(/"(RATE_LIMIT_[A-Z_]+)"/g)) names.add(m[1]);
+      }
+    }
+  };
+  walk(src);
+  return [...names].filter((n) => /_MAX(_PER_HOUR)?$/.test(n)).sort();
+}
+
+// The robustness campaign's R2 (2026-11-24): one person alone met the
+// shared server's upload limits, the 51st upload session in an hour and a
+// bulk import's 295th file in 15 minutes.
+test("every request limit the backend reads is lifted for one person's computer, or kept for a reason", () => {
+  const maxima = backendRateLimitMaxima();
+  assert.ok(maxima.length >= 10, `the backend's limits were found (${maxima.join(", ")})`);
+  const e = env();
+  for (const name of maxima) {
+    assert.ok(name in APP_RATE_LIMITS || name in KEPT_RATE_LIMITS, `${name} is lifted in the app or kept with a reason`);
+    if (name in APP_RATE_LIMITS) assert.equal(e[name], APP_RATE_LIMITS[name], name);
+    else assert.equal(e[name], undefined, `${name} is kept at the backend's default`);
+  }
+  for (const name of Object.keys({ ...APP_RATE_LIMITS, ...KEPT_RATE_LIMITS })) assert.ok(maxima.includes(name), `${name} is a limit the backend reads`);
+  assert.ok(Number(e.RATE_LIMIT_UPLOAD_SESSION_CREATE_MAX_PER_HOUR) >= 1000, "upload sessions an hour");
+  assert.ok(Number(e.RATE_LIMIT_UPLOAD_SESSION_CREATE_MAX_PER_HOUR) <= 1000000, "within the database's own bound");
+  assert.ok(Number(e.RATE_LIMIT_UPLOAD_SESSION_MUTATION_MAX) >= 10000, "a 500-file import's completes in 15 minutes, many times over");
+  assert.ok(Number(e.RATE_LIMIT_UPLOAD_SESSION_POLL_MAX) >= 10000, "upload polls");
+  for (const value of Object.values(APP_RATE_LIMITS)) assert.ok(Number(value) <= 100000, "still a guard against a runaway loop");
+});
+
+test("the context window stays the host's: a test override of it is not passed on", () => {
+  assert.equal(env({ MIKE_CONTEXT_WINDOW_TOKENS: "16384" }).MIKE_CONTEXT_WINDOW_TOKENS, undefined);
 });
