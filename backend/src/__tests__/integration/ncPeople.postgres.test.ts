@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -37,6 +38,9 @@ const row = async (s: string): Promise<string[]> => {
   }
   return dockerSql(s).split("\n")[0]!.split("|");
 };
+/** nc_ensure_user's placeholder: nc- and 32 hex of sha256(the id as given). */
+const placeholderFor = (person: string) =>
+  `nc-${createHash("sha256").update(person, "utf8").digest("hex").slice(0, 32)}@people.invalid`;
 const ensure = (person: string, email: string | null = null, name: string | null = null) =>
   row(
     `select user_id, email from public.nc_ensure_user('${person}', ${email === null ? "null" : `'${email}'`}, ${name === null ? "null" : `'${name}'`})`,
@@ -81,8 +85,10 @@ describe.skipIf(!container && !pgliteModule)("nc_ensure_user in PostgreSQL", () 
     }
     await execute(AUTH_USERS);
     await execute(readFileSync(resolve("schema.sql"), "utf8"));
-    // The migration replays cleanly over the schema that already has it.
+    // The migrations replay cleanly over the schema that already has them,
+    // in their order.
     await execute(readFileSync(resolve("migrations/20261124_01_nativecluster_people.sql"), "utf8"));
+    await execute(readFileSync(resolve("migrations/20261124_02_nc_ensure_user_placeholder.sql"), "utf8"));
   }, 120_000);
   afterAll(async () => {
     if (embedded) await embedded.close();
@@ -121,9 +127,9 @@ describe.skipIf(!container && !pgliteModule)("nc_ensure_user in PostgreSQL", () 
     expect(await row("select count(*) from public.nativecluster_people")).toEqual(["1"]);
   });
 
-  it("uses <person>@people.invalid without people.read, and NativeCluster's email once it has one", async () => {
+  it("uses a placeholder without people.read, and NativeCluster's email once it has one", async () => {
     const [userId, placeholder] = await ensure("p_Bob");
-    expect(placeholder).toBe("p_bob@people.invalid");
+    expect(placeholder).toBe(placeholderFor("p_Bob"));
     const [same, real] = await ensure("p_Bob", "bob@firm.example");
     expect(same).toBe(userId);
     expect(real).toBe("bob@firm.example");
@@ -138,8 +144,26 @@ describe.skipIf(!container && !pgliteModule)("nc_ensure_user in PostgreSQL", () 
     const [alice] = await ensure("p_alice", "shared@firm.example");
     const [carol, email] = await ensure("p_carol", "shared@firm.example");
     expect(carol).not.toBe(alice);
-    expect(email).toBe("p_carol@people.invalid");
+    expect(email).toBe(placeholderFor("p_carol"));
     expect(await ensure("p_alice", "shared@firm.example")).toEqual([alice, "shared@firm.example"]);
+  });
+
+  // Review L8: the placeholder was lower(<id>)@people.invalid, so a second
+  // id that differed only in case shared it, and its account could never be
+  // made (the email's unique keys refused it).
+  it("gives two ids that differ only in case two accounts, each its own placeholder", async () => {
+    const [upper, upperEmail] = await ensure("p_Ab12");
+    const [lower, lowerEmail] = await ensure("p_ab12");
+    expect(lower).not.toBe(upper);
+    expect(upperEmail).toBe(placeholderFor("p_Ab12"));
+    expect(lowerEmail).toBe(placeholderFor("p_ab12"));
+    expect(upperEmail).not.toBe(lowerEmail);
+    expect(upperEmail).toMatch(/^nc-[0-9a-f]{32}@people\.invalid$/);
+    expect(await row("select count(*) from public.user_profiles")).toEqual(["2"]);
+    // A placeholder is never an email anyone can claim.
+    const [carol, carolEmail] = await ensure("p_carol", upperEmail);
+    expect(carol).not.toBe(upper);
+    expect(carolEmail).toBe(placeholderFor("p_carol"));
   });
 
   it("refuses anything that is not a NativeCluster person", async () => {

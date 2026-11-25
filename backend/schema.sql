@@ -406,10 +406,10 @@ alter table public.nativecluster_people enable row level security;
 -- the app. Its insert fires the usual triggers (the profile, the personal
 -- organization, the memory file), so the account is like any other. The
 -- email is the one NativeCluster gives (people.read), or
--- <person>@people.invalid without it or when another account already has
--- it; a real email NativeCluster gives later replaces a placeholder or an
--- older one, unless another account has it. Returns the account and the
--- email it has now.
+-- nc-<a hash of the person's id>@people.invalid without it or when another
+-- account already has it; a real email NativeCluster gives later replaces a
+-- placeholder or an older one, unless another account has it. Returns the
+-- account and the email it has now.
 create or replace function public.nc_ensure_user(
   p_person text,
   p_email text default null,
@@ -431,7 +431,12 @@ begin
   if v_person !~ '^p_[A-Za-z0-9._-]{1,128}$' then
     raise exception 'not a NativeCluster person: %', v_person using errcode = '22023';
   end if;
-  v_placeholder := pg_catalog.lower(v_person) || '@people.invalid';
+  -- A hash of the id, whose case it keeps: two ids that differ only in
+  -- case never share a placeholder (and the profile's lower(email) key).
+  v_placeholder := 'nc-' || pg_catalog.left(
+    pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(v_person, 'UTF8')), 'hex'),
+    32
+  ) || '@people.invalid';
   if v_email = ''
      or pg_catalog.length(v_email) > 320
      or v_email !~ '^[^@[:space:]]+@[^@[:space:]]+$'
@@ -12695,5 +12700,6 @@ insert into public.schema_migrations (filename) values
   ('20261116_01_tabular_cache_revisions.sql'),
   ('20261118_01_connector_write_approval_default.sql'),
   ('20261123_01_org_workspace_preferences.sql'),
-  ('20261124_01_nativecluster_people.sql')
+  ('20261124_01_nativecluster_people.sql'),
+  ('20261124_02_nc_ensure_user_placeholder.sql')
 on conflict (filename) do nothing;
