@@ -37,7 +37,7 @@ OUT=${1:?usage: nativecluster/build/build.sh <stage folder outside the repositor
 mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd -P)
 case "$OUT/" in "$(cd "$REPO" && pwd -P)"/*) echo "build.sh: the stage folder must be outside the repository" >&2; exit 2 ;; esac
-if [ -n "$(ls -A "$OUT")" ] && ! { [ -f "$OUT/launcher/main.mjs" ] && grep -q '"id": "mike"' "$OUT/nc-app.json" 2>/dev/null; }; then
+if [ -n "$(ls -A "$OUT")" ] && ! { [ -f "$OUT/launcher/main.mjs" ] && grep -q '"id": "mikeos"' "$OUT/nc-app.json" 2>/dev/null; }; then
   echo "build.sh: $OUT is not empty and is not a stage of Mike's" >&2
   exit 2
 fi

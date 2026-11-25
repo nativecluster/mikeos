@@ -1,6 +1,6 @@
 {
   "format": "nc-app.v1",
-  "id": "mike",
+  "id": "mikeos",
   "name": "MikeOS",
   "version": "2.1.0.1",
   "min_host": "0.4.23",

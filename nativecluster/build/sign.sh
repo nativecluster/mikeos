@@ -14,7 +14,7 @@
 #             ad hoc code has no team, so library validation cannot hold
 #             and each program also gets disable-library-validation, and
 #             there is no timestamp; such a package is for testing only.
-#   zip       default <the folder's parent>/mike-<version>-darwin-arm64.zip
+#   zip       default <the folder's parent>/mikeos-<version>-darwin-arm64.zip
 #
 # What it does, as Apple's notary service asks of every Mach-O file before
 # NativeCluster's Store publishes a package (NativeCluster's register,
@@ -40,7 +40,7 @@ pkg=$(cd "$pkg" && pwd -P)
 	echo "sign.sh: $pkg is not Mike's package (no nc-app.json, mike or runtime/bin/node)" >&2; exit 2; }
 version=$(sed -n 's/^  "version": "\(.*\)",$/\1/p' "$pkg/nc-app.json")
 [ -n "$version" ] || { echo "sign.sh: no version in nc-app.json" >&2; exit 2; }
-zip=${3:-$(dirname "$pkg")/mike-$version-darwin-arm64.zip}
+zip=${3:-$(dirname "$pkg")/mikeos-$version-darwin-arm64.zip}
 
 adhoc=0
 [ "$identity" = "-" ] && adhoc=1
@@ -74,8 +74,10 @@ else
 fi
 
 # Every Mach-O file, by its contents (never by name or mode).
-find "$pkg" -type f -print0 | xargs -0 file -h --mime-type -F '|' |
-	sed -n 's/^\(.*\)| application\/x-mach-binary$/\1/p' >"$work/macho"
+# file pads its answers into a column when given many files: -N stops that.
+find "$pkg" -type f -print0 | xargs -0 file -h -N --mime-type -F '|' |
+	sed -n 's/^\(.*\)|[[:space:]]*application\/x-mach-binary$/\1/p' >"$work/macho"
+[ -s "$work/macho" ] || { echo "sign.sh: found no Mach-O file in $pkg" >&2; exit 1; }
 : >"$work/libraries"; : >"$work/programs"
 while IFS= read -r f; do
 	case $(file -h -b "$f") in
