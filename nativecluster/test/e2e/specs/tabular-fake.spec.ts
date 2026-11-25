@@ -15,7 +15,9 @@ test.beforeAll(async () => {
 
 test("the cells of a tabular review fill from the fake model, as background work", async ({ page }) => {
     test.setTimeout(240_000);
-    const before = (await door.ledger()).waits.length;
+    const start = await door.ledger();
+    const before = start.waits.length;
+    const unitsBefore = start.units.length;
     await createReview(page, "Harness review");
     await addDocumentAndColumn(page, "Parties", "Who are the parties to this document?");
     await run(page);
@@ -29,4 +31,16 @@ test("the cells of a tabular review fill from the fake model, as background work
         mine.some((w) => (w.moved_to ?? w.lane) === "B" && w.ticket.origin === "job"),
         `tabular work waits in lane B as a job (waits: ${JSON.stringify(mine.map((w) => [w.kind, w.lane, w.ticket.origin, w.ticket.from]))})`,
     ).toBe(true);
+
+    // The host heard the review at work, and then at rest (the robustness
+    // campaign's U1: it heard `{"waiting": false}` once, at start, and never
+    // again, so it could stop Mike as idle mid-review).
+    let units = ledger.units.slice(unitsBefore).map((u) => u.report);
+    expect(units.some((r) => r.waiting), `a units report said waiting while the review ran (${JSON.stringify(units)})`).toBe(true);
+    await expect
+        .poll(async () => {
+            units = (await door.ledger()).units.slice(unitsBefore).map((u) => u.report);
+            return units.at(-1)?.waiting;
+        }, { timeout: 60_000, message: "the last units report lets Mike rest" })
+        .toBe(false);
 });

@@ -1,5 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createNcUnitsReporter, postNcUnits, type NcQueued, type NcUnitsReport } from "../units";
+import {
+  applyNcUnitsMessage,
+  createNcUnitsRelay,
+  createNcUnitsReporter,
+  ncUnitsThreadEnded,
+  postNcUnits,
+  refreshNcUnitsAfterWrites,
+  setNcUnitsReporter,
+  type NcQueued,
+  type NcUnitsMessage,
+  type NcUnitsReport,
+} from "../units";
 import { resetLaunchSecrets, setNcAppCredential } from "../launchSecrets";
 import { closeUnixSocketAgents } from "../unixFetch";
 import { CREDENTIAL, eventually, startFakeHost, type FakeHost } from "./fakeHost";
@@ -92,6 +103,102 @@ describe("the app's units of work", () => {
     });
     units.begin();
     await eventually(() => expect(posted).toEqual([{ waiting: true }]));
+  });
+});
+
+// The robustness campaign's U1 (2026-11-24): the backend's threads each
+// could report, and the host keeps the last word, so the process has one
+// reporter, on its main thread, and the worker threads relay to it.
+describe("one report for the whole process", () => {
+  afterEach(() => setNcUnitsReporter(null));
+
+  function mainReporter(queued: () => Promise<NcQueued> = async () => ({ due: false })) {
+    const posted: NcUnitsReport[] = [];
+    const units = createNcUnitsReporter({ post: async (r) => void posted.push(r), queued, recheckMs: 0 });
+    setNcUnitsReporter(units);
+    const relay = (thread: string) => createNcUnitsRelay((message: NcUnitsMessage) => void applyNcUnitsMessage(thread, message));
+    return { units, posted, relay };
+  }
+
+  it("says waiting while a worker thread's job runs, relayed, and not once it ends", async () => {
+    const { posted, relay } = mainReporter();
+    const jobs = relay("jobs");
+    const end = jobs.begin();
+    await eventually(() => expect(posted).toEqual([{ waiting: true }]));
+    end();
+    await eventually(() => expect(posted).toEqual([{ waiting: true }, { waiting: false }]));
+  });
+
+  it("never lets an idle thread's word overwrite another's work, or the main thread's", async () => {
+    const { units, posted, relay } = mainReporter();
+    const endJob = relay("jobs").begin();
+    await eventually(() => expect(posted).toEqual([{ waiting: true }]));
+    // The uploads thread has nothing, and says so on the beat.
+    await relay("uploads").refresh({ force: true });
+    await eventually(() => expect(posted).toHaveLength(2));
+    expect(posted.at(-1)).toEqual({ waiting: true });
+    const endRun = units.begin(); // a review's run on the main thread
+    endJob();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(posted.at(-1)).toEqual({ waiting: true });
+    endRun();
+    await eventually(() => expect(posted.at(-1)).toEqual({ waiting: false }));
+  });
+
+  it("drops a thread's units when the thread ends", async () => {
+    const { posted, relay } = mainReporter();
+    relay("jobs").begin();
+    await eventually(() => expect(posted).toEqual([{ waiting: true }]));
+    ncUnitsThreadEnded("jobs");
+    await eventually(() => expect(posted).toEqual([{ waiting: true }, { waiting: false }]));
+  });
+
+  it("refuses a message that is not a units report", () => {
+    mainReporter();
+    expect(applyNcUnitsMessage("jobs", "nc-tick")).toBe(false);
+    expect(applyNcUnitsMessage("jobs", { type: "nc-units", running: -1 })).toBe(false);
+    expect(applyNcUnitsMessage("jobs", { type: "nc-units", running: 2 })).toBe(true);
+  });
+});
+
+describe("work another thread does, seen from the database", () => {
+  it("is looked at again while the report says waiting, so its end is told", async () => {
+    let due = true;
+    const posted: NcUnitsReport[] = [];
+    const units = createNcUnitsReporter({ post: async (r) => void posted.push(r), queued: async () => ({ due }), recheckMs: 10 });
+    await units.refresh();
+    expect(posted).toEqual([{ waiting: true }]);
+    due = false; // the uploads thread finished reading
+    await eventually(() => expect(posted).toEqual([{ waiting: true }, { waiting: false }]));
+    // Resting: nothing is looked at again.
+    const reads = posted.length;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(posted).toHaveLength(reads);
+    units.stop();
+  });
+
+  it("is reported again after each request that may have queued it, not after a read", async () => {
+    let refreshed = 0;
+    const units = createNcUnitsReporter({
+      post: async () => void (refreshed += 1),
+      queued: async () => ({ due: refreshed % 2 === 0 }),
+      recheckMs: 0,
+    });
+    setNcUnitsReporter(units);
+    const finish = (method: string) => {
+      let listener: (() => void) | null = null;
+      let next = false;
+      refreshNcUnitsAfterWrites({ method }, { once: (_e, l) => (listener = l) }, () => (next = true));
+      expect(next).toBe(true);
+      return listener as (() => void) | null;
+    };
+    expect(finish("GET")).toBeNull();
+    expect(finish("HEAD")).toBeNull();
+    finish("POST")?.();
+    await eventually(() => expect(refreshed).toBe(1));
+    finish("PUT")?.();
+    await eventually(() => expect(refreshed).toBe(2));
+    setNcUnitsReporter(null);
   });
 });
 

@@ -10,6 +10,8 @@
 // The launcher proxies /api/* to the backend, the prefix stripped
 // (/api/health is the backend's /health; /api/projects its /projects).
 
+import http from "node:http";
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export const name = "mike";
 export const NOBODY_WORDS = "Sign in to NativeCluster to use Mike.";
@@ -78,8 +80,103 @@ export async function exercise(host) {
   await seed(host);
 }
 
-// Mike's model calls are driven by the e2e specs (chat-fake, tabular-fake),
-// which check the same ledger.
-export const drive = null;
+/**
+ * A chat turn's answer, read as it streams over the app's socket: its frames
+ * as they come, `until(pred)` for the first frame that matches, and
+ * `leave()` to hang up while the turn goes on in the app.
+ */
+function streamTurn(host, as, content) {
+  const frames = [];
+  const waiters = [];
+  let ended = false;
+  let failure = null;
+  const settle = () => {
+    for (const w of [...waiters]) {
+      const hit = frames.find(w.pred);
+      if (hit || ended) {
+        waiters.splice(waiters.indexOf(w), 1);
+        if (hit) w.resolve(hit);
+        else w.reject(new Error(`the turn's stream ended without the frame looked for (${failure ?? "ended"}); frames: ${JSON.stringify(frames).slice(0, 400)}`));
+      }
+    }
+  };
+  const body = Buffer.from(JSON.stringify({ messages: [{ role: "user", content }], model: "nativecluster/fake:harness" }));
+  const req = http.request({
+    socketPath: host.appSocket,
+    path: "/api/chat",
+    method: "POST",
+    agent: false,
+    headers: { "x-nc-ticket": host.mint(as).header, "content-type": "application/json", "content-length": body.length, accept: "text/event-stream" },
+  });
+  req.on("response", (res) => {
+    let tail = "";
+    res.on("data", (chunk) => {
+      const lines = (tail + chunk.toString("utf8")).split("\n");
+      tail = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.startsWith("data: ") || line === "data: [DONE]") continue;
+        try {
+          frames.push(JSON.parse(line.slice(6)));
+        } catch {}
+      }
+      settle();
+    });
+    const end = () => {
+      ended = true;
+      settle();
+    };
+    res.on("end", end);
+    res.on("close", end);
+  });
+  req.on("error", (e) => {
+    failure = e.message;
+    ended = true;
+    settle();
+  });
+  req.end(body);
+  return {
+    frames,
+    until: (pred, ms = 60000) =>
+      new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`no such frame in ${ms} ms; frames: ${JSON.stringify(frames).slice(0, 400)}`)), ms);
+        waiters.push({ pred, resolve: (v) => (clearTimeout(timer), resolve(v)), reject: (e) => (clearTimeout(timer), reject(e)) });
+        settle();
+      }),
+    ended: () => ended,
+    leave: () => req.destroy(),
+  };
+}
+
+const unreleased = (host) => Object.values(host.ledger.grants).filter((g) => g.releases.length === 0);
+
+/**
+ * The line test's model calls (the models campaign's bug 2, 2026-11-24:
+ * stopping mid-turn left grants unreleased): one chat turn is stopped with
+ * its Stop while its answer streams, and every grant it took is given back
+ * once; a second is left streaming, its reader gone, so the test's stop of
+ * the app (SIGTERM) comes in the middle of it, and the ledger is held to one
+ * release a grant after that too. The answers stream slowly ([[fake:slow]]),
+ * so each stop lands mid-answer.
+ */
+export async function drive(host, t) {
+  const slow = (tag) => `[[fake:no-tools]] [[fake:slow 250]] [[fake:say ${"A slow harness answer. ".repeat(40)}]] ${tag}`;
+
+  const stopped = streamTurn(host, "alice", slow("Stop me."));
+  const ids = await stopped.until((f) => f.type === "chat_id");
+  await stopped.until((f) => f.type === "content_delta");
+  const stop = await host.request("POST", `/api/chat/${ids.chatId}/turn/${ids.turnId}/stop`, { as: "alice", body: {} });
+  if (stop.status !== 200) throw new Error(`the turn's Stop answered ${stop.status}: ${stop.text.slice(0, 200)}`);
+  await stopped.until((f) => f.type === "cancelled" || f.type === "stopped" || f.type === "error", 30000).catch(() => null);
+  const deadline = Date.now() + 30000;
+  while (unreleased(host).length && Date.now() < deadline) await sleep(100);
+  const left = unreleased(host);
+  if (left.length) throw new Error(`after Stop, grants never given back: ${JSON.stringify(left.map((g) => ({ id: g.id, task: g.tag?.Task, calls: g.calls })))}`);
+  t.diagnostic(`Stop mid-answer: ${Object.keys(host.ledger.grants).length} grants, each given back once`);
+
+  const left2 = streamTurn(host, "alice", slow("Stop the app under me."));
+  await left2.until((f) => f.type === "content_delta");
+  left2.leave();
+  t.diagnostic("a second turn left streaming, its reader gone, for the app's stop");
+}
 
 export const expectedDenials = [];

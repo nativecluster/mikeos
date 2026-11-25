@@ -135,18 +135,54 @@ export function backendEnv({ paths, dataDir, socketsDir, hostSocket, logDir, ver
     MIKE_LOG_DIR: logDir,
     QUEUE_DRIVER: "postgres",
     ...(version ? { MIKE_VERSION: version } : {}),
-    // One person per computer, every request from this computer's window:
-    // the server's per-IP defaults are sized for a shared server, and
-    // ordinary browsing hits them (desktop/src/local/supervisor.js).
-    RATE_LIMIT_GENERAL_MAX: "100000",
-    RATE_LIMIT_BLOB_UPLOAD_MAX: "100000",
-    RATE_LIMIT_TOOL_RESULT_MAX: "100000",
-    RATE_LIMIT_CHAT_MAX: "600",
-    RATE_LIMIT_CHAT_CREATE_MAX: "600",
-    RATE_LIMIT_EXPORT_MAX: "100",
-    RATE_LIMIT_UPLOAD_MAX: "500",
+    // The backend's allocator, as PGlite's (pgliteEnv): freed large blocks
+    // go back to macOS at once instead of staying resident in libmalloc's
+    // large cache (a document read or a long answer frees hundreds of MB).
+    MallocLargeCache: "0",
+    ...APP_RATE_LIMITS,
+    // MIKE_CONTEXT_WINDOW_TOKENS is not passed on, even when set: the
+    // window is the host's, from the catalog for this Mac's hardware
+    // (/host/v1/models windows), never one the app is told otherwise.
   };
 }
+
+/**
+ * The backend's request limits in the app. One person on their own
+ * computer, every request from its window: the server's per-IP and
+ * per-person defaults are sized for a shared server (an office behind one
+ * address), and ordinary work meets them (desktop/src/local/supervisor.js):
+ * the 51st upload session in an hour, or a bulk import's 295th file in 15
+ * minutes, each file's complete being a mutation (the robustness campaign's
+ * R2). Each stays a guard against a runaway loop, well past what a person
+ * does: 10,000 upload sessions of up to 50 files an hour, 100,000 requests
+ * a lane in 15 minutes. Every limit the backend reads is here or in
+ * KEPT_RATE_LIMITS (test/stack.test.mjs reads the backend's own).
+ */
+export const APP_RATE_LIMITS = {
+  RATE_LIMIT_GENERAL_MAX: "100000",
+  RATE_LIMIT_BLOB_UPLOAD_MAX: "100000",
+  RATE_LIMIT_TOOL_RESULT_MAX: "100000",
+  RATE_LIMIT_CHAT_MAX: "600",
+  RATE_LIMIT_CHAT_CREATE_MAX: "600",
+  RATE_LIMIT_EXPORT_MAX: "100",
+  RATE_LIMIT_UPLOAD_MAX: "500",
+  RATE_LIMIT_UPLOAD_SESSION_CREATE_MAX_PER_HOUR: "10000",
+  RATE_LIMIT_UPLOAD_SESSION_MUTATION_MAX: "100000",
+  RATE_LIMIT_UPLOAD_SESSION_POLL_MAX: "100000",
+};
+
+/**
+ * The limits the app leaves at the backend's default, and why: none fits
+ * a shared server better than one person's computer.
+ */
+export const KEPT_RATE_LIMITS = {
+  RATE_LIMIT_DATA_DELETE_MAX: "deleting all of one's chats, projects, reviews or the account: 20 an hour is a guard, not a limit on work",
+  RATE_LIMIT_AUTH_LOGIN_MAX: "Mike's own sign-in, which the app does not have (NativeCluster is its only login)",
+  RATE_LIMIT_AUTH_ACCOUNT_MAX: "Mike's own sign-in, which the app does not have",
+  RATE_LIMIT_AUTH_EMAIL_MAX: "Mike's own sign-up and password emails, which the app does not have",
+  RATE_LIMIT_AUTH_FLOW_MAX: "Mike's own sign-in flows, which the app does not have",
+  RATE_LIMIT_AUTH_MFA_MAX: "Mike's own MFA, which the app does not have",
+};
 
 /**
  * The backend's one stdin line: the host's credential and the launcher's

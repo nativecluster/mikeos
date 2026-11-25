@@ -47,6 +47,8 @@ export interface Ledger {
     waits: LedgerWait[];
     calls: { path: string; model: string; status: number; tool_calls?: string[]; stream?: boolean }[];
     problems: string[];
+    /** The app's /host/v1/units reports, as sent. */
+    units: { at: string; report: { waiting: boolean; pause_ends?: string } }[];
 }
 
 export const door = {

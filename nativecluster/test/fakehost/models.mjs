@@ -12,6 +12,8 @@
 //   [[fake:say <text>]]              answer exactly <text>
 //   [[fake:tool <name> <json args>]] call that tool (when it is offered)
 //   [[fake:no-tools]]                answer in words even when tools are offered
+//   [[fake:slow <ms>]]               stream the answer a piece every <ms> (a turn
+//                                    still streaming when a test stops it or the app)
 // and scripted answers a test may queue through the front door's control
 // routes (POST /.harness/models/script): {"status": 409, "header": "X-NC-Stopped"},
 // {"status": 503, "retry_after": 1}, {"text": "..."}, {"tool": "name", "args": {}}.
@@ -180,6 +182,17 @@ function chunks(text, size = 16) {
 
 const tokens = (s) => Math.max(1, Math.ceil(String(s ?? "").length / 4));
 
+/** [[fake:slow <ms>]] in the last user message: how long each streamed piece waits (at most 10 s). */
+function slowOf(body) {
+  const msgs = Array.isArray(body?.messages) ? body.messages : [];
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role !== "user") continue;
+    const m = /\[\[fake:slow (\d{1,5})\]\]/.exec(textOf(msgs[i].content));
+    return m ? Math.min(Number(m[1]), 10000) : null;
+  }
+  return null;
+}
+
 export class FakeModels {
   constructor({ delayMs = 5 } = {}) {
     this.kind = "fake";
@@ -254,10 +267,11 @@ export class FakeModels {
         for (const part of chunks(c.arguments, 24)) write(frame({ tool_calls: [{ index, function: { arguments: part } }] }));
       });
     } else {
+      const delay = slowOf(body) ?? this.delayMs;
       for (const part of chunks(ans.text)) {
         if (res.destroyed) return { ...info, status: 499, cut: true };
         write(frame({ content: part }));
-        if (this.delayMs) await sleep(this.delayMs);
+        if (delay) await sleep(delay);
       }
     }
     write(frame({}, finish));

@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runInNcCall, runInNcJob, runInNcRequest, type NcRequest } from "../context";
-import { forgetHostTaskModels, HOST_LINE_BASE_URL, hostLineFetch } from "../hostLine";
+import {
+  forgetHostTaskModels,
+  heldGrantCount,
+  HOST_LINE_BASE_URL,
+  hostLineFetch,
+  releaseHeldGrants,
+  resetHeldGrantsForTests,
+} from "../hostLine";
 import { resetLaunchSecrets, setNcAppCredential } from "../launchSecrets";
 import { closeUnixSocketAgents } from "../unixFetch";
 import { isNativeClusterRefusal } from "../../llm/aiSdk";
@@ -256,6 +263,48 @@ describe("a model call through the host's line", () => {
     expect(await response.json()).toEqual({ other: true });
     expect(host.other).toEqual([{ method: "GET", url: "/v1/models" }]);
     expect(host.unauthorized).toBe(0);
+  });
+});
+
+// The models campaign's bug 2 (2026-11-24): a SIGTERM during a turn ended
+// the process with its answer's grant and its title's grant never released.
+describe("when the process leaves (its stop, or a worker thread's)", () => {
+  afterEach(() => resetHeldGrantsForTests());
+
+  it("gives back every grant still held once, a stream under way included, and waits for the release to land", async () => {
+    host.callScripts.push(heldStream("Hel"));
+    const response = await asRequest(() => chat());
+    const reader = response.body!.getReader();
+    await reader.read();
+    expect(heldGrantCount()).toBe(1);
+    expect(await releaseHeldGrants(2_000)).toBe(1);
+    // Awaited: the host has it before the process would end.
+    expect(host.releases).toEqual([expect.objectContaining({ grant: host.calls[0].grant })]);
+    expect(heldGrantCount()).toBe(0);
+    // The stream's own end gives nothing back again.
+    await reader.cancel();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(host.releases).toHaveLength(1);
+  });
+
+  it("gives back unused a grant the line gives once it is leaving, and makes no call on it", async () => {
+    host.waitScripts.push({ lines: [{ position: 1 }, { id: "g-late", cache_key: "k", model: "qwen3.8:27b" }], delayMs: 60 });
+    const calling = asRequest(() => chat());
+    await eventually(() => expect(host.waits).toHaveLength(1));
+    expect(await releaseHeldGrants(50)).toBe(0);
+    await expect(calling).rejects.toThrow(/stopping/);
+    await eventually(() => expect(host.releases).toEqual([expect.objectContaining({ grant: "g-late" })]));
+    expect(host.calls).toHaveLength(0);
+  });
+
+  it("holds nothing after calls that ended on their own", async () => {
+    host.callScripts.push(streamAnswer(["Hi"]));
+    const response = await asRequest(() => chat());
+    await response.text();
+    await eventually(() => expect(host.releases).toHaveLength(1));
+    expect(heldGrantCount()).toBe(0);
+    expect(await releaseHeldGrants(100)).toBe(0);
+    expect(host.releases).toHaveLength(1);
   });
 });
 

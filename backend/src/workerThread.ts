@@ -15,6 +15,7 @@ import { flushSentry, reportError } from "./lib/observability/sentry";
 import { log, tpl } from "./lib/log";
 import { setNcAppCredential } from "./lib/nc/launchSecrets";
 import { refreshNcUnits } from "./lib/nc/units";
+import { releaseHeldGrants } from "./lib/nc/hostLine";
 
 // index.ts starts one thread per role; with no role, this thread runs them all.
 const data = workerData as { role?: WorkerRole; ncAppCredential?: string } | null;
@@ -31,11 +32,17 @@ parentPort?.on("message", (message: unknown) => {
         return;
     }
     if (message === "shutdown") {
+        // A NativeCluster app: the grants this thread holds go back before
+        // it ends, and before the main thread stops waiting for it (10 s)
+        // even if a job is still draining.
+        const backstop = setTimeout(() => void releaseHeldGrants(1_500), 7_000);
+        backstop.unref();
         void stopAllWorkers()
             .catch((err) => {
                 reportError(err, { tags: { component: "worker-thread" } });
                 console.error("[worker-thread] shutdown error", err);
             })
+            .then(() => releaseHeldGrants())
             .then(() => flushSentry())
             .finally(() => process.exit(0));
     }

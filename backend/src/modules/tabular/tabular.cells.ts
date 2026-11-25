@@ -8,6 +8,7 @@
 // heartbeat that keeps it alive, the queue hand-off and the guarded terminal
 // writes are one indivisible piece of behavior, and none of it needs `res`.
 
+import { asNcUnit } from "../../lib/nc/units";
 import { randomUUID } from "node:crypto";
 import {
     ensureReviewAccess,
@@ -382,15 +383,17 @@ export async function regenerateTabularCell(
             return { ok: true, data: { status: 200, body: terminal.content } };
         }
 
-        const markdown = await loadRowDocumentText(db, row);
-        const result = await queryTabularCell(
-            tabular_model,
-            row.label,
-            markdown,
-            column.prompt,
-            column.format,
-            column.tags,
-            api_keys,
+        // One of the app's units while it reads and asks (lib/nc/units.ts).
+        const result = await asNcUnit(async () =>
+            queryTabularCell(
+                tabular_model,
+                row.label,
+                await loadRowDocumentText(db, row),
+                column.prompt,
+                column.format,
+                column.tags,
+                api_keys,
+            ),
         );
 
         if (!result) {

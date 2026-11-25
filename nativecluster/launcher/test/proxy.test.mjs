@@ -8,7 +8,8 @@ import http from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { proxyRequest } from "../lib/proxy.mjs";
+import net from "node:net";
+import { BACKEND_MAX_SOCKETS, backendAgent, proxyRequest } from "../lib/proxy.mjs";
 import { backendHeaders } from "../lib/front.mjs";
 
 const ticket = { id: "r9", remote: "127.0.0.1:6000", tls: true, host: false, person: "p_ann", email: "ann@example.com", name: "Ann" };
@@ -21,9 +22,9 @@ async function serve(handler) {
   return { socketPath, close: () => new Promise((r) => server.close(() => (rmSync(dir, { recursive: true, force: true }), r()))) };
 }
 
-async function front(socketPath, backendPath) {
+async function front(socketPath, backendPath, extra = {}) {
   const server = http.createServer((req, res) => {
-    proxyRequest(req, res, { socketPath, path: backendPath, headers: backendHeaders(req.headers, ticket, "s".repeat(64)) });
+    proxyRequest(req, res, { socketPath, path: backendPath, headers: backendHeaders(req.headers, ticket, "s".repeat(64)), ...extra });
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   return { url: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((r) => server.close(r)) };
@@ -104,4 +105,100 @@ test("a backend that is not there is a 502 in words", async () => {
   assert.equal(r.status, 502);
   assert.equal((await r.json()).code, "upstream_unavailable");
   await f.close();
+});
+
+// The robustness campaign's P1 (2026-11-24): a connection a request, so 400
+// at once overflowed api.sock's listen backlog (macOS caps it at 128) and
+// 3.7-7.6% answered 502 (ECONNREFUSED). Through the pool the backend sees
+// at most BACKEND_MAX_SOCKETS connections, reused.
+test("a burst reaches the backend over a pool of kept connections, never one a request", async () => {
+  let open = 0;
+  let most = 0;
+  let made = 0;
+  const dir = mkdtempSync(path.join(tmpdir(), "mkb-"));
+  const socketPath = path.join(dir, "api.sock");
+  const server = http.createServer((req, res) => setTimeout(() => res.end("ok"), 30));
+  server.on("connection", (socket) => {
+    made += 1;
+    open += 1;
+    most = Math.max(most, open);
+    socket.on("close", () => (open -= 1));
+  });
+  await new Promise((r) => server.listen(socketPath, r));
+  const pool = backendAgent();
+  const f = await front(socketPath, "/projects", { agent: pool });
+  // More requests at once than the pool holds, fewer than the front's own
+  // TCP backlog (the test's side, not the launcher's).
+  const n = 2 * BACKEND_MAX_SOCKETS - 20;
+  const client = new http.Agent({ keepAlive: false, maxSockets: Infinity });
+  const one = () =>
+    new Promise((resolve) => {
+      const url = new URL(`${f.url}/api/projects`);
+      http
+        .get({ host: url.hostname, port: url.port, path: url.pathname, agent: client }, (r) => {
+          r.resume();
+          r.on("end", () => resolve(r.statusCode));
+        })
+        .on("error", (e) => resolve(e.code));
+    });
+  try {
+    const statuses = await Promise.all(Array.from({ length: n }, one));
+    assert.deepEqual([...new Set(statuses)], [200]);
+    assert.ok(most <= BACKEND_MAX_SOCKETS, `at most ${BACKEND_MAX_SOCKETS} connections to the backend at once (${most} for ${n} requests)`);
+    assert.ok(made <= BACKEND_MAX_SOCKETS, `connections are kept and reused (${made} made for ${n} requests)`);
+    assert.equal(await one(), 200);
+    assert.ok(made <= BACKEND_MAX_SOCKETS, `the next request made no new connection (${made})`);
+  } finally {
+    client.destroy();
+    pool.destroy();
+    await f.close();
+    server.closeAllConnections();
+    await new Promise((r) => server.close(r));
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a request with no body whose connection was refused is sent once more, never one with a body", async () => {
+  const seen = [];
+  const backend = await serve((req, res) => {
+    seen.push(req.method);
+    res.end("ok");
+  });
+  // An agent whose first connection is refused, as an overflowing backlog refuses one.
+  class RefusingOnce extends http.Agent {
+    refused = 0;
+    createConnection(options, cb) {
+      if (this.refused === 0 || (this.refuseAll ?? false)) {
+        this.refused += 1;
+        const socket = new net.Socket();
+        process.nextTick(() => socket.destroy(Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" })));
+        return socket;
+      }
+      return super.createConnection(options, cb);
+    }
+  }
+  const agent = new RefusingOnce({ keepAlive: false });
+  const failed = [];
+  const f = await front(backend.socketPath, "/projects", { agent, onError: (e) => failed.push(e.code) });
+  const r = await fetch(`${f.url}/api/projects`);
+  assert.equal(r.status, 200);
+  assert.equal(await r.text(), "ok");
+  assert.equal(agent.refused, 1);
+  assert.deepEqual(seen, ["GET"]);
+  assert.deepEqual(failed, [], "the refusal was not the request's answer");
+
+  // A body is never sent twice: its refusal answers 502.
+  agent.refused = 0;
+  const posted = await fetch(`${f.url}/api/projects`, { method: "POST", body: "{}", headers: { "content-type": "application/json" } });
+  assert.equal(posted.status, 502);
+  assert.deepEqual(failed, ["ECONNREFUSED"]);
+  assert.deepEqual(seen, ["GET"]);
+
+  // Sent once more only: a second refusal answers 502.
+  agent.refuseAll = true;
+  const again = await fetch(`${f.url}/api/projects`);
+  assert.equal(again.status, 502);
+  assert.equal(agent.refused, 3);
+  await f.close();
+  await backend.close();
 });

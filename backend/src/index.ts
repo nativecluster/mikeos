@@ -39,9 +39,27 @@ import {
   readLaunchSecrets,
 } from "./lib/nc/launchSecrets";
 import { currentNcPerson } from "./lib/nc/context";
+import { releaseHeldGrants } from "./lib/nc/hostLine";
+import { hostTransportEnabled } from "./lib/nc/hostSocket";
+import {
+  applyNcUnitsMessage,
+  createNcUnitsReporter,
+  ncUnitsReporter,
+  ncUnitsThreadEnded,
+  postNcUnits,
+  refreshNcUnits,
+  setNcUnitsReporter,
+} from "./lib/nc/units";
+import { queuedNcWork } from "./lib/nc/unitsQueue";
 import { startNcAppConnectors } from "./lib/mcp/ncAppStartup";
 import { sweepOrphanHostSecrets } from "./lib/mcp/hostSecretSweep";
 import { createServerSupabase } from "./lib/supabase";
+import {
+  recoverTabularRuns,
+  resumeTabularRuns,
+  stopTabularRunsForShutdown,
+  tabularRunMarkers,
+} from "./modules/tabular/tabular.service";
 
 const PORT = process.env.PORT ?? 3001;
 const HOST = process.env.HOST?.trim() || undefined;
@@ -114,6 +132,10 @@ function spawnWorkerThread(role: WorkerRole): void {
     workerData: { role, ...(credential ? { ncAppCredential: credential } : {}) },
   });
   workerThreads.set(role, workerThread);
+  // Its units of work, relayed to this thread's one reporter (lib/nc/units.ts).
+  workerThread.on("message", (message: unknown) => {
+    applyNcUnitsMessage(role, message);
+  });
   workerThread.on("error", (err) => {
     // An uncaught throw inside the thread. The thread's own Sentry client
     // reports it with the real stack and job context; what arrives here is
@@ -128,6 +150,7 @@ function spawnWorkerThread(role: WorkerRole): void {
   });
   workerThread.on("exit", (code) => {
     if (workerThreads.get(role) === workerThread) workerThreads.delete(role);
+    ncUnitsThreadEnded(role);
     if (shuttingDown || code === 0) return;
     // A crashed worker thread must not silently kill all background
     // processing — respawn after a short pause. Durable state (db_jobs,
@@ -203,6 +226,42 @@ async function sweepNativeClusterSecrets(): Promise<void> {
   }
 }
 
+/**
+ * A NativeCluster app: before Mike serves anything, the tabular runs the last
+ * start left behind (a crash, or a stop that handed them over) release their
+ * leases and their cells go back to pending, so Run works at once; the runs
+ * that were going are answered, to resume once the backend listens
+ * (modules/tabular/tabular.syncRun.ts). A failure is logged and the start
+ * goes on: the leases then lapse on their own.
+ */
+async function recoverNativeClusterTabularRuns(): Promise<Awaited<ReturnType<typeof recoverTabularRuns>>> {
+  try {
+    return await recoverTabularRuns(createServerSupabase());
+  } catch (err) {
+    reportError(err, { tags: { component: "boot", stage: "tabular-recovery" } });
+    log.warn("startup", "the tabular runs of the last start were not recovered", { error: err });
+    return [];
+  }
+}
+
+/**
+ * A NativeCluster app: the process's one units reporter, here on the main
+ * thread (lib/nc/units.ts). It counts the runs this thread owns (a tabular
+ * review), the worker threads' jobs as they relay them, and what waits in the
+ * database: a person's DB jobs, uploads on their way or being read, and a
+ * tabular run to resume after a stop.
+ */
+function startNativeClusterUnits(): void {
+  if (!hostTransportEnabled() || !ncAppCredential()) return;
+  const db = createServerSupabase();
+  setNcUnitsReporter(
+    createNcUnitsReporter({
+      post: postNcUnits,
+      queued: () => queuedNcWork(db, { extra: () => ({ due: tabularRunMarkers().length > 0 }) }),
+    }),
+  );
+}
+
 async function main(): Promise<void> {
   // A NativeCluster app's launcher hands its secrets over on stdin before
   // anything else, and keeps stdin open: its end means the launcher is gone.
@@ -236,6 +295,8 @@ async function main(): Promise<void> {
   // cost of gating is one round trip of boot latency, never a crash loop.
   await enforceDocumentLifecycleMigration();
   if (ncAppMode()) await sweepNativeClusterSecrets();
+  const tabularResumes = ncAppMode() ? await recoverNativeClusterTabularRuns() : [];
+  if (ncAppMode()) startNativeClusterUnits();
   // Read NativeCluster's model list before the first request, so a chat
   // turn knows its model's window (contextWindowFor). A no-op unless
   // NativeCluster is configured; it never delays or fails the boot.
@@ -263,6 +324,7 @@ async function main(): Promise<void> {
       // WORKERS_MODE === "none": a standalone worker process owns background
       // work (node dist/worker.js).
       if (ncAppMode()) startNativeClusterBeat();
+      if (tabularResumes.length) void resumeTabularRuns(createServerSupabase(), tabularResumes);
     },
     undefined,
     HOST,
@@ -283,6 +345,7 @@ async function stopBackgroundWork(): Promise<void> {
     // Inline jobs make tool calls too; log what they counted while stopping.
     flushToolActivity();
     await drainStdout();
+    await releaseHeldGrants();
     return;
   }
   await drainStdout();
@@ -300,15 +363,32 @@ async function stopBackgroundWork(): Promise<void> {
         }),
     ),
   );
+  // A NativeCluster app: what still waits (a review handed over to the next
+  // start), so the host starts Mike again for it; then the reporter stops.
+  await refreshNcUnits({ force: true });
+  ncUnitsReporter()?.stop();
+  // A grant of this thread's still held (a turn whose reader had gone, a
+  // title between its grant and its call) goes back before the process
+  // ends; each thread gives back its own.
+  await releaseHeldGrants();
 }
 
 const shutdown = createShutdown({
   // Set before anything stops so the worker threads' exits are not respawned.
+  // In the app a tabular run stops first: its model calls end, its cells go
+  // back to pending and its lease is released inside the drain, and the next
+  // start resumes it (modules/tabular/tabular.syncRun.ts). Otherwise the
+  // drain waits on its stream and the forced exit leaves it stuck.
   onStart: () => {
     shuttingDown = true;
+    if (!ncAppMode()) return;
+    const stopped = stopTabularRunsForShutdown();
+    if (stopped) log.info("shutdown", "tabular runs handed to the next start", { runs: stopped });
   },
   closeServer: () => closeHttpServer(server),
   stopBackgroundWork,
+  // A drain that outlives its time still gives this thread's grants back.
+  onForcedExit: () => releaseHeldGrants(1_500),
 });
 
 process.on("SIGTERM", () => void shutdown("SIGTERM"));

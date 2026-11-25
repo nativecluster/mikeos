@@ -29,6 +29,7 @@ import {
   type ProviderKeySource,
 } from "./providerErrors";
 import { createRawLlmStreamRecorder, logRawLlmStream } from "./rawStreamLog";
+import { offNetPlaneToolResult } from "../nc/netPlanes";
 
 installProviderWarningLogger();
 
@@ -700,6 +701,22 @@ export async function streamAiSdk(
               | Exclude<NonNullable<StreamChatParams["reasoning"]>, "max">
               | undefined),
       include: { rawChunks: true },
+      // A call on a tool the turn does not have, named from memory, is
+      // answered by the SDK with its NoSuchToolError's message as the tool
+      // result ("Model tried to call unavailable tool 'web_search'.
+      // Available tools: ..."). When the tool is a connector whose plane
+      // NativeCluster turned off for everyone (lib/nc/netPlanes.ts), that
+      // result is the plane's words instead, as for a call the dispatcher
+      // answers (the robustness campaign's O1). Nothing is repaired: the
+      // call stays undispatched and the step loop goes on.
+      repairToolCall: async ({ toolCall, error }: { toolCall: { toolName: string }; error: unknown }) => {
+        if (sdk.NoSuchToolError.isInstance(error)) {
+          const off = offNetPlaneToolResult(toolCall.toolName);
+          // The SDK feeds back this error's message (getErrorMessage).
+          if (off) error.message = off;
+        }
+        return null;
+      },
       // Without an onError, streamText's default is `console.error(error)`:
       // the raw provider error is logged — and filed by the Sentry console
       // bridge — before the same failure reaches the "error" part below,

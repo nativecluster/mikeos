@@ -6,7 +6,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { currentNcScope, ncOriginFor, runInNcJob, runInNcRequest } from "../../nc/context";
 import { createNcUnitsReporter, setNcUnitsReporter, type NcUnitsReport } from "../../nc/units";
 import { enqueueDbJob } from "../enqueue";
-import { processClaimedJob, queuedNcJobs, startDbJobRunner, stopDbJobRunner } from "../runner";
+import { processClaimedJob, startDbJobRunner, stopDbJobRunner } from "../runner";
+import { queuedNcJobs } from "../../nc/unitsQueue";
 import type { DbJob } from "../types";
 
 function makeDb(rows: unknown[] = []) {
@@ -77,7 +78,7 @@ describe("a job in a NativeCluster app", () => {
     await vi.waitFor(() => expect(posted).toEqual([{ waiting: true }, { waiting: false }]));
   });
 
-  it("waits as resumed without a request, and counts no unit for work that calls no model", async () => {
+  it("waits as resumed without a request, and counts no unit for housekeeping", async () => {
     vi.stubEnv("NATIVECLUSTER_TRANSPORT", "host");
     const posted: NcUnitsReport[] = [];
     setNcUnitsReporter(
@@ -86,14 +87,33 @@ describe("a job in a NativeCluster app", () => {
     const seen: unknown[] = [];
     const { db } = makeDb();
     await processClaimedJob(db as never, {
-      "export.build": async () => void seen.push(ncOriginFor()),
-    }, JOB({ kind: "export.build" }));
+      "storage.cleanup": async () => void seen.push(ncOriginFor()),
+    }, JOB({ kind: "storage.cleanup" }));
     expect(seen).toEqual([
       expect.objectContaining({ task: "assistant", lane: "B", ticket: { origin: "job", from: "resume" } }),
     ]);
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(posted).toEqual([]);
   });
+
+  // The robustness campaign's U1 (2026-11-24): 30 uploads were read with
+  // the app saying `{"waiting": false}` throughout: reading a document's
+  // text was no unit.
+  it.each(["document.extract_text", "document.precompute_text", "conversion.convert", "export.build", "playbook.review", "memory.consolidate"])(
+    "counts a %s job as a unit while it runs",
+    async (kind) => {
+      vi.stubEnv("NATIVECLUSTER_TRANSPORT", "host");
+      const posted: NcUnitsReport[] = [];
+      setNcUnitsReporter(
+        createNcUnitsReporter({ post: async (r) => void posted.push(r), queued: async () => ({ due: false }), recheckMs: 0 }),
+      );
+      const { db } = makeDb();
+      await processClaimedJob(db as never, {
+        [kind]: async () => new Promise((resolve) => setTimeout(resolve, 10)),
+      }, JOB({ kind }));
+      await vi.waitFor(() => expect(posted).toEqual([{ waiting: true }, { waiting: false }]));
+    },
+  );
 
   it("changes nothing outside the app", async () => {
     const seen: unknown[] = [];
@@ -106,11 +126,25 @@ describe("a job in a NativeCluster app", () => {
 });
 
 describe("what waits in the queue", () => {
-  it("is due when the earliest pending model job's time has come", async () => {
+  it("is due when the earliest pending or running job of a person's work has come", async () => {
     const { db, calls } = makeDb([{ run_at: "2026-11-24T10:00:00.000Z" }]);
     expect(await queuedNcJobs(db as never, Date.parse("2026-11-24T11:00:00Z"))).toEqual({ due: true });
-    expect(calls).toContainEqual(["eq", "status", "pending"]);
-    expect(calls).toContainEqual(["in", "kind", ["extraction.extract", "playbook.review", "playbook.import", "memory.consolidate"]]);
+    expect(calls).toContainEqual(["in", "status", ["pending", "running"]]);
+    expect(calls).toContainEqual([
+      "in",
+      "kind",
+      [
+        "extraction.extract",
+        "playbook.review",
+        "playbook.import",
+        "memory.consolidate",
+        "document.extract_text",
+        "document.precompute_text",
+        "conversion.convert",
+        "export.build",
+        "account.delete",
+      ],
+    ]);
     expect(calls).toContainEqual(["order", "run_at", { ascending: true }]);
   });
 
