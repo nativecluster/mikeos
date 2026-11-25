@@ -1741,6 +1741,70 @@ export function findTextMatches(params: {
   return { hits, totalMatches };
 }
 
+/** At most this many phrases are searched when `query` arrives as a list. */
+export const MAX_FIND_QUERIES = 10;
+
+const QUERY_MUST_BE_A_STRING =
+  "query must be a string: the phrase to search for. To look for several phrases, call find_in_document once per phrase.";
+
+/**
+ * find_in_document's `query` as the phrases to search. The schema asks for
+ * one string, and that is the usual case; a local model sometimes sends a
+ * list of strings instead, which is searched one phrase at a time (up to
+ * MAX_FIND_QUERIES, duplicates and blanks dropped). Anything else is
+ * answered in words the model can act on, never thrown.
+ */
+export function findInDocumentQueries(
+  query: unknown,
+): { ok: true; queries: string[] } | { ok: false; error: string } {
+  if (typeof query === "string") return { ok: true, queries: [query] };
+  if (query === undefined || query === null) {
+    return { ok: false, error: "Empty query." };
+  }
+  if (!Array.isArray(query)) return { ok: false, error: QUERY_MUST_BE_A_STRING };
+  if (!query.every((item) => typeof item === "string")) {
+    return { ok: false, error: QUERY_MUST_BE_A_STRING };
+  }
+  const queries = [
+    ...new Set((query as string[]).filter((item) => item.trim() !== "")),
+  ];
+  if (queries.length === 0) return { ok: false, error: "Empty query." };
+  if (queries.length > MAX_FIND_QUERIES) {
+    return {
+      ok: false,
+      error: `${QUERY_MUST_BE_A_STRING} A list of at most ${MAX_FIND_QUERIES} phrases is also searched, one by one.`,
+    };
+  }
+  return { ok: true, queries };
+}
+
+/**
+ * The results of several find_in_document searches of one document, one
+ * per phrase, as one tool result: each search's own result, in order.
+ */
+export function combinedFindResults(results: string[]): string {
+  const searches = results.map((result) => {
+    try {
+      return JSON.parse(result) as Record<string, unknown>;
+    } catch {
+      return { ok: false, error: "The search returned no result." };
+    }
+  });
+  const filename = searches.find((search) => typeof search.filename === "string")
+    ?.filename;
+  return JSON.stringify({
+    ok: searches.some((search) => search.ok === true),
+    ...(filename === undefined ? {} : { filename }),
+    note: "query was a list, so each phrase was searched on its own; pass one string per call.",
+    total_matches: searches.reduce(
+      (sum, search) =>
+        sum + (typeof search.total_matches === "number" ? search.total_matches : 0),
+      0,
+    ),
+    searches: searches.map(({ filename: _filename, ...search }) => search),
+  });
+}
+
 /**
  * Ctrl+F helper. Returns a JSON-serializable result with up to `maxResults`
  * hits, each containing the original-text excerpt plus surrounding context.
@@ -1767,6 +1831,11 @@ export async function findInDocumentContent(params: {
     db,
   } = params;
 
+  // The argument is the model's: typed as a string, it may arrive as
+  // anything (see findInDocumentQueries).
+  if (typeof query !== "string" && query != null) {
+    return JSON.stringify({ ok: false, error: QUERY_MUST_BE_A_STRING });
+  }
   if (!query || !query.trim()) {
     return JSON.stringify({ ok: false, error: "Empty query." });
   }
