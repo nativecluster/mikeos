@@ -1,134 +1,55 @@
-# Mike
+# MikeOS for NativeCluster
 
 ![Mike](docs/assets/link-image.jpg)
 
-Mike (MikeOSS) is an open-source legal AI platform for document review,
-drafting, and legal research.
+MikeOS is the open-source legal AI platform by
+[Open Legal Products](https://github.com/open-legal-products/mike). This
+repository is MikeOS made into an app for
+[NativeCluster](https://www.nativecluster.com), which runs open AI models on
+a group's own Macs.
 
-It combines a Next.js frontend, an Express backend, Supabase Auth/Postgres,
-and Cloudflare R2-compatible object storage.
+- **Local.** MikeOS runs on each person's own Mac, and keeps their projects,
+  chats and documents on that Mac.
+- **Every model call runs on your group's own Macs**, through NativeCluster.
+  No hosted AI model is called, and their SDKs are left out of the app.
+- **One sign-in, NativeCluster's.** MikeOS has no accounts of its own here.
+- **The internet only for what needs it:** case law on CourtListener, web
+  search with your own Brave or Tavily key, and the connectors you add.
+  NativeCluster shows each of them before you install.
 
-Website: [mikeoss.com](https://mikeoss.com)
+## Get it
 
-![Mike assistant home screen](docs/assets/mike-home.png)
+In NativeCluster's Store, choose **Get** on MikeOS. It needs a Mac with
+Apple silicon and NativeCluster 0.4.23 or later.
 
-## Features
+## What it does
 
-- Chat with legal documents and open matters
-- Review documents and apply suggested edits
-- Run reusable assistant and tabular-review workflows
-- Organize projects, folders, and a document library
-- Verify citations and research US case law with CourtListener
-- Work from Microsoft Word with the task-pane add-in
-- Run supported language models locally through Ollama
+- Ask questions of your contracts, with answers that cite the page they come
+  from
+- Draft and redline Word documents with tracked changes
+- Run tabular reviews across many documents at once
+- Run workflows, and check documents against your playbooks
+- Research US case law with CourtListener
 
-## Quick start
+Not in this first version: sharing work between people; Google Drive, Gmail
+and Calendar; the Word add-in; and scanned PDFs (a PDF needs its text).
 
-The included Docker Compose stack runs Mike, Supabase, RustFS object storage,
-and local email capture without requiring managed infrastructure.
+## The source
 
-1. Copy the local environment templates:
-
-   ```bash
-   cp .env.example .env
-   cp backend/.env.example backend/.env
-   ```
-
-2. In `backend/.env`, set `DOWNLOAD_SIGNING_SECRET` and
-   `USER_API_KEYS_ENCRYPTION_SECRET` to separate values generated with:
-
-   ```bash
-   openssl rand -hex 32
-   ```
-
-3. Add an Anthropic, Gemini, or OpenAI API key to `backend/.env`, unless you
-   plan to use Ollama exclusively.
-
-4. Start the stack. Either run the published images (built once in CI, with
-   their Sentry source maps and release) by pinning a version in `.env`:
-
-   ```bash
-   echo "MIKE_IMAGE_TAG=$(cat VERSION)" >> .env
-   docker compose pull && docker compose up --no-build -d
-   ```
-
-   or build everything from this checkout:
-
-   ```bash
-   docker compose up --build
-   ```
-
-5. Open [http://localhost:3000](http://localhost:3000) and create an account.
-
-To stop, run `npm run stack:down` rather than `docker compose stop`: stopped
-containers are never removed on their own and keep images and volumes in use.
-See "Stop and clean up" in `docs/local-development.md`.
-
-The bundled credentials and infrastructure are intended for local development
-only. See [Local development](docs/local-development.md) for service endpoints,
-authentication behavior, Ollama setup, and first-run guidance.
-
-### Deploy on Vercel
-
-To run Mike without Docker or servers of your own, deploy it to Vercel with a
-Marketplace Supabase project for the database, sign-in and files. See
-[Deploy on Vercel](docs/vercel.md) for the one-click button and its limits.
-Open your new deployment as soon as it is ready: its first visitor creates
-the first account.
-
-### Telemetry
-
-Mike sends scrubbed error reports (no document content, user identities, or
-request data) to the project's Sentry by default. Development builds (`next dev`,
-the backend run from source, the add-in's dev server) send nothing unless you
-set a DSN yourself. Set `SENTRY_DISABLED=true` to
-opt out, or set `SENTRY_DSN` and `FRONTEND_SENTRY_DSN` to use your own. The
-backend's structured logs and counters are sent only if you set
-`SENTRY_LOGS=on`. Both
-take effect at runtime for the published images as well, because browser
-reports travel through the Next server. See the
-[observability guide](docs/observability.md) for the exact policy, per-runtime
-variables, and the [Sentry data audit](docs/sentry-data-audit.md).
-
-## Repository
-
-| Path | Purpose |
-| --- | --- |
-| `frontend/` | Next.js web application |
-| `backend/` | Express API, document processing, and database access |
-| `word-addin/` | Microsoft Word task-pane add-in |
-| `backend/schema.sql` | Complete schema for fresh databases |
-| `backend/migrations/` | Dated migrations for existing deployments |
-| `docker-compose.yml` | Local application and infrastructure stack |
-| `docs/` | Development, deployment, testing, and feature guides |
-
-## Documentation
-
-- [Documentation index](docs/README.md)
-- [Local development](docs/local-development.md)
-- [Manual and production deployment](docs/deployment.md)
-- [Troubleshooting](docs/troubleshooting.md)
-- [MCP connectors](docs/connectors.md)
-- [Google Workspace: Drive, Gmail, and Calendar](docs/google-workspace.md)
-- [CourtListener integration](docs/courtlistener.md)
-- [Microsoft Word add-in](word-addin/README.md)
-- [Tamper-evident exports](docs/tamper-evident-exports.md)
-- [Safe local testing](docs/safe-local-testing.md)
-- [Preset contract templates and publisher credits](docs/preset-templates.md)
-- [End-to-end testing and CI](docs/e2e-ci.md)
-- [Contributing](CONTRIBUTING.md)
-- [Open-source credits](CREDITS.md)
-- [Security policy](SECURITY.md)
-
-## System workflows
-
-Mike's system assistant and tabular-review workflows are maintained in the
-[`Open-Legal-Products/mike-workflows`](https://github.com/Open-Legal-Products/mike-workflows)
-repository. See [Contributing](CONTRIBUTING.md#mike-workflows) for how they are
-packaged and synchronized with this application.
+- This branch, `nativecluster-app`, is upstream's commit
+  [3422ab5f](https://github.com/open-legal-products/mike/commit/3422ab5ffd91f9b679e3644b59ed3a24fb707ac3)
+  (2026-11-23) with the changes that make it a NativeCluster app.
+- Each release in NativeCluster's Store is tagged here: MikeOS 2.1.0.1 is
+  [`mikeos-2.1.0.1`](https://github.com/nativecluster/mikeos/tree/mikeos-2.1.0.1).
+- [`nativecluster/`](nativecluster) holds the app's manifest
+  ([`nc-app.json`](nativecluster/nc-app.json)), its launcher, the build
+  (`nativecluster/build/build.sh <folder>`, whose header says what it needs)
+  and the tests ([`nativecluster/test`](nativecluster/test/README.md)).
+- To run Mike in other ways (Docker, Vercel, your own servers), see
+  [upstream's README](https://github.com/open-legal-products/mike#readme).
 
 ## License
 
-Mike is available under the [GNU Affero General Public License v3.0](LICENSE).
-Bundled [public contract templates](docs/preset-templates.md#maintaining-the-catalog)
-retain their publishers' separate licenses and notices.
+[AGPL-3.0](LICENSE), as upstream. This is a modified version of Mike by Open
+Legal Products, changed by NativeCluster from 2026-11-24. It comes with no
+warranty.
