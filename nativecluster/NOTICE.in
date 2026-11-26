@@ -1,17 +1,17 @@
-MikeOS for NativeCluster, version @VERSION@, built @DATE@
+MikeOSS for NativeCluster, version @VERSION@, built @DATE@
 
-This is a modified version of MikeOS (Mike), the open-source legal AI platform by
-Open Legal Products (https://github.com/open-legal-products/mike), changed
+This is a modified version of Mike (MikeOSS), the open-source legal AI
+platform (https://github.com/open-legal-products/mike), changed
 to run as an app on NativeCluster (https://www.nativecluster.com): each
 person's copy runs on their own computer, keeps their documents there, and
 sends every model call to their group's own Macs. It is based on upstream
 commit 3422ab5ffd91f9b679e3644b59ed3a24fb707ac3 (2026-11-23); every change is
 in the source below, under nativecluster/ and in the commits after that one.
 
-MikeOS and this modified version are licensed under the GNU Affero General
+MikeOSS and this modified version are licensed under the GNU Affero General
 Public License, version 3 (the file LICENSE beside this one), with no
 warranty. The complete corresponding source of this package is at
-https://github.com/nativecluster/mikeos, commit @COMMIT@.
+https://github.com/nativecluster/mikeoss, commit @COMMIT@.
 
 Other software in this package keeps its own licence:
 - Node.js: runtime/LICENSE

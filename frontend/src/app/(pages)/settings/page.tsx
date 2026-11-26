@@ -354,8 +354,8 @@ export default function SettingsPage() {
           <SettingsRow layout="stacked">
             <div className="min-w-0 space-y-1">
               <SettingsDescription>
-                MikeOS is free software by Open Legal Products, adapted to run
-                on NativeCluster. It is licensed under the{" "}
+                MikeOSS is free software, adapted to run on NativeCluster. It
+                is licensed under the{" "}
                 <a
                   href={NC_APP_LICENSE_URL}
                   target="_blank"

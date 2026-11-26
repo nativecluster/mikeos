@@ -20,7 +20,7 @@ export function isNcApp(): boolean {
  * Where the app's own source is published (AGPL-3.0 §6 and §13): the exact
  * source of every package NativeCluster's Store ships, kept public there.
  */
-export const NC_APP_SOURCE_URL = "https://github.com/nativecluster/mikeos";
+export const NC_APP_SOURCE_URL = "https://github.com/nativecluster/mikeoss";
 export const NC_APP_LICENSE_URL = "https://www.gnu.org/licenses/agpl-3.0.html";
 
 /** The one line Settings shows where sharing would be. */

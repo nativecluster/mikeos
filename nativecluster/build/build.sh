@@ -2,7 +2,10 @@
 # Builds Mike's NativeCluster package into a stage folder outside the
 # repository:
 #
-#   nativecluster/build/build.sh <stage folder>
+#   nativecluster/build/build.sh <stage folder>/MikeOSS
+#
+# The stage folder is named as the app (nc-app.json's name), MikeOSS: the
+# Store takes a package whose one folder has the app's name.
 #
 # The stage holds, and nothing else (a package holds no link):
 #   mike, nc-app.json, assets/icon.png   the program, its manifest and icon
@@ -33,7 +36,15 @@ NODE_SHA256=ff6e17d4874b76d272212b908cc020d6e815fba5a6c7eaaa06add725840307fd
 HOSTED_MODEL_SDKS="@ai-sdk/amazon-bedrock @ai-sdk/anthropic @ai-sdk/azure @ai-sdk/google @ai-sdk/google-vertex @ai-sdk/mistral @ai-sdk/openai @ai-sdk/xai @openrouter/ai-sdk-provider"
 
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
-OUT=${1:?usage: nativecluster/build/build.sh <stage folder outside the repository>}
+OUT=${1:?usage: nativecluster/build/build.sh <stage folder outside the repository, named MikeOSS>}
+# NativeCluster's Store publishes a package whose one folder is named as the
+# app (its publish-app.sh checks it), so the stage folder has the app's name.
+APP_NAME=$(sed -n 's/^  "name": "\(.*\)",$/\1/p' "$REPO/nativecluster/nc-app.json" | head -1)
+[ -n "$APP_NAME" ] || { echo "build.sh: no name in nativecluster/nc-app.json" >&2; exit 2; }
+[ "$(basename "$OUT")" = "$APP_NAME" ] || {
+  echo "build.sh: name the stage folder $APP_NAME, not $(basename "$OUT") (for example $(dirname "$OUT")/$APP_NAME): NativeCluster's Store takes a package whose one folder is named as the app" >&2
+  exit 2
+}
 mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd -P)
 case "$OUT/" in "$(cd "$REPO" && pwd -P)"/*) echo "build.sh: the stage folder must be outside the repository" >&2; exit 2 ;; esac

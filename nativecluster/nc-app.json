@@ -1,8 +1,8 @@
 {
   "format": "nc-app.v1",
   "id": "mikeos",
-  "name": "MikeOS",
-  "version": "2.1.0.1",
+  "name": "MikeOSS",
+  "version": "2.1.0.2",
   "min_host": "0.4.23",
   "program": "mike",
   "icon": "assets/icon.png",
@@ -38,7 +38,7 @@
     }
   ],
   "triggers": [
-    { "id": "upkeep", "kind": "time", "name": "tidying up MikeOS's old exports and stalled work" }
+    { "id": "upkeep", "kind": "time", "name": "tidying up MikeOSS's old exports and stalled work" }
   ],
   "storage": [
     { "kind": "documents", "label": "your documents and their text", "place": "cluster" },

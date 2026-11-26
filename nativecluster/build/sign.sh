@@ -16,9 +16,13 @@
 #             there is no timestamp; such a package is for testing only.
 #   zip       default <the folder's parent>/mikeos-<version>-darwin-arm64.zip
 #
+# The folder is named as the app (nc-app.json's name, MikeOSS), as the
+# Store's publish requires, and the zip keeps that one folder.
+#
 # What it does, as Apple's notary service asks of every Mach-O file before
 # NativeCluster's Store publishes a package (NativeCluster's register,
 # NC-121), and as Hermes's build does:
+#   0. the quarantine mark an AirDrop or a download leaves is taken off;
 #   1. every Mach-O keeps its Apple silicon code alone (lipo -thin arm64);
 #   2. libraries (dylibs, Node addons) are signed first, then programs, with
 #      the hardened runtime and a secure timestamp. Node alone gets one
@@ -41,6 +45,10 @@ pkg=$(cd "$pkg" && pwd -P)
 version=$(sed -n 's/^  "version": "\(.*\)",$/\1/p' "$pkg/nc-app.json")
 [ -n "$version" ] || { echo "sign.sh: no version in nc-app.json" >&2; exit 2; }
 zip=${3:-$(dirname "$pkg")/mikeos-$version-darwin-arm64.zip}
+name=$(sed -n 's/^  "name": "\(.*\)",$/\1/p' "$pkg/nc-app.json" | head -1)
+[ -n "$name" ] || { echo "sign.sh: no name in nc-app.json" >&2; exit 2; }
+[ "$(basename "$pkg")" = "$name" ] || {
+	echo "sign.sh: the package folder is $(basename "$pkg"), not $name: NativeCluster's Store takes a package whose one folder is named as the app (rename it $name)" >&2; exit 2; }
 
 adhoc=0
 [ "$identity" = "-" ] && adhoc=1
@@ -55,6 +63,13 @@ fi
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT INT TERM
+
+# A package that came by AirDrop or a browser carries the quarantine mark on
+# every file (ditto keeps it when it unpacks), and a quarantined program not
+# yet notarized does not run, so the Node check below would fail. Check the
+# handed-over zip's SHA-256 before this runs; the mark goes here, and nothing
+# else of the files' extended attributes.
+xattr -r -d com.apple.quarantine "$pkg" 2>/dev/null || true
 
 # Entitlements: Node's allow-jit; ad hoc, every program's library validation off.
 plist() { # <file> <key>...
@@ -138,6 +153,8 @@ while IFS= read -r f; do
 	fi
 done <"$work/macho"
 codesign --verify --strict "$pkg/mike" 2>/dev/null || fail "mike: signature does not verify"
+q=$(find "$pkg" -xattrname com.apple.quarantine -print | head -3)
+[ -z "$q" ] || fail "the quarantine mark is still on: $q"
 if [ $adhoc = 0 ]; then
 	codesign --verify --strict -R="anchor apple generic and certificate leaf[subject.OU] = $team" "$pkg/mike" ||
 		fail "mike: not signed by team $team"
