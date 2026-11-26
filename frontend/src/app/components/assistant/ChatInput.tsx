@@ -75,6 +75,7 @@ import {
 import { userFacingApiError } from "@/app/lib/userFacingError";
 import { serializeExcerpts, type MessageExcerpt, type NoModelsReason } from "@mike/client";
 import { useConfiguredModels } from "@/app/hooks/useConfiguredModels";
+import { useNativeClusterModels } from "@/app/hooks/useNativeClusterModels";
 
 export interface ChatInputHandle {
     addDoc: (doc: Document) => void;
@@ -221,6 +222,10 @@ function ChatInputForChatImpl(
     // the stored selection alone for.
     // In an organization workspace these are the lists that govern its keys.
     const savedRouterSelections = useModelRouterSelections();
+    // In the NativeCluster app a chat with no saved model starts with the
+    // first model NativeCluster offers for the assistant (upstream has no
+    // default, and its first message would be refused for want of one).
+    const nativeCluster = useNativeClusterModels();
     const [model, setModel] = useSelectedModel({
         selectionKey: chatKey,
         chatModel,
@@ -231,6 +236,9 @@ function ChatInputForChatImpl(
                 : null,
         apiKeys,
         configuredModelIds,
+        fallbackModel: nativeCluster.inferenceOnly
+            ? (nativeCluster.models[0]?.id ?? null)
+            : null,
     });
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const controlsRef = useRef<HTMLDivElement>(null);

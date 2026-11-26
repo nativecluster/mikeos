@@ -37,6 +37,31 @@ describe("useSelectedModel", () => {
         expect(result.current[0]).toBe("");
     });
 
+    it("starts the NativeCluster app with its fallback model when nothing is saved", () => {
+        const { result } = renderHook(() =>
+            useSelectedModel({ fallbackModel: "nativecluster/qwen3.8:27b" }),
+        );
+        expect(result.current[0]).toBe("nativecluster/qwen3.8:27b");
+    });
+
+    it("keeps a saved model before the fallback, and takes the fallback once it arrives", () => {
+        const saved = renderHook(() =>
+            useSelectedModel({
+                lastSelectedModel: "nativecluster/gemma4:26b-a4b",
+                fallbackModel: "nativecluster/qwen3.8:27b",
+            }),
+        );
+        expect(saved.result.current[0]).toBe("nativecluster/gemma4:26b-a4b");
+        const late = renderHook(
+            ({ fallback }: { fallback: string | null }) =>
+                useSelectedModel({ fallbackModel: fallback }),
+            { initialProps: { fallback: null as string | null } },
+        );
+        expect(late.result.current[0]).toBe("");
+        late.rerender({ fallback: "nativecluster/qwen3.8:27b" });
+        expect(late.result.current[0]).toBe("nativecluster/qwen3.8:27b");
+    });
+
     it("uses the saved chat model before the shared last-selected model", () => {
         const { result } = renderHook(() =>
             useSelectedModel({

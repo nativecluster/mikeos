@@ -25,6 +25,13 @@ export interface SelectedModelSources {
     apiKeys?: ApiKeyState;
     /** Authenticated deployment models returned by GET /models/configured. */
     configuredModelIds?: readonly string[];
+    /**
+     * The model to start with when neither saved source is usable. Only the
+     * NativeCluster app passes one: the first model NativeCluster offers for
+     * the assistant, so a person's first message is sent, not refused for
+     * want of a choice nobody asked them to make.
+     */
+    fallbackModel?: string | null;
 }
 
 function usableStoredModel(
@@ -51,7 +58,16 @@ function usableStoredModel(
     return canonical;
 }
 
-/** Resolve chat model → profile last-selected model, without a product default. */
+function usableFallbackModel(sources: SelectedModelSources): string | null {
+    const id = sources.fallbackModel;
+    if (!id) return null;
+    return isAllowedModelId(id, sources.configuredModelIds) ? id : null;
+}
+
+/**
+ * Resolve chat model → profile last-selected model → the fallback model
+ * (the NativeCluster app's alone), with no product default of its own.
+ */
 export function useSelectedModel(
     sources: SelectedModelSources = {},
 ): [string, (id: string) => void] {
@@ -67,6 +83,7 @@ export function useSelectedModel(
             routerSelections: sources.routerSelections ?? null,
             apiKeys: sources.apiKeys,
             configuredModelIds,
+            fallbackModel: sources.fallbackModel ?? null,
         }),
         [
             sources.selectionKey,
@@ -75,6 +92,7 @@ export function useSelectedModel(
             sources.routerSelections,
             sources.apiKeys,
             configuredModelIds,
+            sources.fallbackModel,
         ],
     );
 
@@ -100,6 +118,7 @@ export function useSelectedModel(
                 selectionSources.lastSelectedModel,
                 selectionSources,
             ) ??
+            usableFallbackModel(selectionSources) ??
             "";
         setModelState(next);
     }, [selectionSources]);
